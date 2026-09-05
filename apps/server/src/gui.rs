@@ -17,7 +17,7 @@ mod reorganize;
 mod settings;
 
 use rand::RngCore;
-use settings::{AiProviderSetting, MediaRootHealth, MediaRootSetting, Settings};
+use settings::{AiProviderSetting, MediaRootHealth, MediaRootSetting, RootAssetType, Settings};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -829,13 +829,27 @@ async fn group_scrape_issues_by_kind(
 fn reject_overlapping_root(existing: &[MediaRootSetting], new_path: &str) -> Result<(), String> {
     let new_path = PathBuf::from(new_path);
     for root in existing {
-        if swarm_media::roots::paths_overlap(&PathBuf::from(&root.path), &new_path) {
-            return Err(format!(
-                "this path overlaps with the existing root \"{}\" ({}) — scanning both would \
+        let root_path = PathBuf::from(&root.path);
+        if !swarm_media::roots::paths_overlap(&root_path, &new_path) {
+            continue;
+        }
+        let same = root_path == new_path
+            || matches!(
+                (std::fs::canonicalize(&root_path), std::fs::canonicalize(&new_path)),
+                (Ok(a), Ok(b)) if a == b
+            );
+        return Err(if same {
+            format!(
+                "this folder is already added as media root \"{}\"",
+                root.label
+            )
+        } else {
+            format!(
+                "this folder overlaps with the existing root \"{}\" ({}) — scanning both would \
                  catalog the same files twice",
                 root.label, root.path
-            ));
-        }
+            )
+        });
     }
     Ok(())
 }
@@ -1141,6 +1155,7 @@ async fn choose_media_folder<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Res
         label: "local".to_string(),
         path: path.clone(),
         reconnect_url: settings::discover_reconnect_url(&path),
+        asset_type: RootAssetType::Mixed,
     }];
     settings::save(&dir, &settings).map_err(|e| e.to_string())?;
     Ok(Some(path))
@@ -1191,32 +1206,71 @@ struct MediaRootsResult {
     rescan: Option<RescanResult>,
 }
 
-/// Adds an additional named root (e.g. a mounted NAS share) alongside
-/// whatever's already configured. Applied live to an already-running core —
-/// see the module docs.
+/// A filesystem-safe, unique label derived from a folder's own name — used
+/// when a root is added through the browse-only "Add media root" modal
+/// (issue #252), which no longer asks the user to type one. Falls back to
+/// `"media"` for a pathologically nameless path, and disambiguates a
+/// collision with an existing root by appending `-2`, `-3`, …
+fn derive_unique_label(existing: &[MediaRootSetting], path: &str) -> String {
+    let base = std::path::Path::new(path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .map(|name| {
+            name.chars()
+                .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+                .collect::<String>()
+        })
+        .map(|name| name.trim_matches('-').to_string())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "media".to_string());
+    if !existing.iter().any(|r| r.label == base) {
+        return base;
+    }
+    (2..)
+        .map(|n| format!("{base}-{n}"))
+        .find(|candidate| !existing.iter().any(|r| r.label == *candidate))
+        .expect("an unbounded counter always yields a free label")
+}
+
+/// Adds an additional root (a local folder or a mounted NAS share) alongside
+/// whatever's already configured. `label` may be empty — the browse-only
+/// Add-media-root modal (issue #252) supplies only the chosen folder and its
+/// asset type, and the label is derived from the folder name here. Applied
+/// live to an already-running core — see the module docs.
 #[tauri::command]
 async fn add_media_root<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     state: tauri::State<'_, AppState>,
     label: String,
     path: String,
+    asset_type: Option<String>,
 ) -> Result<MediaRootsResult, String> {
     let label = label.trim().to_string();
     let path = path.trim().to_string();
-    if label.is_empty() || path.is_empty() {
-        return Err("label and path are both required".to_string());
+    if path.is_empty() {
+        return Err("choose a folder first".to_string());
     }
+    let asset_type = RootAssetType::parse(asset_type.as_deref())?;
     let dir = app_data_dir(&app)?;
     let mut settings = settings::load(&dir);
-    if settings.media_roots.iter().any(|r| r.label == label) {
-        return Err(format!("a root labeled \"{label}\" already exists"));
-    }
+    // Issue #252: a second root at the same (or an overlapping) location is
+    // forbidden — scanning both would catalog the same files twice.
     reject_overlapping_root(&settings.media_roots, &path)?;
+    let label = if label.is_empty() {
+        derive_unique_label(&settings.media_roots, &path)
+    } else {
+        if settings.media_roots.iter().any(|r| r.label == label) {
+            return Err(format!("a root labeled \"{label}\" already exists"));
+        }
+        label
+    };
     let reconnect_url = settings::discover_reconnect_url(&path);
+    tracing::info!(%label, %path, asset_type = asset_type.label(), "adding media root");
     settings.media_roots.push(MediaRootSetting {
         label,
         path,
         reconnect_url,
+        asset_type,
     });
     settings::save(&dir, &settings).map_err(|e| e.to_string())?;
     let rescan = state.apply_live_roots(&settings.media_roots).await?;
@@ -1237,11 +1291,13 @@ async fn connect_smb_root<R: tauri::Runtime>(
     server: String,
     share: String,
     username: Option<String>,
+    asset_type: Option<String>,
 ) -> Result<MediaRootsResult, String> {
     let label = label.trim().to_string();
     let server = server.trim().to_string();
     let share = share.trim().to_string();
     let username = username.map(|value| value.trim().to_string());
+    let asset_type = RootAssetType::parse(asset_type.as_deref())?;
     let dir = app_data_dir(&app)?;
     if settings::load(&dir)
         .media_roots
@@ -1269,6 +1325,7 @@ async fn connect_smb_root<R: tauri::Runtime>(
         label,
         path: mounted.path,
         reconnect_url: Some(mounted.reconnect_url),
+        asset_type,
     });
     settings::save(&dir, &persisted).map_err(|error| error.to_string())?;
     let rescan = state.apply_live_roots(&persisted.media_roots).await?;
@@ -1333,9 +1390,11 @@ async fn repair_smb_root<R: tauri::Runtime>(
     })
 }
 
-/// Removes a configured root by label. Refuses to remove the last remaining
-/// root — a server always needs at least one. Applied live to an
-/// already-running core — see the module docs.
+/// Removes a configured root by label. Removing the last one is allowed
+/// (issue #252): settings is left with no roots and the desktop UI drops
+/// back to the "choose a media folder" onboarding view. A live core keeps
+/// serving its existing catalog until the next launch — `RootResolver`
+/// requires at least one root, so an empty set is never handed to it.
 #[tauri::command]
 async fn remove_media_root<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
@@ -1344,12 +1403,17 @@ async fn remove_media_root<R: tauri::Runtime>(
 ) -> Result<MediaRootsResult, String> {
     let dir = app_data_dir(&app)?;
     let mut settings = settings::load(&dir);
-    if settings.media_roots.len() <= 1 {
-        return Err("at least one media root is required".to_string());
-    }
+    let before = settings.media_roots.len();
     settings.media_roots.retain(|r| r.label != label);
+    if settings.media_roots.len() == before {
+        return Err(format!("no media root labeled \"{label}\" exists"));
+    }
     settings::save(&dir, &settings).map_err(|e| e.to_string())?;
-    let rescan = state.apply_live_roots(&settings.media_roots).await?;
+    let rescan = if settings.media_roots.is_empty() {
+        None
+    } else {
+        state.apply_live_roots(&settings.media_roots).await?
+    };
     Ok(MediaRootsResult {
         media_roots: settings.media_roots,
         rescan,
@@ -1619,44 +1683,56 @@ async fn set_ai_reorganize_enabled<R: tauri::Runtime>(app: tauri::AppHandle<R>, 
     settings::save(&dir, &settings).map_err(|e| e.to_string())
 }
 
-/// Sends a trivial prompt to the configured provider so the AI tab can show
-/// "connected" without waiting for a real feature to fail first.
+/// Detects each provider's locally-installed CLI and its sign-in state, for
+/// the AI tab's "Enabled AI tools" panel (issue #252). Shelling out to three
+/// CLIs takes a beat, so this is its own command rather than folded into
+/// `get_settings`.
 #[tauri::command]
-async fn test_ai_provider<R: tauri::Runtime>(app: tauri::AppHandle<R>, id: String) -> Result<String, String> {
-    let settings = settings::load(&app_data_dir(&app)?);
-    let provider = settings
-        .ai_providers
-        .iter()
-        .find(|p| p.id == id)
-        .ok_or_else(|| format!("unknown AI provider \"{id}\""))?;
-    let api_key = provider
-        .api_key
-        .clone()
-        .ok_or_else(|| "Add an API key first.".to_string())?;
-    let kind = ai::AiProviderKind::from_id(&id).ok_or_else(|| format!("unknown AI provider \"{id}\""))?;
-    let client = ai::AiClient::new(kind, api_key, provider.model.clone());
-    client
-        .complete(
-            "You are a connectivity check for a media server's AI integration. Reply with exactly one word.",
-            "Reply with the single word: ok",
-        )
+async fn detect_ai_tools() -> Result<Vec<ai::AiToolInfo>, String> {
+    tokio::task::spawn_blocking(ai::detect_all)
         .await
-        .map(|reply| reply.trim().to_string())
         .map_err(|e| e.to_string())
 }
 
-/// Finds the first enabled, keyed provider (settings order: Claude, Codex,
-/// Grok) — the advanced AI features don't let a user pick per call, since
-/// there is normally only one configured anyway.
+/// Confirms one provider's CLI is installed and signed in, so the AI tab can
+/// show "detected" without waiting for a real feature to fail first. No API
+/// key involved — detection uses the CLI's own auth state (issue #252).
+#[tauri::command]
+async fn test_ai_provider(id: String) -> Result<String, String> {
+    let kind = ai::AiProviderKind::from_id(&id).ok_or_else(|| format!("unknown AI provider \"{id}\""))?;
+    let info = tokio::task::spawn_blocking(move || ai::detect_provider(kind))
+        .await
+        .map_err(|e| e.to_string())?;
+    if !info.installed {
+        return Err(format!("{} is not installed on this machine.", info.cli_label));
+    }
+    if !info.signed_in {
+        return Err(format!("{} is installed but not signed in — run its login command.", info.cli_label));
+    }
+    Ok(format!(
+        "{} detected{}.",
+        info.cli_label,
+        if info.version.is_empty() { String::new() } else { format!(" ({})", info.version) }
+    ))
+}
+
+/// Finds the first enabled provider (settings order: Claude, Codex, Grok)
+/// and builds a client for it — its installed CLI when there's no saved API
+/// key (the issue #252 default), or the direct HTTP API when a key is
+/// present. The advanced AI features don't let a user pick per call, since
+/// there is normally only one enabled anyway.
 fn ai_client_from_settings(settings: &Settings) -> Result<ai::AiClient, String> {
     let provider = settings
         .ai_providers
         .iter()
-        .find(|p| p.enabled && p.api_key.is_some())
-        .ok_or_else(|| "Enable and configure at least one AI provider in the AI tab first.".to_string())?;
+        .find(|p| p.enabled)
+        .ok_or_else(|| "Enable an AI provider in the AI tab first.".to_string())?;
     let kind = ai::AiProviderKind::from_id(&provider.id)
         .ok_or_else(|| format!("unknown AI provider \"{}\"", provider.id))?;
-    Ok(ai::AiClient::new(kind, provider.api_key.clone().unwrap(), provider.model.clone()))
+    match provider.api_key.clone().filter(|key| !key.is_empty()) {
+        Some(key) => Ok(ai::AiClient::new(kind, key, provider.model.clone())),
+        None => ai::AiClient::cli(kind, provider.model.clone()),
+    }
 }
 
 #[tauri::command]
@@ -3339,6 +3415,7 @@ fn main() {
             set_ai_scan_assist_enabled,
             set_ai_reorganize_enabled,
             test_ai_provider,
+            detect_ai_tools,
             list_scrape_issues,
             ai_scrape_assist,
             ai_reorganize_scan,

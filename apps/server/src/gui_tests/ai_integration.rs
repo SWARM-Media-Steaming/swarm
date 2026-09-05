@@ -68,14 +68,27 @@ async fn set_ai_provider_enabled_rejects_an_unknown_provider_id() {
 }
 
 #[tokio::test]
-async fn test_ai_provider_fails_clearly_without_an_api_key() {
-    let test_app = test_app();
-    let app = test_app.handle();
+async fn test_ai_provider_reports_the_cli_detection_state() {
+    // Issue #252: no API key involved — `test_ai_provider` detects the
+    // provider's CLI. On a machine without the Claude CLI installed and
+    // signed in (the CI default) this reports "not installed" / "not signed
+    // in"; where it *is* present it returns a "detected" string. Either way
+    // the result is deterministic for a given machine and never panics.
+    match test_ai_provider("claude".to_string()).await {
+        Ok(message) => assert!(message.contains("detected")),
+        Err(message) => assert!(
+            message.contains("not installed") || message.contains("not signed in"),
+            "unexpected detection error: {message}"
+        ),
+    }
+}
 
-    let error = test_ai_provider(app.clone(), "claude".to_string())
+#[tokio::test]
+async fn test_ai_provider_rejects_an_unknown_provider_id() {
+    let error = test_ai_provider("not-a-real-provider".to_string())
         .await
-        .expect_err("testing a keyless provider should fail, not silently succeed");
-    assert!(error.contains("API key"));
+        .expect_err("an unknown provider id should be rejected");
+    assert!(error.contains("not-a-real-provider"));
 }
 
 #[tokio::test]

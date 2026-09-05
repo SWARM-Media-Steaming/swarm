@@ -96,7 +96,14 @@ const INFO_TOPICS = {
   },
   "media-roots": {
     icon: "bi-folder2-open", title: "Media roots",
-    body: "The folders SWARM scans for movies, shows, and music. Add a local folder or connect an SMB share from a NAS. You can combine more than one root.",
+    body:
+      "The folders SWARM scans for movies, shows, and music — add a local folder or an SMB share from a NAS, and pick an asset type (Movies, TV shows, Music, or Mixed) so SWARM knows what to expect there. You can run more than one root, but two roots can't point at the same or an overlapping location.\n\n" +
+      "Organise each root the way Plex, Jellyfin, and Kodi do:\n" +
+      "• Movies — \"Movie Name (Year)/Movie Name (Year).mkv\", with Featurettes/Trailers/Deleted Scenes folders beside it for extras.\n" +
+      "• TV — \"Show Name (Year)/Season 01/Show Name - S01E02.mkv\"; \"S01E02-E03\" multi-episode files and a Specials season are recognised.\n" +
+      "• Music — \"Artist/Album/01 Track Title.flac\"; CD1/CD2 disc folders are absorbed automatically.\n" +
+      "• Subtitles — a .srt or .vtt next to the video (or in a Subs/ folder), named after it, e.g. \"Movie Name (Year).en.srt\".\n\n" +
+      "A Mixed root may hold top-level Movies/, TV/, and Music/ folders and SWARM sorts them out. The About tab repeats this under \"How to organise your media folders\".",
   },
   "tmdb-scraping": {
     icon: "bi-cloud-download", title: "TMDb scraping",

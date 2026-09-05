@@ -93,7 +93,32 @@ td.mono {
 }
 .media-root-status { margin-left: 7px; color: var(--green); font-size: .68rem; font-weight: 600; }
 .media-root-status-unavailable { color: #f5c451; }
-.add-root-row { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--border); }
+.media-root-asset {
+  display: inline-block; margin-left: 7px; padding: 1px 6px; border: 1px solid var(--border);
+  border-radius: 999px; color: var(--muted); font-size: .65rem; letter-spacing: .04em; vertical-align: 1px;
+}
+.media-roots-add { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); }
+
+/* Add-media-root modal (issue #252) — browse-only: choose a folder, pick an
+   asset type, Add root / Cancel. Same modal shell as the SMB connect modal. */
+.modal-box.add-root-modal-box { max-width: 520px; }
+.add-root-fields { margin-top: 6px; }
+.add-root-fields label { margin-top: 14px; }
+.add-root-folder-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.add-root-folder-row button { flex: 0 0 auto; }
+#addRootChosenPath { font-size: .78rem; overflow-wrap: anywhere; min-width: 0; }
+.add-root-fields .req { color: #f5c451; font-size: .62rem; text-transform: uppercase; letter-spacing: .06em; margin-left: 4px; }
+.add-root-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+.add-root-modal-actions button { flex: 0 0 auto; }
+.modal-inline-link { color: var(--accent); cursor: pointer; }
+.modal-inline-link:hover { text-decoration: underline; }
+
+/* Section eyebrow — the small all-caps label the SWARM Automation app puts
+   above a section title; adopted here so the two apps read as one product. */
+.eyebrow {
+  font-size: .66rem; text-transform: uppercase; letter-spacing: .14em;
+  color: var(--muted); font-weight: 800; margin-bottom: 4px;
+}
 .upload-budget-toggle { margin-top: 16px; }
 .compact-help { margin-top: 5px; font-size: .78rem; }
 .swarm-remote-card { margin-top: 28px; }
@@ -478,6 +503,27 @@ td.mono {
 .heading-icon { color: var(--accent); margin-right: 8px; }
 .token-row { margin-top: 12px; }
 
+/* AI tab: "Enabled AI tools" rows (issue #252) — a toggle plus a live CLI
+   detection pill, no key/model/save. Modelled on SWARM Automation's panel. */
+.ai-provider-row {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface-muted); margin-bottom: 8px;
+}
+.ai-provider-toggle { flex: 0 0 auto; font-size: .88rem; color: var(--text); }
+.ai-provider-hint { flex: 1; min-width: 0; font-size: .74rem; }
+.ai-provider-docs { color: var(--muted); flex: 0 0 auto; }
+.ai-provider-docs:hover { color: var(--accent); }
+.ai-provider-pill {
+  flex: 0 0 auto; padding: 2px 9px; border-radius: 999px;
+  font-size: .68rem; font-weight: 700; letter-spacing: .03em; border: 1px solid var(--border);
+}
+.ai-provider-pill-on { color: var(--green); border-color: color-mix(in srgb, var(--green) 45%, var(--border)); }
+.ai-provider-pill-warn { color: #f5c451; border-color: #8b6b23; }
+.ai-provider-pill-off { color: var(--muted); }
+.ai-provider-pill-checking { color: var(--muted); }
+.ai-provider-actions { margin-top: 10px; }
+
 /* About tab: the leftmost/default tab now that it's an explainer, not just
    a security page — gets a bit of "wizbang" (a hero card with a Server ->
    Secure-by-design -> Client flow diagram and feature badges) since it's
@@ -546,6 +592,12 @@ td.mono {
 .about-more-body { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
 .about-more-body p { color: var(--muted); font-size: .85rem; line-height: 1.5; margin-bottom: 10px; }
 .about-more-body p:last-child { margin-bottom: 0; }
+.about-more-body ul { color: var(--muted); font-size: .85rem; line-height: 1.5; margin: 0 0 10px; padding-left: 20px; }
+.about-more-body li { margin-bottom: 5px; }
+.about-more-body code {
+  font-family: ui-monospace, monospace; font-size: .8rem; color: var(--text);
+  background: var(--surface-muted); border-radius: 4px; padding: 1px 5px;
+}
 
 /* Info modal — one shared "what am I looking at" popup, opened by any
    element carrying data-info (see INFO_TOPICS/openInfoModal in app.js).
@@ -608,6 +660,9 @@ td.mono {
 }
 .modal-box h2 { margin-bottom: 10px; text-transform: none; letter-spacing: 0; font-size: 1.05rem; color: var(--text); }
 .modal-box p { color: var(--muted); font-size: .88rem; line-height: 1.55; }
+/* Some info-modal topics (e.g. Media roots) use blank-line/• structure —
+   render the newlines rather than collapsing them into one run-on line. */
+#infoModalBody { white-space: pre-line; }
 .modal-links { display: flex; flex-wrap: wrap; gap: 8px 16px; }
 .modal-link { display: inline-flex; align-items: center; gap: 6px; margin-top: 16px; color: var(--accent); font-size: .82rem; font-weight: 700; }
 .modal-link:hover { text-decoration: underline; }

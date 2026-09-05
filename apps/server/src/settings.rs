@@ -39,6 +39,44 @@ fn default_ai_providers() -> Vec<AiProviderSetting> {
         .collect()
 }
 
+/// What kind of media a root is expected to hold. Declared by the user when
+/// a root is added (issue #252) so the server knows what to expect in that
+/// location rather than inferring purely from folder layout. `Mixed` — the
+/// default and the shape every pre-#252 settings.json upgrades to — imposes
+/// no expectation and behaves exactly as roots did before this field
+/// existed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RootAssetType {
+    #[default]
+    Mixed,
+    Movies,
+    Shows,
+    Music,
+}
+
+impl RootAssetType {
+    pub fn parse(value: Option<&str>) -> Result<Self, String> {
+        match value.map(str::trim).unwrap_or("") {
+            "" | "mixed" => Ok(RootAssetType::Mixed),
+            "movies" => Ok(RootAssetType::Movies),
+            "shows" | "tv" => Ok(RootAssetType::Shows),
+            "music" => Ok(RootAssetType::Music),
+            other => Err(format!("unknown asset type \"{other}\"")),
+        }
+    }
+
+    /// Human-readable label for toasts and reorganize prompts.
+    pub fn label(self) -> &'static str {
+        match self {
+            RootAssetType::Mixed => "Mixed",
+            RootAssetType::Movies => "Movies",
+            RootAssetType::Shows => "TV Shows",
+            RootAssetType::Music => "Music",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MediaRootSetting {
     pub label: String,
@@ -48,6 +86,10 @@ pub struct MediaRootSetting {
     /// after SMB drops without storing a password in settings.json.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reconnect_url: Option<String>,
+    /// The kind of media this root holds — see [`RootAssetType`]. `#[serde(default)]`
+    /// so every existing settings.json loads as `Mixed`.
+    #[serde(default)]
+    pub asset_type: RootAssetType,
 }
 
 /// A bounded accessibility check used by the desktop UI and recovery loop.
@@ -718,6 +760,7 @@ pub fn load(app_data_dir: &Path) -> Settings {
                 label: "local".to_string(),
                 path,
                 reconnect_url: None,
+                asset_type: RootAssetType::default(),
             });
         }
     }
@@ -797,6 +840,25 @@ mod tests {
     }
 
     #[test]
+    fn root_asset_type_parses_the_ui_values_and_defaults_to_mixed() {
+        assert_eq!(RootAssetType::parse(None).unwrap(), RootAssetType::Mixed);
+        assert_eq!(RootAssetType::parse(Some("")).unwrap(), RootAssetType::Mixed);
+        assert_eq!(RootAssetType::parse(Some("mixed")).unwrap(), RootAssetType::Mixed);
+        assert_eq!(RootAssetType::parse(Some("movies")).unwrap(), RootAssetType::Movies);
+        assert_eq!(RootAssetType::parse(Some("shows")).unwrap(), RootAssetType::Shows);
+        assert_eq!(RootAssetType::parse(Some("tv")).unwrap(), RootAssetType::Shows);
+        assert_eq!(RootAssetType::parse(Some("music")).unwrap(), RootAssetType::Music);
+        assert!(RootAssetType::parse(Some("games")).is_err());
+    }
+
+    #[test]
+    fn media_root_setting_without_asset_type_loads_as_mixed() {
+        let json = r#"{"label":"local","path":"/media"}"#;
+        let parsed: MediaRootSetting = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.asset_type, RootAssetType::Mixed);
+    }
+
+    #[test]
     fn media_root_health_reports_readable_and_missing_roots() {
         let dir =
             std::env::temp_dir().join(format!("swarm-root-health-test-{}", rand::random::<u64>()));
@@ -807,11 +869,13 @@ mod tests {
                 label: "local".into(),
                 path: dir.to_string_lossy().into_owned(),
                 reconnect_url: None,
+                asset_type: RootAssetType::default(),
             },
             MediaRootSetting {
                 label: "nas".into(),
                 path: missing.to_string_lossy().into_owned(),
                 reconnect_url: Some("smb://nas/share".into()),
+                asset_type: RootAssetType::default(),
             },
         ];
 
@@ -845,6 +909,7 @@ mod tests {
             label: "locked".into(),
             path: locked.to_string_lossy().into_owned(),
             reconnect_url: None,
+            asset_type: RootAssetType::default(),
         }];
         let health = media_root_health(&roots);
 

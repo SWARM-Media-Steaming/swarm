@@ -901,16 +901,18 @@ async function refreshMediaRoots() {
       const permissionHint = permissionDenied
         ? `<div class="muted compact-help">macOS is blocking reads here. Grant "SWARM Server" access under Privacy &amp; Security &rarr; Files and Folders (or Full Disk Access), then Rescan — macOS remembers it.</div>`
         : "";
+      const assetLabels = { mixed: "Mixed", movies: "Movies", shows: "TV shows", music: "Music" };
+      const assetType = assetLabels[r.asset_type] || "Mixed";
       return `
       <div class="media-root-row">
         <div class="media-root-info">
-          <div class="media-root-label">${esc(r.label)}${protocol ? `<span class="media-root-protocol">${esc(protocol)}</span>` : ""}${status ? `<span class="media-root-status ${status.available ? "" : "media-root-status-unavailable"}">${statusLabel}</span>` : ""}</div>
+          <div class="media-root-label">${esc(r.label)}<span class="media-root-asset">${esc(assetType)}</span>${protocol ? `<span class="media-root-protocol">${esc(protocol)}</span>` : ""}${status ? `<span class="media-root-status ${status.available ? "" : "media-root-status-unavailable"}">${statusLabel}</span>` : ""}</div>
           <div class="mono muted media-root-path">${esc(r.path)}</div>
           ${permissionHint}
         </div>
         <div class="media-root-actions">
           ${reconnectButton}
-          <button class="danger" data-remove-root="${esc(r.label)}" ${roots.length <= 1 ? "disabled" : ""}><i class="bi bi-trash"></i>Remove</button>
+          <button class="danger" data-remove-root="${esc(r.label)}"><i class="bi bi-trash"></i>Remove</button>
         </div>
       </div>`;
     }).join("");
@@ -918,6 +920,14 @@ async function refreshMediaRoots() {
       btn.addEventListener("click", async () => {
         try {
           const result = await invoke("remove_media_root", { label: btn.dataset.removeRoot });
+          if (!result.media_roots || result.media_roots.length === 0) {
+            // Issue #252: the last root can be removed. With none configured
+            // there's nothing to show on the dashboard — return to the
+            // "choose a media folder" onboarding view.
+            showToast("Media root removed. Choose a folder to start over.", "success");
+            show("onboardFolderView");
+            return;
+          }
           await refreshMediaRoots();
           describeRootChange(result);
         } catch (err) {
@@ -969,23 +979,62 @@ function describeRootChange(result) {
   showToast(`Applied — scanned now: +${added} added, ${updated} updated, ${removed} removed, ${unchanged} unchanged.`, "success");
 }
 
-document.getElementById("addRootBtn").addEventListener("click", async () => {
-  const label = document.getElementById("addRootLabel");
-  const path = document.getElementById("addRootPath");
+// ---- Add media root modal (issue #252) -----------------------------------
+// Browse-only: the user picks a folder and its asset type here — no label or
+// free-text path field anymore. "Add root" lives in this modal beside a
+// Cancel button.
+
+const addRootModal = document.getElementById("addRootModalBackdrop");
+let addRootPickedPath = null;
+
+function openAddRootModal() {
+  addRootPickedPath = null;
+  document.getElementById("addRootChosenPath").textContent = "No folder chosen yet";
+  document.getElementById("addRootChosenPath").classList.add("muted");
+  document.getElementById("addRootAssetType").value = "mixed";
+  document.getElementById("addRootConfirmBtn").disabled = true;
+  addRootModal.classList.remove("d-none");
+  document.getElementById("addRootChooseBtn").focus();
+}
+
+function closeAddRootModal() {
+  addRootModal.classList.add("d-none");
+}
+
+document.getElementById("openAddRootBtn").addEventListener("click", openAddRootModal);
+document.getElementById("addRootModalClose").addEventListener("click", closeAddRootModal);
+document.getElementById("addRootCancelBtn").addEventListener("click", closeAddRootModal);
+addRootModal.addEventListener("click", event => {
+  if (event.target === addRootModal) closeAddRootModal();
+});
+
+document.getElementById("addRootChooseBtn").addEventListener("click", async () => {
+  const picked = await invoke("pick_folder_path").catch(() => null);
+  if (!picked) return;
+  addRootPickedPath = picked;
+  const chosen = document.getElementById("addRootChosenPath");
+  chosen.textContent = picked;
+  chosen.classList.remove("muted");
+  document.getElementById("addRootConfirmBtn").disabled = false;
+});
+
+document.getElementById("addRootConfirmBtn").addEventListener("click", async event => {
+  if (!addRootPickedPath) return;
+  const button = event.currentTarget;
+  button.disabled = true;
   try {
-    const result = await invoke("add_media_root", { label: label.value, path: path.value });
-    label.value = "";
-    path.value = "";
+    const result = await invoke("add_media_root", {
+      label: "",
+      path: addRootPickedPath,
+      assetType: document.getElementById("addRootAssetType").value,
+    });
+    closeAddRootModal();
     await refreshMediaRoots();
     describeRootChange(result);
   } catch (err) {
     showToast(String(err), "error");
+    button.disabled = false;
   }
-});
-
-document.getElementById("chooseAddRootBtn").addEventListener("click", async () => {
-  const picked = await invoke("pick_folder_path").catch(() => null);
-  if (picked) document.getElementById("addRootPath").value = picked;
 });
 
 // ---- SMB network roots -----------------------------------------------------

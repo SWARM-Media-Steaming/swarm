@@ -5,6 +5,10 @@
 // comment. Saving a setting here takes effect on the *next* restart, not
 // live; this tab is honest about that rather than implying an instant toggle.
 
+// Cached CLI-detection results (from `detect_ai_tools`) so the gating checks
+// in refreshScanAssist/refreshReorganize don't each re-shell three CLIs.
+let aiToolsById = {};
+
 async function refreshAi() {
   try {
     const settings = await invoke("get_settings");
@@ -18,7 +22,15 @@ async function refreshAi() {
     document.getElementById("copyMcpTokenBtn").disabled = !settings.mcp_access_token;
     renderMcpStatus(settings);
     renderMcpConfigSnippet(settings);
-    renderAiProviders(settings);
+    renderAiProviders(settings, []);
+    let tools = [];
+    try {
+      tools = await invoke("detect_ai_tools");
+    } catch (err) {
+      showToast(String(err), "error");
+    }
+    aiToolsById = Object.fromEntries(tools.map(t => [t.id, t]));
+    renderAiProviders(settings, tools);
     await refreshScanAssist(settings);
     await refreshReorganize(settings);
   } catch (err) {
@@ -26,69 +38,80 @@ async function refreshAi() {
   }
 }
 
-// ---- AI tab: provider configuration (issue #235) ---------------------------
+function providerReady(settings, id) {
+  const provider = settings.ai_providers.find(p => p.id === id);
+  const tool = aiToolsById[id];
+  return Boolean(provider && provider.enabled && tool && tool.installed && tool.signedIn);
+}
+
+// ---- AI tab: "Enabled AI tools" (issue #252) ------------------------------
 //
-// One row per configured provider (Claude/Codex/Grok), all built from the
-// same `settings.ai_providers` shape so adding a fourth provider later is a
-// backend-only change (see `settings::default_ai_providers`). An API key
-// input is always shown blank — `has_api_key` only says whether one is
-// already saved, the raw key is never sent back to the UI, matching the
-// TMDb/OpenSubtitles key fields on the Details tab.
+// One row per provider (Claude/Codex/Grok): a toggle plus a live detection
+// pill for that provider's locally-installed CLI and its sign-in state —
+// modelled on the SWARM Automation app's "Enabled AI tools" panel. No model
+// box, no API key, no Save button: toggling persists immediately, and SWARM
+// drives whichever CLI is signed in on this machine. `tools` comes from the
+// `detect_ai_tools` command; `[]` on the first paint before it resolves.
 
-function renderAiProviders(settings) {
+function renderAiProviders(settings, tools) {
   const list = document.getElementById("aiProvidersList");
+  const toolById = Object.fromEntries((tools || []).map(t => [t.id, t]));
   list.innerHTML = settings.ai_providers
-    .map(
-      p => `
-    <div class="row ai-provider-row" data-provider-id="${esc(p.id)}" style="align-items:center; margin-bottom:6px; gap:8px">
-      <label class="checkbox-label" style="flex:0 0 110px"><input type="checkbox" class="ai-provider-enabled" ${p.enabled ? "checked" : ""}> ${esc(p.label)}</label>
-      <input class="ai-provider-model" value="${esc(p.model)}" placeholder="Model" style="flex:1">
-      <input class="ai-provider-key mono" type="password" placeholder="${p.has_api_key ? "Key saved — leave blank to keep" : "API key"}" style="flex:1">
-      <button class="secondary ai-provider-save"><i class="bi bi-check-lg"></i>Save</button>
-      <button class="secondary ai-provider-test"><i class="bi bi-broadcast"></i>Test</button>
-    </div>
-    <p class="note" data-provider-status="${esc(p.id)}" style="margin:0 0 12px"></p>`
-    )
-    .join("");
+    .map(p => {
+      const tool = toolById[p.id];
+      let pill = '<span class="ai-provider-pill ai-provider-pill-checking">Checking…</span>';
+      let hint = "";
+      if (tool) {
+        if (!tool.installed) {
+          pill = '<span class="ai-provider-pill ai-provider-pill-off">Not installed</span>';
+          hint = `Install ${esc(tool.cliLabel)} to use it here.`;
+        } else if (!tool.signedIn) {
+          pill = '<span class="ai-provider-pill ai-provider-pill-warn">Sign-in required</span>';
+          hint = `${esc(tool.cliLabel)} is installed — run its login command, then Refresh.`;
+        } else {
+          pill = '<span class="ai-provider-pill ai-provider-pill-on">Signed in</span>';
+          hint = tool.version ? esc(tool.version) : "";
+        }
+      }
+      return `
+    <div class="ai-provider-row" data-provider-id="${esc(p.id)}">
+      <label class="checkbox-label ai-provider-toggle"><input type="checkbox" class="ai-provider-enabled" ${p.enabled ? "checked" : ""}> ${esc(p.label)}</label>
+      ${pill}
+      <span class="ai-provider-hint muted">${hint}</span>
+      <a class="ai-provider-docs" href="${esc(tool ? tool.docsUrl : "")}" target="_blank" rel="noopener noreferrer"><i class="bi bi-box-arrow-up-right"></i></a>
+    </div>`;
+    })
+    .join("") +
+    '<div class="ai-provider-actions"><button id="refreshAiToolsBtn" class="secondary"><i class="bi bi-arrow-repeat"></i>Refresh detection</button></div>';
 
-  list.querySelectorAll(".ai-provider-save").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      const row = btn.closest(".ai-provider-row");
-      const id = row.dataset.providerId;
-      const enabled = row.querySelector(".ai-provider-enabled").checked;
-      const model = row.querySelector(".ai-provider-model").value.trim();
-      const key = row.querySelector(".ai-provider-key").value;
+  list.querySelectorAll(".ai-provider-enabled").forEach(input => {
+    input.addEventListener("change", async () => {
+      const id = input.closest(".ai-provider-row").dataset.providerId;
+      const enabled = input.checked;
       try {
         await invoke("set_ai_provider_enabled", { id, enabled });
-        if (model) await invoke("set_ai_provider_model", { id, model });
-        if (key) await invoke("set_ai_provider_api_key", { id, key });
-        showToast("Saved.", "success");
         await refreshAi();
+      } catch (err) {
+        input.checked = !enabled;
+        showToast(String(err), "error");
+      }
+    });
+  });
+
+  list.querySelectorAll(".ai-provider-docs").forEach(link => {
+    link.addEventListener("click", async event => {
+      event.preventDefault();
+      if (!link.getAttribute("href")) return;
+      try {
+        await invoke("open_external_url", { url: link.href });
       } catch (err) {
         showToast(String(err), "error");
       }
     });
   });
 
-  list.querySelectorAll(".ai-provider-test").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      const row = btn.closest(".ai-provider-row");
-      const id = row.dataset.providerId;
-      const status = list.querySelector(`[data-provider-status="${id}"]`);
-      status.textContent = "Testing…";
-      status.classList.remove("error");
-      btn.disabled = true;
-      try {
-        const reply = await invoke("test_ai_provider", { id });
-        status.textContent = `Connected — replied "${reply}".`;
-      } catch (err) {
-        status.textContent = String(err);
-        status.classList.add("error");
-      } finally {
-        btn.disabled = false;
-      }
-    });
-  });
+  const refreshBtn = document.getElementById("refreshAiToolsBtn");
+  if (refreshBtn) refreshBtn.addEventListener("click", () => refreshAi());
 }
 
 // ---- AI tab: scan & scrape assist -------------------------------------------
@@ -103,9 +126,9 @@ function renderAiProviders(settings) {
 async function refreshScanAssist(settings) {
   document.getElementById("aiScanAssistCheck").checked = settings.ai_scan_assist_enabled;
   const status = document.getElementById("aiScanAssistStatus");
-  const hasProvider = settings.ai_providers.some(p => p.enabled && p.has_api_key);
+  const hasProvider = settings.ai_providers.some(p => providerReady(settings, p.id));
   if (settings.ai_scan_assist_enabled && !hasProvider) {
-    status.textContent = "Enabled, but no AI provider is configured yet — add one above.";
+    status.textContent = "Enabled, but no enabled AI tool is installed and signed in yet — turn one on above.";
     status.classList.add("error");
   } else {
     status.textContent = settings.ai_scan_assist_enabled ? "Enabled." : "Disabled.";

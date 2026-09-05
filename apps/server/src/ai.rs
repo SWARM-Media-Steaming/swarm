@@ -12,6 +12,7 @@
 //! defaults in `settings::default_ai_providers` are just reasonable
 //! starting points.
 
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +70,190 @@ impl AiProviderKind {
     pub fn all() -> [AiProviderKind; 3] {
         [AiProviderKind::Claude, AiProviderKind::Codex, AiProviderKind::Grok]
     }
+
+    /// The executable name of this provider's CLI on `PATH`.
+    fn cli_name(self) -> &'static str {
+        match self {
+            AiProviderKind::Claude => "claude",
+            AiProviderKind::Codex => "codex",
+            AiProviderKind::Grok => "grok",
+        }
+    }
+
+    pub fn cli_label(self) -> &'static str {
+        match self {
+            AiProviderKind::Claude => "Claude Code",
+            AiProviderKind::Codex => "Codex CLI",
+            AiProviderKind::Grok => "Grok CLI",
+        }
+    }
+
+    pub fn docs_url(self) -> &'static str {
+        match self {
+            AiProviderKind::Claude => "https://docs.anthropic.com/en/docs/claude-code/overview",
+            AiProviderKind::Codex => "https://developers.openai.com/codex/cli/",
+            AiProviderKind::Grok => "https://x.ai/",
+        }
+    }
+}
+
+// ---- CLI detection (issue #252) -------------------------------------------
+//
+// The AI tab no longer asks for an API key: it detects each provider's
+// locally-installed CLI and uses the machine's existing sign-in, mirroring
+// the SWARM Automation app's "Enabled AI tools" panel. Detection shells out
+// to `<cli> --version` and the provider's own auth-status subcommand, over a
+// PATH augmented the same way a login shell would resolve it (GUI apps on
+// macOS otherwise inherit a bare PATH that misses Homebrew / npm-global).
+
+/// One provider CLI's detection result, serialized to the AI tab.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiToolInfo {
+    pub id: String,
+    pub label: String,
+    pub cli_label: String,
+    pub installed: bool,
+    pub path: String,
+    pub version: String,
+    pub signed_in: bool,
+    pub status: String,
+    pub docs_url: String,
+}
+
+/// PATH as a login shell would see it — GUI-launched apps on macOS inherit a
+/// minimal PATH that misses Homebrew, `~/.local/bin`, and npm-global, where
+/// these CLIs usually live. Ported from the SWARM Automation app's
+/// `tools::enhanced_path`.
+fn enhanced_path() -> String {
+    let mut values = Vec::<String>::new();
+    if let Ok(output) = std::process::Command::new("/bin/zsh")
+        .args(["-lic", "printf '%s' \"$PATH\""])
+        .output()
+    {
+        if output.status.success() {
+            values.extend(
+                String::from_utf8_lossy(&output.stdout)
+                    .split(':')
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string),
+            );
+        }
+    }
+    if let Ok(current) = std::env::var("PATH") {
+        values.extend(
+            current
+                .split(':')
+                .filter(|value| !value.is_empty())
+                .map(str::to_string),
+        );
+    }
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        for suffix in [".local/bin", ".npm-global/bin", ".cargo/bin"] {
+            values.push(home.join(suffix).to_string_lossy().into_owned());
+        }
+    }
+    values.extend(
+        ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
+            .into_iter()
+            .map(str::to_string),
+    );
+    values.dedup();
+    values.join(":")
+}
+
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    path.metadata()
+        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: &Path) -> bool {
+    path.is_file()
+}
+
+fn find_executable(name: &str) -> Option<PathBuf> {
+    enhanced_path()
+        .split(':')
+        .map(|dir| Path::new(dir).join(name))
+        .find(|candidate| is_executable(candidate))
+}
+
+fn command_output(program: &Path, args: &[&str]) -> (bool, String) {
+    match std::process::Command::new(program)
+        .args(args)
+        .env("PATH", enhanced_path())
+        .output()
+    {
+        Ok(output) => {
+            let text = if output.stdout.is_empty() {
+                String::from_utf8_lossy(&output.stderr).trim().to_string()
+            } else {
+                String::from_utf8_lossy(&output.stdout).trim().to_string()
+            };
+            (output.status.success(), text)
+        }
+        Err(error) => (false, error.to_string()),
+    }
+}
+
+fn cli_signed_in(kind: AiProviderKind, bin: &Path) -> bool {
+    match kind {
+        AiProviderKind::Claude => {
+            let (ok, out) = command_output(bin, &["auth", "status", "--json"]);
+            ok && serde_json::from_str::<serde_json::Value>(&out)
+                .ok()
+                .and_then(|v| v.get("loggedIn").and_then(|v| v.as_bool()))
+                .unwrap_or(false)
+        }
+        AiProviderKind::Codex => {
+            let (ok, out) = command_output(bin, &["login", "status"]);
+            ok && out.to_lowercase().contains("logged in")
+        }
+        AiProviderKind::Grok => {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .map(|home| home.join(".grok/auth.json").is_file())
+                .unwrap_or(false)
+                || std::env::var_os("XAI_API_KEY").is_some()
+        }
+    }
+}
+
+pub fn detect_provider(kind: AiProviderKind) -> AiToolInfo {
+    let bin = find_executable(kind.cli_name());
+    let installed = bin.is_some();
+    let version = bin
+        .as_deref()
+        .map(|path| command_output(path, &["--version"]).1.lines().next().unwrap_or_default().trim().to_string())
+        .unwrap_or_default();
+    let signed_in = bin.as_deref().map(|path| cli_signed_in(kind, path)).unwrap_or(false);
+    let status = if !installed {
+        "Not installed".to_string()
+    } else if signed_in {
+        "Signed in".to_string()
+    } else {
+        "Sign-in required".to_string()
+    };
+    AiToolInfo {
+        id: kind.id().to_string(),
+        label: kind.label().to_string(),
+        cli_label: kind.cli_label().to_string(),
+        installed,
+        path: bin.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
+        version,
+        signed_in,
+        status,
+        docs_url: kind.docs_url().to_string(),
+    }
+}
+
+pub fn detect_all() -> Vec<AiToolInfo> {
+    AiProviderKind::all().into_iter().map(detect_provider).collect()
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -81,12 +266,18 @@ pub enum AiError {
     Parse(&'static str, String),
 }
 
+enum Transport {
+    /// Direct HTTP to the provider's API using a saved key.
+    Http { api_key: String, base_url: String, http: reqwest::Client },
+    /// Shell out to the provider's locally-installed, already-signed-in CLI
+    /// (issue #252) — no API key needed.
+    Cli { bin: PathBuf },
+}
+
 pub struct AiClient {
     kind: AiProviderKind,
-    api_key: String,
     model: String,
-    base_url: String,
-    http: reqwest::Client,
+    transport: Transport,
 }
 
 impl AiClient {
@@ -99,19 +290,89 @@ impl AiClient {
             .timeout(Duration::from_secs(60))
             .build()
             .unwrap_or_default();
-        Self { kind, api_key, model, base_url, http }
+        Self { kind, model, transport: Transport::Http { api_key, base_url, http } }
+    }
+
+    /// A client that drives the provider's installed CLI. Errors if the CLI
+    /// is not on PATH.
+    pub fn cli(kind: AiProviderKind, model: String) -> Result<Self, String> {
+        let bin = find_executable(kind.cli_name())
+            .ok_or_else(|| format!("{} was not found — install it and sign in.", kind.cli_label()))?;
+        Ok(Self { kind, model, transport: Transport::Cli { bin } })
     }
 
     /// Sends a single-turn prompt and returns the model's plain-text reply.
     pub async fn complete(&self, system: &str, user: &str) -> Result<String, AiError> {
-        match self.kind {
-            AiProviderKind::Claude => self.complete_anthropic(system, user).await,
-            AiProviderKind::Codex | AiProviderKind::Grok => self.complete_openai_compatible(system, user).await,
+        match &self.transport {
+            Transport::Cli { bin } => self.complete_cli(bin, system, user).await,
+            Transport::Http { .. } => match self.kind {
+                AiProviderKind::Claude => self.complete_anthropic(system, user).await,
+                AiProviderKind::Codex | AiProviderKind::Grok => {
+                    self.complete_openai_compatible(system, user).await
+                }
+            },
+        }
+    }
+
+    /// Runs the provider CLI in non-interactive "one prompt, print the
+    /// answer" mode. Best-effort per-CLI invocation — the exact flags each
+    /// tool exposes for this move faster than this app can track, so a
+    /// failure here surfaces the CLI's own stderr rather than being masked.
+    async fn complete_cli(&self, bin: &Path, system: &str, user: &str) -> Result<String, AiError> {
+        let prompt = format!("{system}\n\n{user}");
+        let args: Vec<String> = match self.kind {
+            AiProviderKind::Claude => {
+                vec!["-p".into(), prompt, "--model".into(), self.model.clone()]
+            }
+            AiProviderKind::Codex => vec!["exec".into(), "--skip-git-repo-check".into(), prompt],
+            AiProviderKind::Grok => vec!["-p".into(), prompt],
+        };
+        let label = self.kind.cli_label();
+        let path_env = tokio::task::spawn_blocking(enhanced_path)
+            .await
+            .map_err(|e| AiError::Http(label, e.to_string()))?;
+        let output = tokio::process::Command::new(bin)
+            .args(&args)
+            .env("PATH", path_env)
+            .output()
+            .await
+            .map_err(|e| AiError::Http(label, e.to_string()))?;
+        if !output.status.success() {
+            return Err(AiError::Api(
+                label,
+                String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            ));
+        }
+        let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if text.is_empty() {
+            return Err(AiError::Parse(label, "the CLI produced no output".to_string()));
+        }
+        Ok(text)
+    }
+
+    fn api_key(&self) -> &str {
+        match &self.transport {
+            Transport::Http { api_key, .. } => api_key,
+            Transport::Cli { .. } => "",
+        }
+    }
+
+    fn base_url(&self) -> &str {
+        match &self.transport {
+            Transport::Http { base_url, .. } => base_url,
+            Transport::Cli { .. } => "",
+        }
+    }
+
+    fn http(&self) -> &reqwest::Client {
+        match &self.transport {
+            Transport::Http { http, .. } => http,
+            Transport::Cli { .. } => unreachable!("http() is only reached on the Http transport"),
         }
     }
 
     async fn complete_anthropic(&self, system: &str, user: &str) -> Result<String, AiError> {
-        let url = format!("{}/v1/messages", self.base_url);
+        let url = format!("{}/v1/messages", self.base_url());
         let body = serde_json::json!({
             "model": self.model,
             "max_tokens": 1024,
@@ -119,9 +380,9 @@ impl AiClient {
             "messages": [{"role": "user", "content": user}],
         });
         let response = self
-            .http
+            .http()
             .post(&url)
-            .header("x-api-key", &self.api_key)
+            .header("x-api-key", self.api_key())
             .header("anthropic-version", "2023-06-01")
             .json(&body)
             .send()
@@ -156,7 +417,7 @@ impl AiClient {
     /// (same request/response shape, both accept a bearer token) — one
     /// implementation covers Codex and Grok.
     async fn complete_openai_compatible(&self, system: &str, user: &str) -> Result<String, AiError> {
-        let url = format!("{}/v1/chat/completions", self.base_url);
+        let url = format!("{}/v1/chat/completions", self.base_url());
         let body = serde_json::json!({
             "model": self.model,
             "messages": [
@@ -165,9 +426,9 @@ impl AiClient {
             ],
         });
         let response = self
-            .http
+            .http()
             .post(&url)
-            .bearer_auth(&self.api_key)
+            .bearer_auth(self.api_key())
             .json(&body)
             .send()
             .await

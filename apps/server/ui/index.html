@@ -185,11 +185,8 @@
       <label class="checkbox-label"><input type="checkbox" id="autoLibraryWatchEnabledCheck"> Automatically detect new/changed/removed files and scrape their metadata</label>
       <p class="muted compact-help">Checks every 15 minutes. Movies/shows scrape from TMDb only if a key is saved below; music always scrapes from MusicBrainz.</p>
       <div id="mediaRootsList">Loading…</div>
-      <div class="row add-root-row">
-        <input id="addRootLabel" placeholder="Label (e.g. nas-movies)">
-        <input id="addRootPath" placeholder="/path/to/media or a mounted network share">
-        <button id="chooseAddRootBtn" class="secondary"><i class="bi bi-folder2-open"></i>Browse…</button>
-        <button id="addRootBtn"><i class="bi bi-plus-lg"></i>Add root</button>
+      <div class="media-roots-add">
+        <button id="openAddRootBtn"><i class="bi bi-folder-plus"></i>Add media root…</button>
       </div>
     </div>
 
@@ -322,8 +319,9 @@
 
   <div id="tabPanel-ai" class="d-none">
     <div class="card">
-      <h2><i class="bi bi-stars heading-icon"></i>AI providers</h2>
-      <p class="muted">Configure the same AI providers used elsewhere — Claude, Codex, or Grok — so SWARM can call out to them for the advanced features below. Nothing here is required for MCP (further down this tab), which works the other way around: an AI tool connecting <em>to</em> SWARM.</p>
+      <p class="eyebrow">PROVIDERS</p>
+      <h2><i class="bi bi-stars heading-icon"></i>Enabled AI tools</h2>
+      <p class="muted">Turn on the AI tools SWARM may call for the advanced features below. SWARM uses each tool's own command-line app and the sign-in already on this machine — there is no API key to enter and nothing to save. Nothing here is required for MCP (further down this tab), which works the other way around: an AI tool connecting <em>to</em> SWARM.</p>
       <div id="aiProvidersList"></div>
     </div>
     <div class="card">
@@ -478,6 +476,21 @@
       </div>
     </div>
 
+    <details class="about-more" id="aboutMediaLayout">
+      <summary><i class="bi bi-chevron-right"></i>How to organise your media folders</summary>
+      <div class="about-more-body">
+        <p>SWARM scans one or more <strong>media roots</strong> — folders you point it at from the Details tab. When you add a root you also pick its <strong>asset type</strong> (Movies, TV shows, Music, or Mixed) so SWARM knows what to expect there. A root can't overlap another root, and you can run with more than one.</p>
+        <p>Inside a root, follow the same layout Plex, Jellyfin, and Kodi use:</p>
+        <ul>
+          <li><strong>Movies</strong> — <code>Movie Name (Year)/Movie Name (Year).mkv</code>. Extras go in <code>Featurettes/</code>, <code>Trailers/</code>, <code>Deleted Scenes/</code>, etc. beside the movie.</li>
+          <li><strong>TV</strong> — <code>Show Name (Year)/Season 01/Show Name - S01E02.mkv</code>. Multi-episode files (<code>S01E02-E03</code>) and a <code>Specials/</code> season are recognised.</li>
+          <li><strong>Music</strong> — <code>Artist/Album/01 Track Title.flac</code>. Disc folders (<code>CD1/</code>) are absorbed automatically.</li>
+          <li><strong>Subtitles</strong> — a <code>.srt</code>/<code>.vtt</code> next to the video (optionally in a <code>Subs/</code> folder), named after it, e.g. <code>Movie Name (Year).en.srt</code>.</li>
+        </ul>
+        <p>A "Mixed" root can contain top-level <code>Movies/</code>, <code>TV/</code>, and <code>Music/</code> folders and SWARM will sort them out. The <span class="modal-inline-link" data-info="media-roots">Media roots</span> info button on the Details tab repeats this with more detail.</p>
+      </div>
+    </details>
+
     <details class="about-more">
       <summary><i class="bi bi-chevron-right"></i>Want the technical details?</summary>
       <div class="about-more-body">
@@ -506,6 +519,33 @@
     <h2 id="infoModalTitle"></h2>
     <p id="infoModalBody" class="muted"></p>
     <div id="infoModalLinks" class="modal-links"></div>
+  </div>
+</div>
+
+<div id="addRootModalBackdrop" class="modal-backdrop d-none">
+  <div class="modal-box add-root-modal-box" role="dialog" aria-modal="true" aria-labelledby="addRootModalTitle">
+    <button id="addRootModalClose" class="modal-close" aria-label="Close"><i class="bi bi-x-lg"></i></button>
+    <div class="modal-icon"><i class="bi bi-folder-plus"></i></div>
+    <h2 id="addRootModalTitle">Add a media root</h2>
+    <p class="muted">Pick a folder SWARM should scan, and tell it what kind of media lives there. See <span class="modal-inline-link" data-info="media-roots">how to organise a media root</span> for the folder layout SWARM expects.</p>
+    <div class="add-root-fields">
+      <label>Folder</label>
+      <div class="add-root-folder-row">
+        <button id="addRootChooseBtn" class="secondary"><i class="bi bi-folder2-open"></i>Choose folder…</button>
+        <span id="addRootChosenPath" class="mono muted">No folder chosen yet</span>
+      </div>
+      <label for="addRootAssetType">Asset type <span class="req">required</span></label>
+      <select id="addRootAssetType">
+        <option value="mixed">Mixed — movies, TV, and music together</option>
+        <option value="movies">Movies only</option>
+        <option value="shows">TV shows only</option>
+        <option value="music">Music only</option>
+      </select>
+    </div>
+    <div class="add-root-modal-actions">
+      <button id="addRootCancelBtn" class="secondary">Cancel</button>
+      <button id="addRootConfirmBtn" disabled><i class="bi bi-plus-lg"></i>Add root</button>
+    </div>
   </div>
 </div>
 

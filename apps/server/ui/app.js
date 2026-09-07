@@ -97,13 +97,13 @@ const INFO_TOPICS = {
   "media-roots": {
     icon: "bi-folder2-open", title: "Media roots",
     body:
-      "The folders SWARM scans for movies, shows, and music — add a local folder or an SMB share from a NAS, and pick an asset type (Movies, TV shows, Music, or Mixed) so SWARM knows what to expect there. You can run more than one root, but two roots can't point at the same or an overlapping location.\n\n" +
+      "The folders SWARM scans — add a local folder or an SMB share from a NAS, and pick an asset type (Movies, TV shows, Music, or Photos & videos) so SWARM knows what to expect there. You can run more than one root, but two roots can't point at the same or an overlapping location.\n\n" +
       "Organise each root the way Plex, Jellyfin, and Kodi do:\n" +
       "• Movies — \"Movie Name (Year)/Movie Name (Year).mkv\", with Featurettes/Trailers/Deleted Scenes folders beside it for extras.\n" +
       "• TV — \"Show Name (Year)/Season 01/Show Name - S01E02.mkv\"; \"S01E02-E03\" multi-episode files and a Specials season are recognised.\n" +
       "• Music — \"Artist/Album/01 Track Title.flac\"; CD1/CD2 disc folders are absorbed automatically.\n" +
       "• Subtitles — a .srt or .vtt next to the video (or in a Subs/ folder), named after it, e.g. \"Movie Name (Year).en.srt\".\n\n" +
-      "A Mixed root may hold top-level Movies/, TV/, and Music/ folders and SWARM sorts them out. The About tab repeats this under \"How to organise your media folders\".",
+      "Older installations may show a Legacy mixed root; new roots always require one specific asset type. The About tab repeats this under \"How to organise your media folders\".",
   },
   "tmdb-scraping": {
     icon: "bi-cloud-download", title: "TMDb scraping",
@@ -369,7 +369,12 @@ for (const tab of TABS) {
 
 document.getElementById("chooseFolderBtn").addEventListener("click", async () => {
   try {
-    const path = await invoke("choose_media_folder");
+    const assetType = document.getElementById("onboardRootAssetType").value;
+    if (!assetType) {
+      showToast("Choose an asset type first.", "warning");
+      return;
+    }
+    const path = await invoke("choose_media_folder", { assetType });
     if (path) {
       await enterDashboard();
     }

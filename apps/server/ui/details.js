@@ -92,6 +92,8 @@ async function refreshTmdbKeyField() {
   document.getElementById("uploadBudgetEnabledCheck").checked = settings.streaming_upload_budget_enabled;
   document.getElementById("artworkDiskCacheEnabledCheck").checked = settings.artwork_disk_cache_enabled;
   document.getElementById("autoLibraryWatchEnabledCheck").checked = settings.auto_library_watch_enabled;
+  document.getElementById("comprehensiveCheck").checked = settings.comprehensive_check;
+  document.getElementById("scanMusicTracksCheck").checked = settings.scan_music_tracks;
   const status = document.getElementById("tmdbKeyStatus");
   status.textContent = settings.has_tmdb_key ? "A key is saved. Scraping is enabled." : "No key saved yet — scraping is disabled until one is added.";
   status.classList.toggle("error", !settings.has_tmdb_key);
@@ -208,6 +210,28 @@ document.getElementById("autoLibraryWatchEnabledCheck").addEventListener("change
   try {
     await invoke("set_auto_library_watch_enabled", { enabled });
     showToast(enabled ? "Automatic library detection enabled." : "Automatic library detection disabled.", "success");
+  } catch (err) {
+    event.currentTarget.checked = !enabled;
+    showToast(String(err), "error");
+  }
+});
+
+document.getElementById("comprehensiveCheck").addEventListener("change", async (event) => {
+  const enabled = event.currentTarget.checked;
+  try {
+    await invoke("set_comprehensive_check", { enabled });
+    showToast(enabled ? "Comprehensive Check enabled." : "Fast filesystem checks enabled.", "success");
+  } catch (err) {
+    event.currentTarget.checked = !enabled;
+    showToast(String(err), "error");
+  }
+});
+
+document.getElementById("scanMusicTracksCheck").addEventListener("change", async (event) => {
+  const enabled = event.currentTarget.checked;
+  try {
+    await invoke("set_scan_music_tracks", { enabled });
+    showToast(enabled ? "Music track scanning enabled." : "Music track scanning disabled.", "success");
   } catch (err) {
     event.currentTarget.checked = !enabled;
     showToast(String(err), "error");
@@ -901,7 +925,7 @@ async function refreshMediaRoots() {
       const permissionHint = permissionDenied
         ? `<div class="muted compact-help">macOS is blocking reads here. Grant "SWARM Server" access under Privacy &amp; Security &rarr; Files and Folders (or Full Disk Access), then Rescan — macOS remembers it.</div>`
         : "";
-      const assetLabels = { mixed: "Mixed", movies: "Movies", shows: "TV shows", music: "Music" };
+      const assetLabels = { mixed: "Legacy mixed", movies: "Movies", shows: "TV shows", music: "Music", photos_videos: "Photos & videos" };
       const assetType = assetLabels[r.asset_type] || "Mixed";
       return `
       <div class="media-root-row">
@@ -991,7 +1015,7 @@ function openAddRootModal() {
   addRootPickedPath = null;
   document.getElementById("addRootChosenPath").textContent = "No folder chosen yet";
   document.getElementById("addRootChosenPath").classList.add("muted");
-  document.getElementById("addRootAssetType").value = "mixed";
+  document.getElementById("addRootAssetType").value = "";
   document.getElementById("addRootConfirmBtn").disabled = true;
   addRootModal.classList.remove("d-none");
   document.getElementById("addRootChooseBtn").focus();
@@ -1020,6 +1044,10 @@ document.getElementById("addRootChooseBtn").addEventListener("click", async () =
 
 document.getElementById("addRootConfirmBtn").addEventListener("click", async event => {
   if (!addRootPickedPath) return;
+  if (!document.getElementById("addRootAssetType").value) {
+    showToast("Choose an asset type first.", "warning");
+    return;
+  }
   const button = event.currentTarget;
   button.disabled = true;
   try {
@@ -1068,8 +1096,9 @@ document.getElementById("networkRootConnectBtn").addEventListener("click", async
       server: document.getElementById("networkRootServer").value,
       share: document.getElementById("networkRootShare").value,
       username: document.getElementById("networkRootUsername").value || null,
+      assetType: document.getElementById("networkRootAssetType").value || null,
     });
-    for (const id of ["networkRootLabel", "networkRootServer", "networkRootShare", "networkRootUsername"]) {
+    for (const id of ["networkRootLabel", "networkRootServer", "networkRootShare", "networkRootUsername", "networkRootAssetType"]) {
       document.getElementById(id).value = "";
     }
     closeNetworkRootModal();

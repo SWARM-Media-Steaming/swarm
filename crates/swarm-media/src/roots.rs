@@ -16,10 +16,25 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
+/// Declared contents of a media root. `Mixed` exists only for settings
+/// written before roots required a type; every newly-added root should use
+/// one of the concrete variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaRootAssetType {
+    #[default]
+    Mixed,
+    Movies,
+    Shows,
+    Music,
+    PhotosVideos,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MediaRoot {
     pub label: String,
     pub path: PathBuf,
+    pub asset_type: MediaRootAssetType,
 }
 
 /// Resolves a stored `relative_path` (as written by `scan::scan_roots`) back
@@ -47,6 +62,7 @@ impl RootResolver {
             roots: vec![MediaRoot {
                 label: "local".to_string(),
                 path,
+                asset_type: MediaRootAssetType::Mixed,
             }],
         }
     }
@@ -230,6 +246,7 @@ pub fn parse_roots_env(value: &str) -> Vec<MediaRoot> {
             Some(MediaRoot {
                 label: label.to_string(),
                 path: PathBuf::from(path),
+                asset_type: MediaRootAssetType::Mixed,
             })
         })
         .collect()
@@ -244,10 +261,12 @@ mod tests {
             MediaRoot {
                 label: "local".into(),
                 path: PathBuf::from("/media"),
+                asset_type: MediaRootAssetType::Mixed,
             },
             MediaRoot {
                 label: "nas".into(),
                 path: PathBuf::from("/Volumes/nas"),
+                asset_type: MediaRootAssetType::Mixed,
             },
         ])
     }
@@ -295,11 +314,13 @@ mod tests {
             vec![
                 MediaRoot {
                     label: "local".into(),
-                    path: PathBuf::from("/media")
+                    path: PathBuf::from("/media"),
+                    asset_type: MediaRootAssetType::Mixed,
                 },
                 MediaRoot {
                     label: "nas".into(),
-                    path: PathBuf::from("/Volumes/nas")
+                    path: PathBuf::from("/Volumes/nas"),
+                    asset_type: MediaRootAssetType::Mixed,
                 },
             ]
         );
@@ -313,7 +334,8 @@ mod tests {
             parse_roots_env("=novalue,label=,ok=/path"),
             vec![MediaRoot {
                 label: "ok".into(),
-                path: PathBuf::from("/path")
+                path: PathBuf::from("/path"),
+                asset_type: MediaRootAssetType::Mixed,
             }]
         );
     }
@@ -350,14 +372,17 @@ mod tests {
             MediaRoot {
                 label: "local".into(),
                 path: PathBuf::from("/media/tv-nonexistent"),
+                asset_type: MediaRootAssetType::Mixed,
             },
             MediaRoot {
                 label: "nas".into(),
                 path: PathBuf::from("/Volumes/nas-nonexistent"),
+                asset_type: MediaRootAssetType::Mixed,
             },
             MediaRoot {
                 label: "office".into(),
                 path: PathBuf::from("/media/tv-nonexistent/The Office"),
+                asset_type: MediaRootAssetType::Mixed,
             },
         ];
         let (a, b) = find_overlapping_roots(&roots).expect("overlap expected");
@@ -371,10 +396,12 @@ mod tests {
             MediaRoot {
                 label: "local".into(),
                 path: PathBuf::from("/media/tv-nonexistent"),
+                asset_type: MediaRootAssetType::Mixed,
             },
             MediaRoot {
                 label: "nas".into(),
                 path: PathBuf::from("/Volumes/nas-nonexistent"),
+                asset_type: MediaRootAssetType::Mixed,
             },
         ];
         assert!(find_overlapping_roots(&roots).is_none());
@@ -392,6 +419,7 @@ mod tests {
         shared.replace(vec![MediaRoot {
             label: "nas".into(),
             path: PathBuf::from("/Volumes/nas"),
+            asset_type: MediaRootAssetType::Mixed,
         }]);
 
         // Both handles observe the swap — this is the whole point of the
@@ -409,7 +437,8 @@ mod tests {
             shared.roots(),
             vec![MediaRoot {
                 label: "nas".into(),
-                path: PathBuf::from("/Volumes/nas")
+                path: PathBuf::from("/Volumes/nas"),
+                asset_type: MediaRootAssetType::Mixed,
             }]
         );
     }

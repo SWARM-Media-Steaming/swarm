@@ -127,7 +127,7 @@ async fn a_representative_plex_movie_library_scans_unchanged() {
     );
 
     let before = tree(&fx.root);
-    let report = scan_roots(&fx.library, &[MediaRoot { label: "local".into(), path: fx.root.clone() }], None)
+    let report = scan_roots(&fx.library, &[MediaRoot { label: "local".into(), path: fx.root.clone(), asset_type: Default::default() }], None)
         .await
         .unwrap();
     assert_eq!(tree(&fx.root), before, "the scan must not touch the filesystem");

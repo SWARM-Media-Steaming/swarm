@@ -51,6 +51,37 @@ that interruption without recording a failure. Limit compute threads rather
 than consuming every logical CPU. A real inference error is a failed job, not
 an interruption to retry forever.
 
+## Reuse the filesystem snapshot/diff scanner
+
+Library maintenance must begin with `swarm_media::scan`'s two-pass design:
+walk each root once, recording relative path, absolute path, size, and mtime
+in the SQLite-backed scan manifest, then reconcile that point-in-time
+snapshot against `library_entries`. SQLite staging is intentional: it gives
+the same keyed snapshot/diff semantics as an in-memory map without allowing a
+very large or remote library to grow process memory without bound.
+
+Treat path as identity for reconciliation. A new path is an add, an absent
+path is a deletion/tombstone, and a move is consequently one delete plus one
+add. Only new files or files whose size/mtime changed may enter fingerprint,
+tag, and probe work during the normal fast scan. Never add an unconditional
+hash/fingerprint pass to scheduled scans.
+
+`ScanOptions::comprehensive_check` is the explicit exception: run the normal
+snapshot/diff first, then reuse `swarm_core::fingerprint::fingerprint_file`
+for metadata-identical existing files in path order. Keep that loop
+sequential to prevent disk-I/O fan-out. A mismatch follows the ordinary
+changed-file upsert path and marks provider metadata stale for incremental
+re-scraping. Preserve incomplete-root quarantine and suspicious-empty-root
+protection when extending this flow; those prevent transient SMB/NFS states
+from wiping or churning the served catalog.
+
+Every new root has a declared `MediaRootAssetType`; `Mixed` is compatibility
+only for older settings. Use the type to filter and classify candidates
+before expensive processing. Individual audio-track indexing is a separate,
+default-off desktop preference. Music provider work remains grouped once per
+artist/album, and its not-found/failure issues must continue through the
+server notification path.
+
 ## Install optional models safely
 
 Do not ask users to install a transcription executable. Link `whisper.cpp`

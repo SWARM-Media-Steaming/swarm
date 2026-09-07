@@ -105,10 +105,12 @@ mod tests {
             crate::roots::MediaRoot {
                 label: "local".into(),
                 path: base.join("local"),
+                asset_type: Default::default(),
             },
             crate::roots::MediaRoot {
                 label: "nas".into(),
                 path: nas_root.clone(),
+                asset_type: Default::default(),
             },
         ]));
         let relative = save_artwork(

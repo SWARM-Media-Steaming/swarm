@@ -69,6 +69,7 @@ async fn main() {
             .map(|root| MediaRoot {
                 label: root.label,
                 path: PathBuf::from(root.path),
+                asset_type: Default::default(),
             })
             .collect(),
     );

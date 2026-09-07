@@ -66,7 +66,9 @@ fn test_config(media_root: &std::path::Path, data_dir: std::path::PathBuf) -> Se
         media_roots: vec![MediaRoot {
             label: "local".into(),
             path: media_root.to_path_buf(),
+            asset_type: Default::default(),
         }],
+        scan_options: Default::default(),
         data_dir,
         bind: "127.0.0.1:0".parse().unwrap(),
         http_media_bind: "127.0.0.1:0".parse().unwrap(),
@@ -130,7 +132,9 @@ async fn pair_negotiate_and_range_fetch_media_over_real_http() {
         media_roots: vec![MediaRoot {
             label: "local".into(),
             path: media_root.clone(),
+            asset_type: Default::default(),
         }],
+        scan_options: Default::default(),
         data_dir: base.join("server-data"),
         bind: "127.0.0.1:0".parse().unwrap(),
         http_media_bind: "127.0.0.1:0".parse().unwrap(),
@@ -278,7 +282,9 @@ async fn browse_catalog_and_fetch_artwork_over_real_http() {
         media_roots: vec![MediaRoot {
             label: "local".into(),
             path: media_root.clone(),
+            asset_type: Default::default(),
         }],
+        scan_options: Default::default(),
         data_dir: base.join("server-data"),
         bind: "127.0.0.1:0".parse().unwrap(),
         http_media_bind: "127.0.0.1:0".parse().unwrap(),

@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use swarm_core::peer::MediaKind;
-use swarm_media::roots::MediaRoot;
+use swarm_media::roots::{MediaRoot, MediaRootAssetType};
 use swarm_media::scan::ScanProgressEvent;
 use swarm_media::scrape::{BulkScrapeReport, ScrapeConfig, ScrapeIssue, ScrapeProgressEvent};
 use swarm_server::{
@@ -218,6 +218,10 @@ impl AppState {
                     });
                 let config = ServerConfig {
                     media_roots: to_media_roots(&settings.media_roots),
+                    scan_options: swarm_media::scan::ScanOptions {
+                        comprehensive_check: settings.comprehensive_check,
+                        scan_music_tracks: settings.scan_music_tracks,
+                    },
                     data_dir: dir,
                     // This remains an environment override for development and
                     // managed deployments; ordinary desktop users never need it.
@@ -860,6 +864,13 @@ fn to_media_roots(settings: &[MediaRootSetting]) -> Vec<MediaRoot> {
         .map(|r| MediaRoot {
             label: r.label.clone(),
             path: PathBuf::from(&r.path),
+            asset_type: match r.asset_type {
+                RootAssetType::Mixed => MediaRootAssetType::Mixed,
+                RootAssetType::Movies => MediaRootAssetType::Movies,
+                RootAssetType::Shows => MediaRootAssetType::Shows,
+                RootAssetType::Music => MediaRootAssetType::Music,
+                RootAssetType::PhotosVideos => MediaRootAssetType::PhotosVideos,
+            },
         })
         .collect()
 }
@@ -878,6 +889,8 @@ struct SettingsView {
     mcp_port: u16,
     mcp_access_token: Option<String>,
     auto_library_watch_enabled: bool,
+    comprehensive_check: bool,
+    scan_music_tracks: bool,
     video_encoder_mode: String,
     max_transcode_height: u32,
     hls_segment_seconds: u32,
@@ -928,6 +941,8 @@ async fn get_settings<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<Set
         mcp_port: settings.mcp_port,
         mcp_access_token: settings.mcp_access_token,
         auto_library_watch_enabled: settings.auto_library_watch_enabled,
+        comprehensive_check: settings.comprehensive_check,
+        scan_music_tracks: settings.scan_music_tracks,
         video_encoder_mode: settings.video_encoder_mode,
         max_transcode_height: settings.max_transcode_height,
         hls_segment_seconds: settings.hls_segment_seconds,
@@ -1004,6 +1019,38 @@ async fn set_auto_library_watch_enabled<R: tauri::Runtime>(
     let mut settings = settings::load(&dir);
     settings.auto_library_watch_enabled = enabled;
     settings::save(&dir, &settings).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn set_comprehensive_check<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    enabled: bool,
+) -> Result<(), String> {
+    let dir = app_data_dir(&app)?;
+    let mut settings = settings::load(&dir);
+    settings.comprehensive_check = enabled;
+    settings::save(&dir, &settings).map_err(|error| error.to_string())?;
+    if let Some(core) = state.core.get() {
+        core.set_comprehensive_check(enabled);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_scan_music_tracks<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    enabled: bool,
+) -> Result<(), String> {
+    let dir = app_data_dir(&app)?;
+    let mut settings = settings::load(&dir);
+    settings.scan_music_tracks = enabled;
+    settings::save(&dir, &settings).map_err(|error| error.to_string())?;
+    if let Some(core) = state.core.get() {
+        core.set_scan_music_tracks(enabled);
+    }
+    Ok(())
 }
 
 // ----- Software update ---------------------------------------------------
@@ -1145,7 +1192,11 @@ async fn pick_folder<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Opt
 /// *first* media root, labeled `"local"` — the first-run onboarding path.
 /// Does not affect an already-running core — see the module docs.
 #[tauri::command]
-async fn choose_media_folder<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<Option<String>, String> {
+async fn choose_media_folder<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    asset_type: Option<String>,
+) -> Result<Option<String>, String> {
+    let asset_type = RootAssetType::parse(asset_type.as_deref())?;
     let Some(path) = pick_folder(&app).await? else {
         return Ok(None);
     };
@@ -1155,7 +1206,7 @@ async fn choose_media_folder<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Res
         label: "local".to_string(),
         path: path.clone(),
         reconnect_url: settings::discover_reconnect_url(&path),
-        asset_type: RootAssetType::Mixed,
+        asset_type,
     }];
     settings::save(&dir, &settings).map_err(|e| e.to_string())?;
     Ok(Some(path))
@@ -3354,6 +3405,8 @@ fn main() {
             set_streaming_upload_budget_enabled,
             set_artwork_disk_cache_enabled,
             set_auto_library_watch_enabled,
+            set_comprehensive_check,
+            set_scan_music_tracks,
             set_auto_update,
             check_for_update,
             install_update,

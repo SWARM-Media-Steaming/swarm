@@ -807,6 +807,18 @@ impl Library {
         Ok(())
     }
 
+    /// Keep the currently-visible metadata while making a changed asset
+    /// eligible for the next incremental scrape. This avoids a blank UI
+    /// between scan and scrape, while ensuring new file contents are not
+    /// incorrectly treated as already matched.
+    pub async fn mark_scrape_stale(&self, entry_key: &str) -> sqlx::Result<()> {
+        sqlx::query("UPDATE library_entries SET scrape_version = 0 WHERE entry_key = ?")
+            .bind(entry_key)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn archive_metadata(
         &self,
         entry_key: &str,

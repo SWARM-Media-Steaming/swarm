@@ -20,7 +20,7 @@ function esc(v) {
 // (yellow), "error" (red, the default duration is longer since it's more
 // likely worth reading in full before it disappears). Errors are never
 // silently swallowed — every catch block in this app should route here.
-const TOAST_ICONS = { success: "bi-check-circle-fill", warning: "bi-exclamation-triangle-fill", error: "bi-x-circle-fill" };
+const TOAST_ICONS = { success: "bi-check-circle-fill", warning: "bi-exclamation-triangle-fill", error: "bi-x-circle-fill", progress: "bi-arrow-repeat" };
 
 function showToast(message, type = "success", opts = {}) {
   const stack = document.getElementById("toastStack");
@@ -41,6 +41,10 @@ function showToast(message, type = "success", opts = {}) {
   stack.appendChild(toast);
   if (duration > 0) setTimeout(remove, duration);
   return toast;
+}
+
+function dismissToast(toast) {
+  if (toast && toast.isConnected) toast.remove();
 }
 
 function stat(label, value, mono, infoId) {
@@ -368,6 +372,7 @@ for (const tab of TABS) {
 // ---- onboarding: media folder ---------------------------------------------
 
 document.getElementById("chooseFolderBtn").addEventListener("click", async () => {
+  let progressToast;
   try {
     const assetType = document.getElementById("onboardRootAssetType").value;
     if (!assetType) {
@@ -376,10 +381,13 @@ document.getElementById("chooseFolderBtn").addEventListener("click", async () =>
     }
     const path = await invoke("choose_media_folder", { assetType });
     if (path) {
+      progressToast = showToast("Starting the media server and scanning your folder…", "progress", { duration: 0 });
       await enterDashboard();
     }
   } catch (err) {
     showToast(String(err), "error");
+  } finally {
+    dismissToast(progressToast);
   }
 });
 

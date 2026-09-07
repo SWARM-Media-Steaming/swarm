@@ -9,7 +9,7 @@
 // in refreshScanAssist/refreshReorganize don't each re-shell three CLIs.
 let aiToolsById = {};
 
-async function refreshAi() {
+async function refreshAi(showDetectionProgress = false) {
   try {
     const settings = await invoke("get_settings");
     document.getElementById("mcpEnabledCheck").checked = settings.mcp_enabled;
@@ -24,10 +24,15 @@ async function refreshAi() {
     renderMcpConfigSnippet(settings);
     renderAiProviders(settings, []);
     let tools = [];
+    const progressToast = showDetectionProgress
+      ? showToast("Checking installed AI tools and available usage…", "progress", { duration: 0 })
+      : null;
     try {
       tools = await invoke("detect_ai_tools");
     } catch (err) {
       showToast(String(err), "error");
+    } finally {
+      dismissToast(progressToast);
     }
     aiToolsById = Object.fromEntries(tools.map(t => [t.id, t]));
     renderAiProviders(settings, tools);
@@ -41,7 +46,7 @@ async function refreshAi() {
 function providerReady(settings, id) {
   const provider = settings.ai_providers.find(p => p.id === id);
   const tool = aiToolsById[id];
-  return Boolean(provider && provider.enabled && tool && tool.installed && tool.signedIn);
+  return Boolean(provider && provider.enabled && tool && tool.installed && tool.signedIn && tool.usageAvailable);
 }
 
 // ---- AI tab: "Enabled AI tools" (issue #252) ------------------------------
@@ -68,9 +73,14 @@ function renderAiProviders(settings, tools) {
         } else if (!tool.signedIn) {
           pill = '<span class="ai-provider-pill ai-provider-pill-warn">Sign-in required</span>';
           hint = `${esc(tool.cliLabel)} is installed — run its login command, then Refresh.`;
+        } else if (!tool.usageAvailable) {
+          pill = `<span class="ai-provider-pill ai-provider-pill-warn">${tool.usageRemainingPercent == null ? "Usage unavailable" : "Usage below 10%"}</span>`;
+          hint = tool.usageRemainingPercent == null
+            ? "Could not verify usage — AI calls are paused."
+            : `${esc(tool.usageStatus)} — at least 10% is required.`;
         } else {
           pill = '<span class="ai-provider-pill ai-provider-pill-on">Signed in</span>';
-          hint = tool.version ? esc(tool.version) : "";
+          hint = `${esc(tool.usageStatus)}${tool.version ? ` · ${esc(tool.version)}` : ""}`;
         }
       }
       return `
@@ -88,12 +98,15 @@ function renderAiProviders(settings, tools) {
     input.addEventListener("change", async () => {
       const id = input.closest(".ai-provider-row").dataset.providerId;
       const enabled = input.checked;
+      const progressToast = showToast("Updating AI tool settings…", "progress", { duration: 0 });
       try {
         await invoke("set_ai_provider_enabled", { id, enabled });
         await refreshAi();
       } catch (err) {
         input.checked = !enabled;
         showToast(String(err), "error");
+      } finally {
+        dismissToast(progressToast);
       }
     });
   });
@@ -111,7 +124,7 @@ function renderAiProviders(settings, tools) {
   });
 
   const refreshBtn = document.getElementById("refreshAiToolsBtn");
-  if (refreshBtn) refreshBtn.addEventListener("click", () => refreshAi());
+  if (refreshBtn) refreshBtn.addEventListener("click", () => refreshAi(true));
 }
 
 // ---- AI tab: scan & scrape assist -------------------------------------------
@@ -128,7 +141,7 @@ async function refreshScanAssist(settings) {
   const status = document.getElementById("aiScanAssistStatus");
   const hasProvider = settings.ai_providers.some(p => providerReady(settings, p.id));
   if (settings.ai_scan_assist_enabled && !hasProvider) {
-    status.textContent = "Enabled, but no enabled AI tool is installed and signed in yet — turn one on above.";
+    status.textContent = "Enabled, but no enabled AI tool is signed in with at least 10% usage remaining.";
     status.classList.add("error");
   } else {
     status.textContent = settings.ai_scan_assist_enabled ? "Enabled." : "Disabled.";
@@ -166,6 +179,7 @@ async function refreshScanAssist(settings) {
       const suggestionBox = li.querySelector(".ai-suggestion");
       btn.disabled = true;
       suggestionBox.textContent = "Asking AI…";
+      const progressToast = showToast("Asking AI for a media match…", "progress", { duration: 0 });
       try {
         const suggestion = await invoke("ai_scrape_assist", { entryKey });
         suggestionBox.innerHTML = `Suggested: <strong>${esc(suggestion.tmdb_title)}</strong>${
@@ -183,8 +197,10 @@ async function refreshScanAssist(settings) {
         });
       } catch (err) {
         suggestionBox.textContent = String(err);
+        showToast(String(err), "error");
       } finally {
         btn.disabled = false;
+        dismissToast(progressToast);
       }
     });
   });
@@ -282,6 +298,7 @@ function renderReorgPlans(plans) {
     btn.addEventListener("click", async () => {
       const id = Number(btn.dataset.planId);
       btn.disabled = true;
+      const progressToast = showToast("Applying the reorganization plan and rescanning…", "progress", { duration: 0 });
       try {
         await invoke("approve_ai_reorg_plan", { id });
         showToast("Reorganize applied — rescanning library.", "success");
@@ -290,6 +307,8 @@ function renderReorgPlans(plans) {
       } catch (err) {
         showToast(String(err), "error");
         btn.disabled = false;
+      } finally {
+        dismissToast(progressToast);
       }
     });
   });
@@ -314,6 +333,7 @@ document.getElementById("aiReorganizeScanBtn").addEventListener("click", async (
     return;
   }
   btn.disabled = true;
+  const progressToast = showToast("Scanning the media root and preparing a reorganization plan…", "progress", { duration: 0 });
   try {
     await invoke("ai_reorganize_scan", { rootLabel });
     await refreshAi();
@@ -321,6 +341,7 @@ document.getElementById("aiReorganizeScanBtn").addEventListener("click", async (
     showToast(String(err), "error");
   } finally {
     btn.disabled = false;
+    dismissToast(progressToast);
   }
 });
 

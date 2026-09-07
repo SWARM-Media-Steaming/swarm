@@ -159,15 +159,18 @@ td.mono {
 .toast-success { --toast-accent: var(--green); }
 .toast-warning { --toast-accent: #f5c451; }
 .toast-error { --toast-accent: #ff5d7a; }
+.toast-progress { --toast-accent: var(--accent); }
 .toast-icon { flex: 0 0 auto; font-size: 1.05rem; line-height: 1.3; }
 .toast-success .toast-icon { color: var(--green); }
 .toast-warning .toast-icon { color: #f5c451; }
 .toast-error .toast-icon { color: #ff5d7a; }
+.toast-progress .toast-icon { color: var(--accent); animation: toast-spin .9s linear infinite; }
 .toast-message { flex: 1; line-height: 1.35; word-break: break-word; }
 .toast-close { flex: 0 0 auto; background: transparent; color: var(--muted); border: 0; padding: 0 0 0 4px; font-size: .9rem; }
 .toast-close:hover { filter: none; color: var(--text); }
 @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes toast-out { from { opacity: 1; } to { opacity: 0; transform: translateX(12px); } }
+@keyframes toast-spin { to { transform: rotate(360deg); } }
 
 /* Media search row: text input + a square icon button (not a normal wide
    dropdown) for the kind filter, both pinned to the same height. Icons are

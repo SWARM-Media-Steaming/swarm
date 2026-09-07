@@ -149,6 +149,11 @@ internal const val BUFFERING_QUALITY_RECOVERY_MS = 30_000L
 internal const val STARTUP_BUFFERING_QUALITY_RECOVERY_MS = 4_000L
 private const val BUFFERING_VIDEO_BITRATE_PERCENT = 80L
 
+// A video wait shorter than this recovers before the viewer registers it, so
+// the buffering toast stays hidden unless playback is still stalled after the
+// delay. Cancelled the moment the player leaves its loading state.
+internal const val BUFFERING_NOTIFICATION_DELAY_MS = 3_000L
+
 /** D-pad left/right rewind/fast-forward step. Android's own key-repeat
  * mechanism redelivers ACTION_DOWN with an incrementing repeatCount while a
  * hardware button stays held, so consuming every one of those (not just the
@@ -781,9 +786,14 @@ fun PlayerScreen(
     // Keep the video surface visible while Media3 waits for data. The global
     // toast host is layered above this screen, so each transition into a
     // loading state reports buffering without replacing the picture with a
-    // second, full-screen loading experience.
+    // second, full-screen loading experience. The report is held back until the
+    // wait has lasted BUFFERING_NOTIFICATION_DELAY_MS so brief stalls that
+    // recover on their own never surface a toast — leaving the loading state
+    // cancels this effect before the delay elapses.
     LaunchedEffect(sessionId, isLoading) {
-        if (isLoading) onPlaybackBuffering()
+        if (!isLoading) return@LaunchedEffect
+        delay(BUFFERING_NOTIFICATION_DELAY_MS)
+        onPlaybackBuffering()
     }
 
     // Negotiation finishes asynchronously during the Continue countdown.

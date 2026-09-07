@@ -37,6 +37,11 @@ class PlayerBufferingQualityTest {
     }
 
     @Test
+    fun `buffering toast is held back for three seconds`() {
+        assertEquals(3_000L, BUFFERING_NOTIFICATION_DELAY_MS)
+    }
+
+    @Test
     fun `paused direct-play ready and post-start states do not trigger startup recovery`() {
         assertFalse(
             shouldStartStartupQualityRecovery(

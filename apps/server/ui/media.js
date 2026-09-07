@@ -62,7 +62,7 @@ async function refreshTranscriptionProgress() {
     } else if (status.total_segments > 0) {
       counts = `${status.completed} complete · ${status.queued} remaining${status.failed ? ` · ${status.failed} failed` : ""}`;
     } else if (!status.enabled) {
-      counts = "Enable in Details";
+      counts = "Enable in Settings";
     }
     document.getElementById("transcriptionProgressCounts").textContent = counts;
     document.getElementById("transcriptionProgress").classList.toggle("transcription-progress-active", status.enabled);

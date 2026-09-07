@@ -1214,7 +1214,7 @@ async fn choose_media_folder<R: tauri::Runtime>(
 
 /// Same native folder picker as [`choose_media_folder`], but only returns
 /// the chosen path — no persistence. Used by the "add another root" flow
-/// (Details tab), which needs the user to also supply a label before
+/// (Settings tab), which needs the user to also supply a label before
 /// `add_media_root` actually saves anything.
 #[tauri::command]
 async fn pick_folder_path<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<Option<String>, String> {
@@ -2670,7 +2670,7 @@ async fn ai_scrape_assist<R: tauri::Runtime>(
     let tmdb_api_key = settings
         .tmdb_api_key
         .clone()
-        .ok_or_else(|| "Add a TMDb API key on the Details tab before using scan assist.".to_string())?;
+        .ok_or_else(|| "Add a TMDb API key on the Settings tab before using scan assist.".to_string())?;
 
     let core = state.core(&app).await?;
     let entry = core

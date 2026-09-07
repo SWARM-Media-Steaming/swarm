@@ -1,7 +1,12 @@
-// ---- Details tab: bandwidth/transcoding/cache panels + media-root config ---
+// ---- Metrics tab: bandwidth/transcoding/cache panels --------------------
+// ---- Settings tab: media-root config + keys + subtitles + updates ------
 
-async function refreshDetails() {
-  await Promise.all([refreshMediaRoots(), refreshTmdbKeyField(), refreshOpenSubtitlesKeyField(), refreshTranscriptionSetting(), refreshTranscodingControls(), refreshBandwidth(), refreshTranscoding(), refreshArtworkCache(), refreshSoftwareUpdate()]);
+async function refreshMetrics() {
+  await Promise.all([refreshTranscodingControls(), refreshBandwidth(), refreshTranscoding(), refreshArtworkCache()]);
+}
+
+async function refreshSettings() {
+  await Promise.all([refreshMediaRoots(), refreshTmdbKeyField(), refreshOpenSubtitlesKeyField(), refreshTranscriptionSetting(), refreshSoftwareUpdate()]);
 }
 
 let softwareUpdatePending = null;
@@ -529,10 +534,10 @@ window.addEventListener("resize", () => {
 });
 
 // Every 5 seconds — matching the server's sample cadence — while the
-// Details tab is the one on screen; refreshDetails() covers the moment the
+// Metrics tab is the one on screen; refreshMetrics() covers the moment the
 // tab is first opened so there's no up-to-5s wait for the first paint.
 setInterval(() => {
-  const panel = document.getElementById("tabPanel-details");
+  const panel = document.getElementById("tabPanel-metrics");
   if (panel && !panel.classList.contains("d-none")) {
     refreshBandwidth();
     refreshTranscoding();

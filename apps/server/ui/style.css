@@ -70,7 +70,7 @@ td.mono {
 .checkbox-label { display: flex; align-items: center; gap: 6px; font-size: .8rem; color: var(--muted); white-space: nowrap; }
 .checkbox-label input { width: auto; }
 
-/* Media roots list (Details tab) — each root its own bordered row, same
+/* Media roots list (Settings tab) — each root its own bordered row, same
    shape as .client-error-row below, so a list of two or more roots reads as
    distinct delineated entries instead of bare text lines stacked directly
    against each other with nothing marking where one ends and the next
@@ -604,7 +604,7 @@ td.mono {
 
 /* Info modal — one shared "what am I looking at" popup, opened by any
    element carrying data-info (see INFO_TOPICS/openInfoModal in app.js).
-   Used across the About, Details, and AI tabs so every stat, badge, tile,
+   Used across the About, Metrics, Settings, and AI tabs so every stat, badge, tile,
    and card header is a real answer away instead of a wall of prose. */
 .modal-backdrop {
   position: fixed; inset: 0; z-index: 2000; padding: 20px;

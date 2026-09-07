@@ -57,12 +57,12 @@ function stat(label, value, mono, infoId) {
 // One shared "what am I looking at" popup for the whole app, opened by
 // clicking (or Enter/Space-ing, for keyboard users) any element carrying
 // data-info="<topicId>" — About tab's flow steps/feature tiles/badges,
-// Details tab's stat tiles and card headers, AI tab's MCP heading and tool
+// Metrics tab's stat tiles and card headers, AI tab's MCP heading and tool
 // list. A single registry + single modal surface, same reasoning
 // showToast() is one shared surface instead of bespoke status text per
 // call site. Delegation (one listener on document), not a listener per
 // element, since triggers live in both static markup (About, AI) and
-// markup rebuilt on every refresh (Details' stat grid) — nothing needs to
+// markup rebuilt on every refresh (Metrics' stat grid) — nothing needs to
 // remember to re-wire anything after a re-render.
 const INFO_TOPICS = {
   entries: {
@@ -290,14 +290,15 @@ function show(id) {
 
 // "about" has no refresh*() dispatch below — its tab content is static
 // (no invoke() calls, nothing that goes stale), unlike every other tab here.
-const TABS = ["media", "details", "swarm", "notifications", "ai", "about"];
+const TABS = ["media", "metrics", "settings", "swarm", "notifications", "ai", "about"];
 
 function showTab(name) {
   for (const tab of TABS) {
     document.getElementById(`tabPanel-${tab}`).classList.toggle("d-none", tab !== name);
     document.getElementById(`tabBtn-${tab}`).classList.toggle("tab-active", tab === name);
   }
-  if (name === "details") refreshDetails();
+  if (name === "metrics") refreshMetrics();
+  if (name === "settings") refreshSettings();
   if (name === "swarm") refreshSwarm();
   if (name === "notifications") refreshNotifications();
   if (name === "media") refreshMedia();
@@ -349,7 +350,7 @@ async function refreshMediaRootHealth() {
 }
 
 document.getElementById("mediaRootWarningDetailsBtn").addEventListener("click", () => {
-  showTab("details");
+  showTab("settings");
 });
 
 // The Full Disk Access pane covers network volumes, removable drives, and the
@@ -438,7 +439,7 @@ async function boot() {
 // round trip happens to resolve before the browser has fetched/parsed/run
 // the remaining three script tags, boot()'s continuation calls a function
 // that doesn't exist yet — first hit as `refreshErrorBadge` undefined, then
-// again as `refreshDetails` undefined, both eventually caught by this same
+// again as `refreshMetrics` undefined, both eventually caught by this same
 // try/catch and misread as "settings didn't persist" (the catch's own
 // fallback is to show onboarding) rather than what actually happened.
 // DOMContentLoaded fixes the whole class at once, not just whichever

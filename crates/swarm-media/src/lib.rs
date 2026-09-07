@@ -21,6 +21,10 @@
 //!
 //! - [`transcode`] — upload-budgeted direct/HLS playback sessions backed by
 //!   FFmpeg, with an adaptive H.264/AAC ladder and idle cleanup.
+//! - [`recommend`] — Buzz's local, LLM-free recommendation engine (issue
+//!   #121, Phase 1): configurable weighted scoring over catalog metadata
+//!   plus current-session discovery intent and device history, returning
+//!   ranked picks with short human reasons.
 
 pub mod artwork_cache;
 pub mod bandwidth;
@@ -28,6 +32,7 @@ pub mod classify;
 pub mod plex;
 pub mod probe;
 pub mod range;
+pub mod recommend;
 pub mod roots;
 pub mod scan;
 pub mod scrape;

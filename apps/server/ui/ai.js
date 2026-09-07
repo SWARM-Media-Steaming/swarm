@@ -298,17 +298,13 @@ function renderReorgPlans(plans) {
     btn.addEventListener("click", async () => {
       const id = Number(btn.dataset.planId);
       btn.disabled = true;
-      const progressToast = showToast("Applying the reorganization plan and rescanning…", "progress", { duration: 0 });
       try {
         await invoke("approve_ai_reorg_plan", { id });
-        showToast("Reorganize applied — rescanning library.", "success");
+        showToast("Reorganization started in the background. You’ll be notified when it finishes.", "progress");
         await refreshAi();
-        await refreshLibrary();
       } catch (err) {
         showToast(String(err), "error");
         btn.disabled = false;
-      } finally {
-        dismissToast(progressToast);
       }
     });
   });
@@ -324,6 +320,17 @@ function renderReorgPlans(plans) {
     });
   });
 }
+
+listen("ai-reorganize-finished", async ({ payload }) => {
+  const hasErrors = payload.errors?.length > 0;
+  const detail = payload.applied + " file(s) moved, " + payload.skipped + " skipped.";
+  showToast(
+    (hasErrors ? "Reorganization finished with issues: " : "Reorganization complete: ") + detail,
+    hasErrors ? "warning" : "success",
+    { duration: hasErrors ? 7000 : 4500 }
+  );
+  await Promise.all([refreshAi(), refreshLibrary(), refreshNotificationBadge()]);
+});
 
 document.getElementById("aiReorganizeScanBtn").addEventListener("click", async () => {
   const btn = document.getElementById("aiReorganizeScanBtn");

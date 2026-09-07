@@ -942,6 +942,8 @@ async function refreshMediaRoots() {
     }).join("");
     list.querySelectorAll("[data-remove-root]").forEach(btn => {
       btn.addEventListener("click", async () => {
+        const progressToast = showToast("Removing media root and updating the library…", "progress", { duration: 0 });
+        btn.disabled = true;
         try {
           const result = await invoke("remove_media_root", { label: btn.dataset.removeRoot });
           if (!result.media_roots || result.media_roots.length === 0) {
@@ -956,6 +958,9 @@ async function refreshMediaRoots() {
           describeRootChange(result);
         } catch (err) {
           showToast(String(err), "error");
+          btn.disabled = false;
+        } finally {
+          dismissToast(progressToast);
         }
       });
     });
@@ -998,6 +1003,10 @@ async function refreshMediaRoots() {
 // nothing if it's still first-run onboarding (there's no core yet to apply
 // it to; the choice is just saved for when one starts).
 function describeRootChange(result) {
+  if (result.apply_error) {
+    showToast(`The media-root change was saved, but the live library update failed: ${result.apply_error}`, "warning", { duration: 9000 });
+    return;
+  }
   if (!result.rescan) return;
   const { added, updated, removed, unchanged } = result.rescan;
   showToast(`Applied — scanned now: +${added} added, ${updated} updated, ${removed} removed, ${unchanged} unchanged.`, "success");
@@ -1050,6 +1059,7 @@ document.getElementById("addRootConfirmBtn").addEventListener("click", async eve
   }
   const button = event.currentTarget;
   button.disabled = true;
+  const progressToast = showToast("Adding media root and scanning its contents…", "progress", { duration: 0 });
   try {
     const result = await invoke("add_media_root", {
       label: "",
@@ -1062,6 +1072,8 @@ document.getElementById("addRootConfirmBtn").addEventListener("click", async eve
   } catch (err) {
     showToast(String(err), "error");
     button.disabled = false;
+  } finally {
+    dismissToast(progressToast);
   }
 });
 
@@ -1090,6 +1102,7 @@ document.getElementById("networkRootConnectBtn").addEventListener("click", async
   const button = event.currentTarget;
   const wasOnboarding = !document.getElementById("onboardFolderView").classList.contains("d-none");
   button.disabled = true;
+  const progressToast = showToast("Connecting the SMB share and scanning its contents…", "progress", { duration: 0 });
   try {
     const result = await invoke("connect_smb_root", {
       label: document.getElementById("networkRootLabel").value,
@@ -1113,5 +1126,6 @@ document.getElementById("networkRootConnectBtn").addEventListener("click", async
     showToast(String(err), "error", { duration: 9000 });
   } finally {
     button.disabled = false;
+    dismissToast(progressToast);
   }
 });

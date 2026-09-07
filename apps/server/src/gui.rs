@@ -1255,6 +1255,10 @@ struct MediaRootsResult {
     /// Present when a core was already running and the change was applied
     /// live; absent during first-run onboarding, before any core exists.
     rescan: Option<RescanResult>,
+    /// A settings change is durable even when applying it to the running
+    /// scanner fails. Returning that failure separately keeps the UI in sync
+    /// with settings while still warning the user that a rescan is needed.
+    apply_error: Option<String>,
 }
 
 /// A filesystem-safe, unique label derived from a folder's own name — used
@@ -1324,10 +1328,14 @@ async fn add_media_root<R: tauri::Runtime>(
         asset_type,
     });
     settings::save(&dir, &settings).map_err(|e| e.to_string())?;
-    let rescan = state.apply_live_roots(&settings.media_roots).await?;
+    let (rescan, apply_error) = match state.apply_live_roots(&settings.media_roots).await {
+        Ok(rescan) => (rescan, None),
+        Err(error) => (None, Some(error)),
+    };
     Ok(MediaRootsResult {
         media_roots: settings.media_roots,
         rescan,
+        apply_error,
     })
 }
 
@@ -1379,10 +1387,14 @@ async fn connect_smb_root<R: tauri::Runtime>(
         asset_type,
     });
     settings::save(&dir, &persisted).map_err(|error| error.to_string())?;
-    let rescan = state.apply_live_roots(&persisted.media_roots).await?;
+    let (rescan, apply_error) = match state.apply_live_roots(&persisted.media_roots).await {
+        Ok(rescan) => (rescan, None),
+        Err(error) => (None, Some(error)),
+    };
     Ok(MediaRootsResult {
         media_roots: persisted.media_roots,
         rescan,
+        apply_error,
     })
 }
 
@@ -1438,6 +1450,7 @@ async fn repair_smb_root<R: tauri::Runtime>(
     Ok(MediaRootsResult {
         media_roots: persisted.media_roots,
         rescan,
+        apply_error: None,
     })
 }
 
@@ -1460,14 +1473,18 @@ async fn remove_media_root<R: tauri::Runtime>(
         return Err(format!("no media root labeled \"{label}\" exists"));
     }
     settings::save(&dir, &settings).map_err(|e| e.to_string())?;
-    let rescan = if settings.media_roots.is_empty() {
-        None
+    let (rescan, apply_error) = if settings.media_roots.is_empty() {
+        (None, None)
     } else {
-        state.apply_live_roots(&settings.media_roots).await?
+        match state.apply_live_roots(&settings.media_roots).await {
+            Ok(rescan) => (rescan, None),
+            Err(error) => (None, Some(error)),
+        }
     };
     Ok(MediaRootsResult {
         media_roots: settings.media_roots,
         rescan,
+        apply_error,
     })
 }
 
@@ -1767,22 +1784,29 @@ async fn test_ai_provider(id: String) -> Result<String, String> {
     ))
 }
 
-/// Finds the first enabled provider (settings order: Claude, Codex, Grok)
-/// and builds a client for it — its installed CLI when there's no saved API
-/// key (the issue #252 default), or the direct HTTP API when a key is
-/// present. The advanced AI features don't let a user pick per call, since
-/// there is normally only one enabled anyway.
-fn ai_client_from_settings(settings: &Settings) -> Result<ai::AiClient, String> {
-    let provider = settings
-        .ai_providers
-        .iter()
-        .find(|p| p.enabled)
-        .ok_or_else(|| "Enable an AI provider in the AI tab first.".to_string())?;
-    let kind = ai::AiProviderKind::from_id(&provider.id)
-        .ok_or_else(|| format!("unknown AI provider \"{}\"", provider.id))?;
-    match provider.api_key.clone().filter(|key| !key.is_empty()) {
-        Some(key) => Ok(ai::AiClient::new(kind, key, provider.model.clone())),
-        None => ai::AiClient::cli(kind, provider.model.clone()),
+/// Finds the first enabled CLI that is signed in and has at least 10% usage
+/// remaining. Usage must be positively detected: an unavailable quota check
+/// never permits an AI-assisted call.
+async fn ai_client_from_settings(settings: &Settings) -> Result<ai::AiClient, String> {
+    let mut enabled = false;
+    for provider in settings.ai_providers.iter().filter(|provider| provider.enabled) {
+        enabled = true;
+        let kind = ai::AiProviderKind::from_id(&provider.id)
+            .ok_or_else(|| format!("unknown AI provider \"{}\"", provider.id))?;
+        let info = tokio::task::spawn_blocking(move || ai::detect_provider(kind))
+            .await
+            .map_err(|error| error.to_string())?;
+        if info.installed && info.signed_in && info.usage_available {
+            return ai::AiClient::cli(kind, provider.model.clone());
+        }
+    }
+    if !enabled {
+        Err("Enable an AI tool in the AI tab first.".to_string())
+    } else {
+        Err(format!(
+            "No enabled AI tool is signed in with at least {:.0}% usage remaining.",
+            ai::MINIMUM_USAGE_REMAINING_PERCENT
+        ))
     }
 }
 
@@ -2008,7 +2032,7 @@ async fn ai_reorganize_scan<R: tauri::Runtime>(
         return Err("Enable \"AI reorganize\" on the AI tab first.".to_string());
     }
     let root_path = resolve_media_root(&settings, &root_label)?;
-    let ai_client = ai_client_from_settings(&settings).ok();
+    let ai_client = ai_client_from_settings(&settings).await.ok();
     let plan = reorganize::scan_root(&root_label, &root_path, ai_client.as_ref())
         .await
         .map_err(|e| e.to_string())?;
@@ -2608,7 +2632,7 @@ async fn ai_scrape_assist<R: tauri::Runtime>(
     if !settings.ai_scan_assist_enabled {
         return Err("Enable \"AI scan & scrape assist\" on the AI tab first.".to_string());
     }
-    let client = ai_client_from_settings(&settings)?;
+    let client = ai_client_from_settings(&settings).await?;
     let tmdb_api_key = settings
         .tmdb_api_key
         .clone()

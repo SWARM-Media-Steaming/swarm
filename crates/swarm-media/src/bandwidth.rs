@@ -1,7 +1,7 @@
 //! Real-time streaming bandwidth instrumentation: accumulates bytes actually
 //! written to clients and samples the rate every 5 seconds, retaining a
 //! rolling 60-minute history for the dashboard's live graph (see
-//! `apps/server`'s Details tab).
+//! `apps/server`'s Metrics tab).
 //!
 //! Distinct from `apps/server`'s `bandwidth` module, which probes this
 //! machine's *upload capacity* against a public speed-test endpoint — this

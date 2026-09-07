@@ -844,7 +844,7 @@ impl ServerCore {
     }
 
     /// Up to the last 60 minutes of real streaming-bandwidth samples, one
-    /// per 5-second bucket — see `swarm_media::bandwidth` — for the Details
+    /// per 5-second bucket — see `swarm_media::bandwidth` — for the Metrics
     /// tab's live graph and "current" panel.
     pub fn bandwidth_history(&self) -> Vec<BandwidthSample> {
         self.service.bandwidth_meter().history()
@@ -852,7 +852,7 @@ impl ServerCore {
 
     /// Up to the last 60 minutes of transcoding/subtitle activity samples,
     /// one per 5-second bucket — see `crate::transcode_activity` — for the
-    /// Details tab's live "Transcoding" graph.
+    /// Metrics tab's live "Transcoding" graph.
     pub fn transcode_activity_history(&self) -> Vec<TranscodeActivitySample> {
         self.transcode_activity.history()
     }

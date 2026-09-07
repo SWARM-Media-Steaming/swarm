@@ -1,5 +1,5 @@
 //! Rolling 60-minute history of transcoding + subtitle activity and the CPU
-//! it costs, for the dashboard's live "Transcoding" graph (Details tab).
+//! it costs, for the dashboard's live "Transcoding" graph (Metrics tab).
 //!
 //! Three "bandwidth"-ish modules now exist and are deliberately distinct:
 //! - `swarm_media::bandwidth` — bytes actually delivered to streaming clients.

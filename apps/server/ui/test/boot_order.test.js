@@ -238,7 +238,7 @@ async function main() {
   if (!dashVisible) {
     failures.push(`Expected #dashView to be visible after boot (a real, persisted media_roots settings response) but it was hidden${onboardVisible ? " -- fell back to onboarding, the exact symptom of this bug class" : ""}.`);
   }
-  const expectedTabOrder = ["tabBtn-media", "tabBtn-details", "tabBtn-swarm", "tabBtn-notifications", "tabBtn-ai", "tabBtn-about"];
+  const expectedTabOrder = ["tabBtn-media", "tabBtn-metrics", "tabBtn-settings", "tabBtn-swarm", "tabBtn-notifications", "tabBtn-ai", "tabBtn-about"];
   const actualTabOrder = [...document.querySelectorAll(".tabnav > button[id^='tabBtn-']")]
     .map((button) => button.id);
   if (JSON.stringify(actualTabOrder) !== JSON.stringify(expectedTabOrder)) {
@@ -289,7 +289,7 @@ async function main() {
     failures.push("Expected document.body to be revealed (visibility: visible) after boot, but it was still hidden.");
   }
   if (document.getElementById("statusGrid")) {
-    failures.push("Expected the standalone Status panel to be removed from the Details tab.");
+    failures.push("Expected the standalone Status panel to be removed from the Metrics tab.");
   }
   await dom.window.refreshBandwidth();
   const bandwidthGrid = document.getElementById("bandwidthStatusGrid").textContent;

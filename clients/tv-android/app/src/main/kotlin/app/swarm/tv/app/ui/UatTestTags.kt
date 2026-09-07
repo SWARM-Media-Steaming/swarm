@@ -114,7 +114,6 @@ object UatTestTags {
     const val MUSIC_PLAYER_PREVIOUS_BUTTON = "uat_music_player_previous_button"
     const val MUSIC_PLAYER_PLAY_PAUSE_BUTTON = "uat_music_player_play_pause_button"
     const val MUSIC_PLAYER_SKIP_BUTTON = "uat_music_player_skip_button"
-    const val MUSIC_PLAYER_REPEAT_BUTTON = "uat_music_player_repeat_button"
     const val MUSIC_PLAYER_LIKE_BUTTON = "uat_music_player_like_button"
     const val MUSIC_PLAYER_CLOSE_BUTTON = "uat_music_player_close_button"
 

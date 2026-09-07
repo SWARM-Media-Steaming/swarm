@@ -2099,10 +2099,11 @@ class SwarmViewModel(
         val device = catalog.devices.find { it.deviceId == serverId }?.let(::withPreferredLanRoute) ?: return
 
         val job = viewModelScope.launch {
-            val resumePositionSecs = watchStateStore.get(next.entry.fingerprint)
-                ?.takeUnless { it.watched }
-                ?.positionSecs
-                ?: 0.0
+            // Queue transitions are new listens, not explicit Resume
+            // actions. Reusing a saved position here can make a successor
+            // whose last listen stopped near its end play only its final
+            // seconds (#249).
+            val resumePositionSecs = 0.0
             val selection = runCatching {
                 withContext(Dispatchers.IO) {
                     catalogSession.preparePlayback(
@@ -2213,6 +2214,7 @@ class SwarmViewModel(
             previousScreen = current.previous,
             keepMinimized = wasMinimized,
             replaceSession = current,
+            startPositionSecsOverride = if (current.entry.entry.kind == MediaKind.TRACK) 0.0 else null,
             continueMusicQueueId = current.musicQueueId,
         )
     }
@@ -2412,6 +2414,7 @@ class SwarmViewModel(
             previousScreen = current.previous,
             keepMinimized = _minimizedPlayer.value != null,
             replaceSession = current,
+            startPositionSecsOverride = 0.0,
             continueMusicQueueId = current.musicQueueId,
         )
     }

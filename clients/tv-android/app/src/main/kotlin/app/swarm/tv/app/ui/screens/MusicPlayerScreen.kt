@@ -61,6 +61,8 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -73,7 +75,6 @@ import app.swarm.tv.app.ui.theme.SwarmMuted
 import app.swarm.tv.app.ui.theme.SwarmText
 import app.swarm.tv.app.ui.components.swarmActionButtonColors
 import app.swarm.tv.core.catalog.MergedEntry
-import app.swarm.tv.core.catalog.RepeatMode
 import app.swarm.tv.core.catalog.ShuffleMode
 import app.swarm.tv.core.catalog.activeLyricIndex
 import app.swarm.tv.core.catalog.parseSyncedLyrics
@@ -101,19 +102,19 @@ internal fun previousButtonAction(positionMs: Long): PreviousButtonAction =
         PreviousButtonAction.PREVIOUS_TRACK
     }
 
-/** Wordless transport-row glyphs (#161) — the button label carries all
- * the state, no color break from [swarmActionButtonColors], per the TV
- * UI conventions. */
-private fun shuffleGlyph(mode: ShuffleMode): String = when (mode) {
+/** Icon-only shuffle states. The small symbol paired with the shuffle
+ * mark distinguishes album and library scope without turning the control
+ * into a second text label (#249). */
+internal fun shuffleGlyph(mode: ShuffleMode): String = when (mode) {
     ShuffleMode.OFF -> "🔀"
-    ShuffleMode.ALBUM -> "🔀 album"
-    ShuffleMode.ALL_SONGS -> "🔀 all"
+    ShuffleMode.ALBUM -> "🔀◉"
+    ShuffleMode.ALL_SONGS -> "🔀∞"
 }
 
-private fun repeatGlyph(mode: RepeatMode): String = when (mode) {
-    RepeatMode.OFF -> "🔁"
-    RepeatMode.ONE -> "🔂"
-    RepeatMode.ALBUM -> "🔁 album"
+internal fun shuffleDescription(mode: ShuffleMode): String = when (mode) {
+    ShuffleMode.OFF -> "Shuffle off"
+    ShuffleMode.ALBUM -> "Shuffle album"
+    ShuffleMode.ALL_SONGS -> "Shuffle all songs"
 }
 
 @Composable
@@ -123,7 +124,6 @@ fun MusicPlayerScreen(
     isPlaying: Boolean,
     isLoading: Boolean,
     shuffleMode: ShuffleMode,
-    repeatMode: RepeatMode,
     isLiked: Boolean,
     artworkUrl: String?,
     artistPhotoUrl: String?,
@@ -133,7 +133,6 @@ fun MusicPlayerScreen(
     onPlay: () -> Unit,
     onPause: () -> Unit,
     onToggleShuffle: () -> Unit,
-    onToggleRepeat: () -> Unit,
     onToggleLike: () -> Unit,
     onSkipNext: () -> Unit,
     onSkipPrevious: () -> Unit,
@@ -152,7 +151,10 @@ fun MusicPlayerScreen(
     BackHandler(onBack = onMinimize)
 
     val playFocusRequester = remember { FocusRequester() }
-    LaunchedEffect(entry) { playFocusRequester.requestFocus() }
+    // Focus play/pause only when this screen first opens. Keying this to
+    // entry used to steal focus back from Next/Previous every time their
+    // click changed the active track (#249).
+    LaunchedEffect(Unit) { playFocusRequester.requestFocus() }
 
     val visualUrl = artworkUrl ?: artistPhotoUrl
 
@@ -277,6 +279,9 @@ fun MusicPlayerScreen(
                     glyph = shuffleGlyph(shuffleMode),
                     testTag = UatTestTags.MUSIC_PLAYER_SHUFFLE_BUTTON,
                     onClick = onToggleShuffle,
+                    modifier = Modifier.semantics {
+                        contentDescription = shuffleDescription(shuffleMode)
+                    },
                 )
                 TransportButton(
                     glyph = "⏮",
@@ -299,11 +304,6 @@ fun MusicPlayerScreen(
                     glyph = "⏭",
                     testTag = UatTestTags.MUSIC_PLAYER_SKIP_BUTTON,
                     onClick = onSkipNext,
-                )
-                TransportButton(
-                    glyph = repeatGlyph(repeatMode),
-                    testTag = UatTestTags.MUSIC_PLAYER_REPEAT_BUTTON,
-                    onClick = onToggleRepeat,
                 )
                 TransportButton(
                     glyph = if (isLiked) "♥" else "♡",

@@ -26,7 +26,8 @@ use swarm_core::signal::{SignalMessage, SignalPayload};
 use swarm_media::bandwidth::BandwidthSample;
 use swarm_media::roots::{MediaRoot, RootResolver, SharedRootResolver};
 use swarm_media::scan::{
-    scan_roots, scan_roots_cancellable, scan_roots_scoped, ScanProgressEvent, ScanReport,
+    scan_roots_cancellable_with_options, scan_roots_scoped_with_options,
+    scan_roots_with_options, ScanOptions, ScanProgressEvent, ScanReport,
 };
 use swarm_media::scrape::{
     run_bulk_scrape, scrape_one_track, scrape_one_video, BulkScrapeReport, ScrapeConfig,
@@ -74,6 +75,7 @@ pub struct ServerConfig {
     /// distinguished on-disk by a `{label}/` prefix — see
     /// `swarm_media::roots`.
     pub media_roots: Vec<MediaRoot>,
+    pub scan_options: ScanOptions,
     pub data_dir: PathBuf,
     pub bind: SocketAddr,
     /// The plain-HTTP(S) pairing + media-playback surface (`http_media.rs`)
@@ -168,6 +170,8 @@ pub struct ServerCore {
     scan_lock: tokio::sync::Mutex<()>,
     scan_active: Arc<AtomicBool>,
     scan_status: tokio::sync::watch::Sender<ScanState>,
+    comprehensive_check: AtomicBool,
+    scan_music_tracks: AtomicBool,
 }
 
 struct ScanActivityGuard {
@@ -414,6 +418,8 @@ impl ServerCore {
             scan_lock: tokio::sync::Mutex::new(()),
             scan_active,
             scan_status: tokio::sync::watch::Sender::new(ScanState::NotStarted),
+            comprehensive_check: AtomicBool::new(config.scan_options.comprehensive_check),
+            scan_music_tracks: AtomicBool::new(config.scan_options.scan_music_tracks),
         });
         // A configured or previously-created managed swarm takes precedence
         // over an old manual link. Previously this restored the old link first
@@ -487,9 +493,17 @@ impl ServerCore {
         let _guard = self.scan_lock.lock().await;
         let _scan_activity = ScanActivityGuard::start(&self.scan_active);
         self.scan_status.send_modify(|s| *s = ScanState::Scanning);
+        let options = self.scan_options();
         let result = match cancel {
-            Some(cancel) => scan_roots_cancellable(&self.library, roots, progress_tx, cancel).await,
-            None => scan_roots(&self.library, roots, progress_tx).await,
+            Some(cancel) => scan_roots_cancellable_with_options(
+                &self.library,
+                roots,
+                progress_tx,
+                cancel,
+                options,
+            )
+            .await,
+            None => scan_roots_with_options(&self.library, roots, progress_tx, options).await,
         };
         match result {
             Ok(report) => {
@@ -545,7 +559,15 @@ impl ServerCore {
             pause_transcription.then(|| ScanActivityGuard::start(&self.scan_active));
         self.scan_status
             .send_modify(|state| *state = ScanState::Scanning);
-        match scan_roots_scoped(&self.library, &selected, all_roots.len() > 1, None).await {
+        match scan_roots_scoped_with_options(
+            &self.library,
+            &selected,
+            all_roots.len() > 1,
+            None,
+            self.scan_options(),
+        )
+        .await
+        {
             Ok(report) => {
                 self.scan_status
                     .send_modify(|state| *state = ScanState::Done(report.clone()));
@@ -589,6 +611,21 @@ impl ServerCore {
     ) -> Result<ScanReport, ServerError> {
         let roots = self.media_roots.roots();
         self.run_scan(&roots, progress_tx).await
+    }
+
+    fn scan_options(&self) -> ScanOptions {
+        ScanOptions {
+            comprehensive_check: self.comprehensive_check.load(Ordering::Acquire),
+            scan_music_tracks: self.scan_music_tracks.load(Ordering::Acquire),
+        }
+    }
+
+    pub fn set_comprehensive_check(&self, enabled: bool) {
+        self.comprehensive_check.store(enabled, Ordering::Release);
+    }
+
+    pub fn set_scan_music_tracks(&self, enabled: bool) {
+        self.scan_music_tracks.store(enabled, Ordering::Release);
     }
 
     /// Manual full scan with cooperative cancellation. The ordinary

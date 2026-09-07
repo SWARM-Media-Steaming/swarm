@@ -1,9 +1,11 @@
-//! Library scanning: allowlist walk → (size, mtime) change detection →
-//! sample-fp-v1 fingerprint → tag/probe enrichment → store reconciliation
-//! with pending-change tracking. A rename is a delete of the old path plus an
-//! add of the new one (entry keys are path-derived by design).
+//! Library scanning: allowlist filesystem snapshot → path/(size, mtime) diff
+//! → fingerprint/tag/probe only for additions and changes → reconciliation
+//! with pending-change tracking. Comprehensive Check additionally verifies
+//! otherwise-unchanged files sequentially with the existing fingerprint.
+//! A rename is a delete of the old path plus an add of the new one (entry
+//! keys are path-derived by design).
 
-use crate::roots::MediaRoot;
+use crate::roots::{MediaRoot, MediaRootAssetType};
 use crate::scrape::artwork;
 use crate::store::{ArtworkKind, EntryRecord, Library, MissingDisposition, ScanManifestEntry};
 use crate::{classify, probe, tags};
@@ -15,6 +17,27 @@ use swarm_core::{entry_key, fingerprint};
 use tokio::sync::mpsc::Sender;
 
 pub(crate) const MISSING_CONFIRMATION_GRACE_MS: i64 = 60 * 60 * 1_000;
+
+/// User-selectable scan behavior. The fast path is always performed first;
+/// comprehensive verification only adds sequential content checks for files
+/// whose path, size, and timestamp otherwise match the index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScanOptions {
+    pub comprehensive_check: bool,
+    pub scan_music_tracks: bool,
+}
+
+impl Default for ScanOptions {
+    fn default() -> Self {
+        Self {
+            comprehensive_check: false,
+            // Library-crate callers predate the desktop preference and keep
+            // their historical behavior. The desktop explicitly passes its
+            // persisted default (`false`).
+            scan_music_tracks: true,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ScanReport {
@@ -138,6 +161,7 @@ pub async fn scan_root(library: &Library, root: &Path) -> Result<ScanReport, Sca
         &[MediaRoot {
             label: "local".to_string(),
             path: root.to_path_buf(),
+            asset_type: MediaRootAssetType::Mixed,
         }],
         None,
     )
@@ -151,13 +175,30 @@ pub async fn scan_root(library: &Library, root: &Path) -> Result<ScanReport, Sca
 /// exactly one root, no prefix is applied and behavior is byte-identical to
 /// [`scan_root`]. `progress_tx`, when given, receives best-effort
 /// [`ScanProgressEvent`] updates during both phases (directory walk, then
-/// per-file fingerprint/probe) — see [`ScanProgress`]'s doc comment.
+/// per-file reconciliation) — see [`ScanProgress`]'s doc comment.
 pub async fn scan_roots(
     library: &Library,
     roots: &[MediaRoot],
     progress_tx: Option<Sender<ScanProgressEvent>>,
 ) -> Result<ScanReport, ScanError> {
-    scan_roots_scoped_inner_entry(library, roots, roots.len() > 1, progress_tx, None).await
+    scan_roots_with_options(library, roots, progress_tx, ScanOptions::default()).await
+}
+
+pub async fn scan_roots_with_options(
+    library: &Library,
+    roots: &[MediaRoot],
+    progress_tx: Option<Sender<ScanProgressEvent>>,
+    options: ScanOptions,
+) -> Result<ScanReport, ScanError> {
+    scan_roots_scoped_inner_entry(
+        library,
+        roots,
+        roots.len() > 1,
+        progress_tx,
+        None,
+        options,
+    )
+    .await
 }
 
 /// Cancellable counterpart to [`scan_roots`]. Cancellation is checked while
@@ -169,7 +210,32 @@ pub async fn scan_roots_cancellable(
     progress_tx: Option<Sender<ScanProgressEvent>>,
     cancel: Arc<AtomicBool>,
 ) -> Result<ScanReport, ScanError> {
-    scan_roots_scoped_inner_entry(library, roots, roots.len() > 1, progress_tx, Some(cancel)).await
+    scan_roots_cancellable_with_options(
+        library,
+        roots,
+        progress_tx,
+        cancel,
+        ScanOptions::default(),
+    )
+    .await
+}
+
+pub async fn scan_roots_cancellable_with_options(
+    library: &Library,
+    roots: &[MediaRoot],
+    progress_tx: Option<Sender<ScanProgressEvent>>,
+    cancel: Arc<AtomicBool>,
+    options: ScanOptions,
+) -> Result<ScanReport, ScanError> {
+    scan_roots_scoped_inner_entry(
+        library,
+        roots,
+        roots.len() > 1,
+        progress_tx,
+        Some(cancel),
+        options,
+    )
+    .await
 }
 
 /// Reconcile only `roots` while preserving the path namespace of the full
@@ -183,7 +249,32 @@ pub async fn scan_roots_scoped(
     multi_root_namespace: bool,
     progress_tx: Option<Sender<ScanProgressEvent>>,
 ) -> Result<ScanReport, ScanError> {
-    scan_roots_scoped_inner_entry(library, roots, multi_root_namespace, progress_tx, None).await
+    scan_roots_scoped_with_options(
+        library,
+        roots,
+        multi_root_namespace,
+        progress_tx,
+        ScanOptions::default(),
+    )
+    .await
+}
+
+pub async fn scan_roots_scoped_with_options(
+    library: &Library,
+    roots: &[MediaRoot],
+    multi_root_namespace: bool,
+    progress_tx: Option<Sender<ScanProgressEvent>>,
+    options: ScanOptions,
+) -> Result<ScanReport, ScanError> {
+    scan_roots_scoped_inner_entry(
+        library,
+        roots,
+        multi_root_namespace,
+        progress_tx,
+        None,
+        options,
+    )
+    .await
 }
 
 async fn scan_roots_scoped_inner_entry(
@@ -192,6 +283,7 @@ async fn scan_roots_scoped_inner_entry(
     multi_root_namespace: bool,
     progress_tx: Option<Sender<ScanProgressEvent>>,
     cancel: Option<Arc<AtomicBool>>,
+    options: ScanOptions,
 ) -> Result<ScanReport, ScanError> {
     if roots.is_empty() {
         return Err(ScanError::NoMediaRoots);
@@ -203,6 +295,7 @@ async fn scan_roots_scoped_inner_entry(
         multi_root_namespace,
         progress_tx,
         cancel,
+        options,
         &scan_id,
     )
     .await;
@@ -220,6 +313,7 @@ async fn scan_roots_scoped_inner(
     multi_root_namespace: bool,
     progress_tx: Option<Sender<ScanProgressEvent>>,
     cancel: Option<Arc<AtomicBool>>,
+    options: ScanOptions,
     scan_id: &str,
 ) -> Result<ScanReport, ScanError> {
     let mut report = ScanReport::default();
@@ -287,6 +381,7 @@ async fn scan_roots_scoped_inner(
             multi_root_namespace,
             progress.as_ref(),
             cancel.as_ref(),
+            options,
         )
         .await?;
         let remaining = MAX_SUBTITLE_SIDECARS.saturating_sub(subtitle_sidecars.len());
@@ -332,7 +427,11 @@ async fn scan_roots_scoped_inner(
         library.entry_count_with_prefix(None).await?
     };
 
-    if total == 0 && known_in_scope > 0 {
+    let intentionally_empty_music_scope = !options.scan_music_tracks
+        && roots
+            .iter()
+            .all(|root| root.asset_type == MediaRootAssetType::Music);
+    if total == 0 && known_in_scope > 0 && !intentionally_empty_music_scope {
         return Err(ScanError::SuspiciousEmptyScan(known_in_scope));
     }
 
@@ -386,32 +485,55 @@ async fn scan_roots_scoped_inner(
                 }
             }
             let known = library.known_entry_by_path(&relative).await?;
+            let mut comprehensive_fingerprint = None;
             if let Some(known_entry) = known.as_ref() {
-                if known_entry.size == file.size && known_entry.modified_time == file.modified_time
-                {
-                    if known_entry.available {
-                        report.unchanged += 1;
-                    } else if library.restore_available_by_path(&relative).await? {
-                        report.added += 1;
-                    }
-                    if !known_entry.has_artwork {
-                        if let Some(classified) = classify::classify(&file.relative_under_root) {
-                            recover_existing_artwork(
-                                library,
-                                &absolute,
-                                &entry_key::entry_key(&relative),
-                                &relative,
-                                classified.kind,
-                                &mut artwork_cache,
-                            )
-                            .await?;
+                if known_entry.size == file.size && known_entry.modified_time == file.modified_time {
+                    let content_matches = if options.comprehensive_check {
+                        // This await is deliberately inside the ordered loop:
+                        // comprehensive verification must never fan out disk
+                        // reads across a media root.
+                        let fp_path = absolute.clone();
+                        let fingerprint = tokio::task::spawn_blocking(move || {
+                            fingerprint::fingerprint_file(&fp_path)
+                        })
+                        .await
+                        .expect("fingerprint task panicked");
+                        let Ok(fingerprint) = fingerprint else {
+                            continue;
+                        };
+                        let matches = fingerprint == known_entry.fingerprint;
+                        comprehensive_fingerprint = Some(fingerprint);
+                        matches
+                    } else {
+                        true
+                    };
+                    if content_matches {
+                        if known_entry.available {
+                            report.unchanged += 1;
+                        } else if library.restore_available_by_path(&relative).await? {
+                            report.added += 1;
                         }
+                        if !known_entry.has_artwork {
+                            if let Some(classified) = classify::classify(&file.relative_under_root) {
+                                recover_existing_artwork(
+                                    library,
+                                    &absolute,
+                                    &entry_key::entry_key(&relative),
+                                    &relative,
+                                    classified.kind,
+                                    &mut artwork_cache,
+                                )
+                                .await?;
+                            }
+                        }
+                        continue;
                     }
-                    continue;
                 }
             }
 
-            let Some(classified) = classify::classify(&file.relative_under_root) else {
+            let asset_type = asset_type_for_path(roots, &file.relative_path, multi_root_namespace);
+            let Some(classified) = classify_for_asset_type(&file.relative_under_root, asset_type)
+            else {
                 continue;
             };
             // fingerprint_file/read_tags are synchronous std::fs I/O — each a
@@ -422,13 +544,18 @@ async fn scan_roots_scoped_inner(
             // files reach this line at all (the unchanged fast path above
             // already `continue`d), so this cost is paid exactly where it's
             // unavoidable, not on every file in a routine rescan.
-            let fp_path = absolute.clone();
-            let Ok(fp) =
-                tokio::task::spawn_blocking(move || fingerprint::fingerprint_file(&fp_path))
-                    .await
-                    .expect("fingerprint task panicked")
-            else {
-                continue;
+            let fp = if let Some(fingerprint) = comprehensive_fingerprint {
+                fingerprint
+            } else {
+                let fp_path = absolute.clone();
+                let Ok(fingerprint) =
+                    tokio::task::spawn_blocking(move || fingerprint::fingerprint_file(&fp_path))
+                        .await
+                        .expect("fingerprint task panicked")
+                else {
+                    continue;
+                };
+                fingerprint
             };
             let tags_path = absolute.clone();
             let tag = tokio::task::spawn_blocking(move || tags::read_tags(&tags_path))
@@ -490,6 +617,9 @@ async fn scan_roots_scoped_inner(
                 }
             }
             library.upsert(&record).await?;
+            if known.as_ref().is_some_and(|entry| entry.available) {
+                library.mark_scrape_stale(&record.entry_key).await?;
+            }
             if known.is_none() {
                 library
                     .restore_archived_metadata(
@@ -699,6 +829,76 @@ fn check_cancelled(cancel: Option<&AtomicBool>) -> Result<(), ScanError> {
     }
 }
 
+fn asset_type_for_path(
+    roots: &[MediaRoot],
+    relative_path: &str,
+    multi_root_namespace: bool,
+) -> MediaRootAssetType {
+    if multi_root_namespace {
+        if let Some((label, _)) = relative_path.split_once('/') {
+            if let Some(root) = roots.iter().find(|root| root.label == label) {
+                return root.asset_type;
+            }
+        }
+    }
+    roots
+        .first()
+        .map(|root| root.asset_type)
+        .unwrap_or_default()
+}
+
+fn classify_for_asset_type(
+    relative_path: &str,
+    asset_type: MediaRootAssetType,
+) -> Option<classify::Classified> {
+    let mut classified = classify::classify(relative_path)?;
+    match asset_type {
+        MediaRootAssetType::Mixed => {}
+        MediaRootAssetType::Music if classified.kind != MediaKind::Track => return None,
+        MediaRootAssetType::Music => {}
+        MediaRootAssetType::Movies | MediaRootAssetType::PhotosVideos => {
+            if classified.kind == MediaKind::Track {
+                return None;
+            }
+            classified.kind = MediaKind::Movie;
+            classified.show_title = None;
+            classified.season = None;
+            classified.episode = None;
+            classified.episode_end = None;
+        }
+        MediaRootAssetType::Shows => {
+            if classified.kind == MediaKind::Track {
+                return None;
+            }
+            classified.kind = MediaKind::Episode;
+            if classified.show_title.is_none() {
+                classified.show_title = relative_path
+                    .split('/')
+                    .next()
+                    .filter(|part| !part.is_empty())
+                    .map(str::to_string);
+            }
+        }
+    }
+    Some(classified)
+}
+
+fn media_path_allowed(
+    relative_path: &str,
+    asset_type: MediaRootAssetType,
+    scan_music_tracks: bool,
+) -> bool {
+    let Some((_, is_audio)) = classify::media_extension(relative_path) else {
+        return false;
+    };
+    if is_audio {
+        scan_music_tracks
+            && matches!(asset_type, MediaRootAssetType::Mixed | MediaRootAssetType::Music)
+    } else {
+        !matches!(asset_type, MediaRootAssetType::Music)
+    }
+}
+
 /// Classifies an `images/` sibling file by the exact, small set of
 /// filenames every artwork-writing path in this codebase actually produces
 /// — `save_video_artwork`'s `{stem}-tmdb-{poster,season-poster,backdrop}.jpg`
@@ -880,6 +1080,7 @@ async fn discover_media_files(
     multi_root_namespace: bool,
     progress: Option<&Arc<ScanProgress>>,
     cancel: Option<&Arc<AtomicBool>>,
+    options: ScanOptions,
 ) -> Result<(bool, Vec<SubtitleSidecar>), ScanError> {
     const BATCH_SIZE: usize = 256;
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<ScanManifestEntry>>(2);
@@ -887,16 +1088,19 @@ async fn discover_media_files(
     let label = root.label.clone();
     let progress = progress.cloned();
     let cancel = cancel.cloned();
+    let asset_type = root.asset_type;
     let walk = tokio::task::spawn_blocking(move || {
-        walk_media_files(
-            &root_path,
-            &label,
+        walk_media_files(WalkConfig {
+            root_path: &root_path,
+            label: &label,
             multi_root_namespace,
-            progress.as_deref(),
-            cancel.as_deref(),
-            BATCH_SIZE,
+            progress: progress.as_deref(),
+            cancel: cancel.as_deref(),
+            asset_type,
+            scan_music_tracks: options.scan_music_tracks,
+            batch_size: BATCH_SIZE,
             tx,
-        )
+        })
     });
 
     while let Some(batch) = rx.recv().await {
@@ -996,15 +1200,30 @@ fn retry_transient_not_found<T>(mut stat: impl FnMut() -> std::io::Result<T>) ->
 /// as it goes; `Sender::blocking_send` blocks *this* (already-blocking-pool)
 /// thread, not any async worker thread, when the channel is full, which is
 /// exactly the backpressure a bounded channel is for.
-fn walk_media_files(
-    root_path: &Path,
-    label: &str,
+struct WalkConfig<'a> {
+    root_path: &'a Path,
+    label: &'a str,
     multi_root_namespace: bool,
-    progress: Option<&ScanProgress>,
-    cancel: Option<&AtomicBool>,
+    progress: Option<&'a ScanProgress>,
+    cancel: Option<&'a AtomicBool>,
+    asset_type: MediaRootAssetType,
+    scan_music_tracks: bool,
     batch_size: usize,
     tx: Sender<Vec<ScanManifestEntry>>,
-) -> std::io::Result<WalkOutcome> {
+}
+
+fn walk_media_files(config: WalkConfig<'_>) -> std::io::Result<WalkOutcome> {
+    let WalkConfig {
+        root_path,
+        label,
+        multi_root_namespace,
+        progress,
+        cancel,
+        asset_type,
+        scan_music_tracks,
+        batch_size,
+        tx,
+    } = config;
     let mut batch = Vec::with_capacity(batch_size);
     let mut subtitles: Vec<SubtitleSidecar> = Vec::new();
     let mut stack = vec![root_path.to_path_buf()];
@@ -1079,7 +1298,7 @@ fn walk_media_files(
                 }
                 continue;
             }
-            if classify::media_extension(&relative_under_root).is_some() {
+            if media_path_allowed(&relative_under_root, asset_type, scan_music_tracks) {
                 let Some(metadata) =
                     walk_value(retry_transient_not_found(|| entry.metadata()), &mut complete)?
                 else {

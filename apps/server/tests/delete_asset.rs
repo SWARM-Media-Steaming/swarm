@@ -22,7 +22,9 @@ async fn deletion_removes_asset_companions_and_preserves_shared_artwork() {
         media_roots: vec![MediaRoot {
             label: "local".into(),
             path: media_root.clone(),
+            asset_type: Default::default(),
         }],
+        scan_options: Default::default(),
         data_dir: data_dir.clone(),
         bind: "127.0.0.1:0".parse().unwrap(),
         http_media_bind: "127.0.0.1:0".parse().unwrap(),
@@ -169,7 +171,9 @@ async fn deletion_removes_a_side_loaded_subtitle_sidecar_from_a_subs_folder() {
         media_roots: vec![MediaRoot {
             label: "local".into(),
             path: media_root.clone(),
+            asset_type: Default::default(),
         }],
+        scan_options: Default::default(),
         data_dir: data_dir.clone(),
         bind: "127.0.0.1:0".parse().unwrap(),
         http_media_bind: "127.0.0.1:0".parse().unwrap(),

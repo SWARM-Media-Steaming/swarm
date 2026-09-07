@@ -2884,7 +2884,7 @@ class SwarmViewModel(
      * covering the video with a separate loading screen. */
     fun reportPlaybackBuffering() {
         if (_state.value !is UiState.Player && _state.value != UiState.PlaybackLoading) return
-        notify("Buffering video…", ClientNotificationKind.WARNING)
+        notify("Buffering", ClientNotificationKind.WARNING)
     }
 
     /** Makes an adaptive downgrade visible instead of asking the viewer to

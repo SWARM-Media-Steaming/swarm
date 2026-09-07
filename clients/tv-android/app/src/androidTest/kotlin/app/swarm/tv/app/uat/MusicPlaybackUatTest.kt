@@ -108,12 +108,11 @@ class MusicPlaybackUatTest : UatTestBase() {
         selectTagWithDpad(UatTestTags.MUSIC_PLAYER_PLAY_PAUSE_BUTTON) // resume
 
         val upNextBefore = composeTestRule.textUnderTag(UatTestTags.MUSIC_PLAYER_UP_NEXT)
-        // #160: the shuffle button cycles OFF -> shuffle album -> shuffle all.
-        // #161: wordless glyphs — "🔀" / "🔀 album" / "🔀 all".
+        // One icon-only button cycles OFF -> shuffle album -> shuffle all.
         assertEquals("🔀", composeTestRule.textUnderTag(UatTestTags.MUSIC_PLAYER_SHUFFLE_BUTTON).trim())
         selectTagWithDpad(UatTestTags.MUSIC_PLAYER_SHUFFLE_BUTTON)
         composeTestRule.waitUntil(timeoutMillis = 5_000) {
-            composeTestRule.textUnderTag(UatTestTags.MUSIC_PLAYER_SHUFFLE_BUTTON).contains("album")
+            composeTestRule.textUnderTag(UatTestTags.MUSIC_PLAYER_SHUFFLE_BUTTON).trim() == "🔀◉"
         }
         composeTestRule.waitUntil(timeoutMillis = 5_000) {
             composeTestRule.textUnderTag(UatTestTags.MUSIC_PLAYER_UP_NEXT) != upNextBefore
@@ -121,7 +120,7 @@ class MusicPlaybackUatTest : UatTestBase() {
         val upNextAfterShuffle = composeTestRule.textUnderTag(UatTestTags.MUSIC_PLAYER_UP_NEXT)
         selectTagWithDpad(UatTestTags.MUSIC_PLAYER_SHUFFLE_BUTTON)
         composeTestRule.waitUntil(timeoutMillis = 5_000) {
-            composeTestRule.textUnderTag(UatTestTags.MUSIC_PLAYER_SHUFFLE_BUTTON).contains("all")
+            composeTestRule.textUnderTag(UatTestTags.MUSIC_PLAYER_SHUFFLE_BUTTON).trim() == "🔀∞"
         }
         selectTagWithDpad(UatTestTags.MUSIC_PLAYER_SHUFFLE_BUTTON)
         composeTestRule.waitUntil(timeoutMillis = 5_000) {
@@ -137,6 +136,18 @@ class MusicPlaybackUatTest : UatTestBase() {
         waitForTag(UatTestTags.MUSIC_PLAYER_TITLE, timeoutMs = 10_000)
         composeTestRule.onNodeWithTag(UatTestTags.MUSIC_PLAYER_TITLE).assertIsDisplayed()
         assertTrue("skip should have advanced to what Up Next promised", upNextAfterShuffle.isNotBlank())
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            composeTestRule.focusedTag() == UatTestTags.MUSIC_PLAYER_SKIP_BUTTON
+        }
+        assertEquals(UatTestTags.MUSIC_PLAYER_SKIP_BUTTON, composeTestRule.focusedTag())
+
+        // Changing tracks must not pull focus back to Play/Pause; the same
+        // applies in both directions (#249).
+        selectTagWithDpad(UatTestTags.MUSIC_PLAYER_PREVIOUS_BUTTON)
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            composeTestRule.focusedTag() == UatTestTags.MUSIC_PLAYER_PREVIOUS_BUTTON
+        }
+        assertEquals(UatTestTags.MUSIC_PLAYER_PREVIOUS_BUTTON, composeTestRule.focusedTag())
 
         // Back while playing collapses to the mini-player, not a full stop.
         pressBack()

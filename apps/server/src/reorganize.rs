@@ -6,7 +6,7 @@
 //! just gives the folder layout the same clean, consistent shape for a
 //! human reading it in Finder/Explorer. AI is only asked to guess a title
 //! for the long tail `classify` can't parse (see `guess_with_ai`), and even
-//! then the guess only ever produces one more *proposed* item in the plan a
+//! then the guess only ever improves one more *proposed* item in the plan a
 //! person must approve — nothing here touches disk until `apply_plan` runs,
 //! and `apply_plan` never deletes anything: a blocked move (destination
 //! already exists, cross-device rename) is skipped and reported, never
@@ -26,9 +26,9 @@ use swarm_media::plex::{self, PlexValidationIssue};
 use swarm_media::subtitles::{parse_subtitle_name, subtitle_extension};
 
 /// Cap on how many AI calls one scan will make, so a folder full of
-/// genuinely unparseable names can't turn into an unbounded (and
-/// unboundedly expensive) run — the rest are simply left out of the plan
-/// rather than proposed with no confidence at all.
+/// ambiguous names can't turn into an unbounded (and unboundedly expensive)
+/// run. Files beyond the cap still use the deterministic classifier and are
+/// never silently omitted from the plan.
 const MAX_AI_GUESSES: usize = 25;
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -65,6 +65,7 @@ pub struct ReorgPlan {
 pub async fn scan_root(root_label: &str, root: &Path, ai: Option<&AiClient>) -> std::io::Result<ReorgPlan> {
     let mut video_files = Vec::new();
     walk(root, root, &mut video_files)?;
+    video_files.sort();
 
     let mut items = Vec::new();
     let mut ai_assisted_count = 0u32;
@@ -77,19 +78,25 @@ pub async fn scan_root(root_label: &str, root: &Path, ai: Option<&AiClient>) -> 
             continue;
         };
 
-        let (classified, ai_assisted) = match classify::classify(&unix_relative).filter(is_confident) {
-            Some(c) => (c, false),
-            None => {
-                if ai_budget == 0 {
-                    continue;
-                }
-                let Some(client) = ai else { continue };
+        // `classify` deliberately has a best-effort movie fallback for every
+        // recognized video extension. Keep that result even when it lacks a
+        // year: dropping it here was why large flat libraries left most of
+        // their files untouched once the bounded AI budget was exhausted.
+        let Some(deterministic) = classify::classify(&unix_relative) else {
+            continue;
+        };
+        let (classified, ai_assisted) = if !is_confident(&deterministic) && ai_budget > 0 {
+            if let Some(client) = ai {
                 ai_budget -= 1;
                 match guess_with_ai(client, &unix_relative).await {
-                    Some(c) => (c, true),
-                    None => continue,
+                    Some(guess) => (guess, true),
+                    None => (deterministic, false),
                 }
+            } else {
+                (deterministic, false)
             }
+        } else {
+            (deterministic, false)
         };
 
         let canonical = canonical_video_path(&classified, ext);
@@ -150,7 +157,7 @@ fn conflict_reason(root: &Path, target: &str, planned_targets: &mut HashSet<Stri
     if root.join(target).exists() {
         Some("a file already exists at the destination".to_string())
     } else if !planned_targets.insert(target.to_string()) {
-        Some("another item in this plan already targets this path".to_string())
+        Some("likely a duplicate — another item in this plan already targets this path".to_string())
     } else {
         None
     }
@@ -184,13 +191,13 @@ fn canonical_video_path(c: &Classified, ext: &str) -> String {
                 Some(year) => format!("{title} ({year})"),
                 None => title,
             };
-            format!("Movies/{name}/{name}.{ext}")
+            format!("{name}/{name}.{ext}")
         }
         MediaKind::Episode => {
             let show = sanitize(c.show_title.as_deref().unwrap_or("Unknown Show"));
             let season = c.season.unwrap_or(1);
             let episode = c.episode.unwrap_or(0);
-            format!("TV/{show}/Season {season:02}/{show} - S{season:02}E{episode:02}.{ext}")
+            format!("{show}/Season {season:02}/{show} - S{season:02}E{episode:02}.{ext}")
         }
         MediaKind::Track => String::new(),
     }
@@ -220,7 +227,8 @@ async fn guess_with_ai(client: &AiClient, relative_path: &str) -> Option<Classif
         {{\"kind\": \"movie\", \"title\": \"<canonical movie title>\", \"year\": <release year or null>}} \
         or {{\"kind\": \"episode\", \"show_title\": \"<canonical show title>\", \"season\": <season number>, \
         \"episode\": <episode number>, \"year\": <show's release year or null>}}. \
-        If you cannot confidently identify it, reply {{\"kind\": null}}."
+        Make a best-effort identification for every supplied video; do not omit a file merely because its year is missing. \
+        Only reply {{\"kind\": null}} when neither a movie title nor a TV show/season/episode can reasonably be derived."
     );
     let reply = client.complete(system, &user).await.ok()?;
     let guess: AiClassifyGuess = crate::ai::parse_json_object(&reply)?;
@@ -404,7 +412,7 @@ mod tests {
         let plan = scan_root("local", dir.path(), None).await.unwrap();
         assert_eq!(plan.items.len(), 1);
         let item = &plan.items[0];
-        assert_eq!(item.to, "Movies/10 Cloverfield Lane (2016)/10 Cloverfield Lane (2016).mkv");
+        assert_eq!(item.to, "10 Cloverfield Lane (2016)/10 Cloverfield Lane (2016).mkv");
         assert!(item.conflict.is_none());
         assert!(!item.ai_assisted);
     }
@@ -414,17 +422,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "Heat.1995.mkv", "x");
         write(dir.path(), "Heat.1995.en.srt", "x");
+        write(dir.path(), "Heat.1995.es.vtt", "x");
         let plan = scan_root("local", dir.path(), None).await.unwrap();
-        let subtitle = plan.items.iter().find(|i| i.kind == "subtitle").expect("subtitle item");
-        assert_eq!(subtitle.to, "Movies/Heat (1995)/Heat (1995).en.srt");
-        assert!(subtitle.conflict.is_none());
+        let subtitles: Vec<_> = plan.items.iter().filter(|i| i.kind == "subtitle").collect();
+        assert_eq!(subtitles.len(), 2);
+        assert!(subtitles.iter().any(|item| item.to == "Heat (1995)/Heat (1995).en.srt"));
+        assert!(subtitles.iter().any(|item| item.to == "Heat (1995)/Heat (1995).es.vtt"));
+        assert!(subtitles.iter().all(|item| item.conflict.is_none()));
     }
 
     #[tokio::test]
     async fn flags_a_conflict_when_the_destination_already_exists() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "Heat.1995.mkv", "x");
-        write(dir.path(), "Movies/Heat (1995)/Heat (1995).mkv", "already here");
+        write(dir.path(), "Heat (1995)/Heat (1995).mkv", "already here");
         let plan = scan_root("local", dir.path(), None).await.unwrap();
         let video = plan.items.iter().find(|i| i.kind == "video").expect("video item");
         assert!(video.conflict.is_some());
@@ -434,18 +445,33 @@ mod tests {
     #[tokio::test]
     async fn leaves_an_already_canonical_file_out_of_the_plan() {
         let dir = tempfile::tempdir().unwrap();
-        write(dir.path(), "Movies/Heat (1995)/Heat (1995).mkv", "x");
+        write(dir.path(), "Heat (1995)/Heat (1995).mkv", "x");
         let plan = scan_root("local", dir.path(), None).await.unwrap();
         assert!(plan.items.is_empty());
     }
 
     #[tokio::test]
-    async fn skips_unparseable_names_when_no_ai_client_is_configured() {
+    async fn proposes_every_video_even_when_metadata_is_incomplete_and_ai_is_unavailable() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "asdf1234.mkv", "x");
         let plan = scan_root("local", dir.path(), None).await.unwrap();
-        assert!(plan.items.is_empty());
+        assert_eq!(plan.items.len(), 1);
+        assert_eq!(plan.items[0].to, "asdf1234/asdf1234.mkv");
         assert_eq!(plan.ai_assisted_count, 0);
+    }
+
+    #[tokio::test]
+    async fn identifies_two_sources_with_the_same_target_as_likely_duplicates() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "Heat.1995.mp4", "x");
+        write(dir.path(), "Heat (1995).mp4", "x");
+        let plan = scan_root("local", dir.path(), None).await.unwrap();
+        let duplicate = plan
+            .items
+            .iter()
+            .find(|item| item.conflict.as_deref().is_some_and(|reason| reason.contains("another item")))
+            .expect("one move should be marked as a duplicate");
+        assert!(duplicate.conflict.as_deref().unwrap().contains("likely a duplicate"));
     }
 
     #[test]
@@ -455,14 +481,14 @@ mod tests {
         let items = vec![
             ReorgItem {
                 from: "Heat.1995.mkv".to_string(),
-                to: "Movies/Heat (1995)/Heat (1995).mkv".to_string(),
+                to: "Heat (1995)/Heat (1995).mkv".to_string(),
                 kind: "video",
                 ai_assisted: false,
                 conflict: None,
             },
             ReorgItem {
                 from: "does-not-exist.srt".to_string(),
-                to: "Movies/Heat (1995)/Heat (1995).srt".to_string(),
+                to: "Heat (1995)/Heat (1995).srt".to_string(),
                 kind: "subtitle",
                 ai_assisted: false,
                 conflict: Some("a file already exists at the destination".to_string()),
@@ -473,7 +499,7 @@ mod tests {
         assert_eq!(outcome.skipped, 1);
         assert!(!dir.path().join("Heat.1995.mkv").exists());
         assert_eq!(
-            fs::read_to_string(dir.path().join("Movies/Heat (1995)/Heat (1995).mkv")).unwrap(),
+            fs::read_to_string(dir.path().join("Heat (1995)/Heat (1995).mkv")).unwrap(),
             "original content"
         );
     }
@@ -482,10 +508,10 @@ mod tests {
     fn apply_plan_never_overwrites_a_destination_that_appeared_after_scan() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "Heat.1995.mkv", "source content");
-        write(dir.path(), "Movies/Heat (1995)/Heat (1995).mkv", "unrelated existing file");
+        write(dir.path(), "Heat (1995)/Heat (1995).mkv", "unrelated existing file");
         let items = vec![ReorgItem {
             from: "Heat.1995.mkv".to_string(),
-            to: "Movies/Heat (1995)/Heat (1995).mkv".to_string(),
+            to: "Heat (1995)/Heat (1995).mkv".to_string(),
             kind: "video",
             ai_assisted: false,
             conflict: None,
@@ -495,7 +521,7 @@ mod tests {
         assert_eq!(outcome.skipped, 1);
         assert_eq!(fs::read_to_string(dir.path().join("Heat.1995.mkv")).unwrap(), "source content");
         assert_eq!(
-            fs::read_to_string(dir.path().join("Movies/Heat (1995)/Heat (1995).mkv")).unwrap(),
+            fs::read_to_string(dir.path().join("Heat (1995)/Heat (1995).mkv")).unwrap(),
             "unrelated existing file"
         );
     }

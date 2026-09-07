@@ -1983,6 +1983,17 @@ struct ReorgPlanView {
     apply_summary: Option<ApplySummaryView>,
 }
 
+const AI_REORGANIZE_FINISHED_EVENT: &str = "ai-reorganize-finished";
+
+#[derive(Clone, serde::Serialize)]
+struct ReorgFinishedEvent {
+    id: u64,
+    root_label: String,
+    applied: u32,
+    skipped: u32,
+    errors: Vec<String>,
+}
+
 fn reorg_plan_view(
     id: u64,
     plan: &reorganize::ReorgPlan,
@@ -2073,47 +2084,70 @@ async fn approve_ai_reorg_plan<R: tauri::Runtime>(
     state: tauri::State<'_, AppState>,
     id: u64,
 ) -> Result<ReorgPlanView, String> {
-    let (root_path, items) = {
-        let plans = state.reorg_plans.lock().await;
-        let stored = plans.get(&id).ok_or_else(|| "reorganize plan not found".to_string())?;
+    let core = state.core(&app).await?;
+    let (root_path, items, view) = {
+        let mut plans = state.reorg_plans.lock().await;
+        let stored = plans.get_mut(&id).ok_or_else(|| "reorganize plan not found".to_string())?;
         if stored.status != "proposed" {
             return Err(format!("this plan is already {}", stored.status));
         }
-        (stored.root_path.clone(), stored.plan.items.clone())
-    };
-    let outcome = tokio::task::spawn_blocking(move || reorganize::apply_plan(&root_path, &items))
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let view = {
-        let mut plans = state.reorg_plans.lock().await;
-        let stored = plans.get_mut(&id).ok_or_else(|| "reorganize plan not found".to_string())?;
-        stored.status = "applied";
-        stored.apply_outcome = Some(outcome);
-        reorg_plan_view(id, &stored.plan, stored.status, stored.apply_outcome.as_ref())
+        stored.status = "applying";
+        (
+            stored.root_path.clone(),
+            stored.plan.items.clone(),
+            reorg_plan_view(id, &stored.plan, stored.status, None),
+        )
     };
 
-    let core = state.core(&app).await?;
-    let summary = view.apply_summary.as_ref();
-    let level = if summary.is_some_and(|s| !s.errors.is_empty()) {
-        "warning"
-    } else {
-        "success"
-    };
-    let message = format!(
-        "Reorganized \"{}\": {} file(s) moved, {} skipped.",
-        view.root_label,
-        summary.map(|s| s.applied).unwrap_or(0),
-        summary.map(|s| s.skipped).unwrap_or(0),
-    );
-    if let Err(error) = core
-        .library
-        .record_server_notification(level, "AI reorganize finished", &message)
-        .await
-    {
-        tracing::warn!(%error, "could not save reorganize notification");
-    }
-    let _ = core.rescan(None).await;
+    let task_app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let mut outcome = match tokio::task::spawn_blocking(move || reorganize::apply_plan(&root_path, &items)).await {
+            Ok(outcome) => outcome,
+            Err(error) => reorganize::ApplyOutcome {
+                applied: 0,
+                skipped: 0,
+                errors: vec![format!("reorganization worker failed: {error}")],
+            },
+        };
+
+        if let Err(error) = core.rescan(None).await {
+            outcome.errors.push(format!("library rescan failed: {error}"));
+        }
+
+        let event = {
+            let state = task_app.state::<AppState>();
+            let mut plans = state.reorg_plans.lock().await;
+            let Some(stored) = plans.get_mut(&id) else {
+                tracing::warn!(id, "reorganize plan disappeared while applying");
+                return;
+            };
+            stored.status = "applied";
+            stored.apply_outcome = Some(outcome);
+            let summary = stored.apply_outcome.as_ref().expect("outcome was just stored");
+            ReorgFinishedEvent {
+                id,
+                root_label: stored.plan.root_label.clone(),
+                applied: summary.applied,
+                skipped: summary.skipped,
+                errors: summary.errors.clone(),
+            }
+        };
+
+        let level = if event.errors.is_empty() { "success" } else { "warning" };
+        let message = format!(
+            "Reorganized \"{}\": {} file(s) moved, {} skipped.",
+            event.root_label, event.applied, event.skipped,
+        );
+        if let Err(error) = core
+            .library
+            .record_server_notification(level, "AI reorganize finished", &message)
+            .await
+        {
+            tracing::warn!(%error, "could not save reorganize notification");
+        }
+        let _ = task_app.emit(AI_REORGANIZE_FINISHED_EVENT, event);
+    });
+
     Ok(view)
 }
 

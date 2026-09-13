@@ -6,14 +6,18 @@
 //! server-side behavior, but through this crate's actual client rather than
 //! a raw `tokio-tungstenite` connection — the thing real callers will use.
 //!
-//! Observed once in ~20+ `cargo test --workspace` runs (never in 15+
-//! isolated repeats of just this file): `signal_relays_between_swarm_mates`
-//! failed under the load of every crate's suite running concurrently,
-//! without the panic detail captured that time. Not chased further — a
-//! single occurrence this rare, absent in isolation, with a 5s timeout
-//! already generous for an in-process round trip, reads as transient
-//! machine load rather than a protocol race; worth a second look only if
-//! it starts recurring.
+//! `signal_relays_between_swarm_mates_with_from_stamped` was observed to
+//! fail intermittently under `cargo test --workspace` (never in isolated
+//! repeats of just this file), panicking with a stray `Presence` in place
+//! of the expected `Signal`. Root cause: a connecting device's own
+//! presence broadcast to its mates happens *after* its `hello_ack` is sent
+//! (see `apps/stun-server/src/routes/ws.rs`), so under scheduler load that
+//! broadcast for `a`'s connect can be delayed past `b`'s connect — landing
+//! a "presence of a" frame in `b_rx` interleaved with unrelated signal
+//! traffic. That reordering is legitimate protocol behavior (presence
+//! delivery isn't ordered against later signals to a different peer), so
+//! the test tolerates it by skipping stray `Presence` frames while waiting
+//! for the `Signal` it actually cares about.
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -208,6 +212,20 @@ async fn expect_signal(rx: &mut mpsc::UnboundedReceiver<SignalMessage>) -> Signa
         .expect("channel closed unexpectedly")
 }
 
+/// Like `expect_signal`, but discards any interleaved `Presence` frames
+/// first — a connecting peer's own presence broadcast can be delayed by
+/// scheduler load and arrive after other, later traffic (see module docs).
+async fn expect_signal_ignoring_presence(
+    rx: &mut mpsc::UnboundedReceiver<SignalMessage>,
+) -> SignalMessage {
+    loop {
+        match expect_signal(rx).await {
+            SignalMessage::Presence { .. } => continue,
+            other => return other,
+        }
+    }
+}
+
 #[tokio::test]
 async fn hello_ack_reports_a_real_session() {
     let stun_base = spawn_stun_server().await;
@@ -291,7 +309,7 @@ async fn signal_relays_between_swarm_mates_with_from_stamped() {
     };
     a.send_signal(&b_id, offer.clone()).unwrap();
 
-    match expect_signal(&mut b_rx).await {
+    match expect_signal_ignoring_presence(&mut b_rx).await {
         SignalMessage::Signal { from, to, payload } => {
             assert_eq!(from.as_deref(), Some(a_id.as_str()));
             assert_eq!(to, b_id);

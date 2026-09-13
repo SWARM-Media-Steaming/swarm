@@ -7,7 +7,7 @@ namespace Swarm.CatalogGrouping
     function Movies(entries as object) as object
         movies = []
         for each e in entries
-            if e.kind = "movie"
+            if e.kind = "movie" and (e.extra_type = invalid or e.extra_type = "")
                 movies.Push(e)
             end if
         end for

@@ -32,7 +32,9 @@ internal fun pauseRecommendations(
             .flatMap { it.episodes.asSequence() }
             .firstOrNull()
     }
-    val movies = entries.filter { it.entry.kind == MediaKind.MOVIE && it.fingerprint != current.fingerprint }
+    val movies = entries.filter {
+        it.entry.kind == MediaKind.MOVIE && it.entry.extraType == null && it.fingerprint != current.fingerprint
+    }
 
     return (movies + showRepresentatives)
         .distinctBy { it.fingerprint }

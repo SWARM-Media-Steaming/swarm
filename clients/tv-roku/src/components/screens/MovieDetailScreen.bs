@@ -9,6 +9,8 @@ sub init()
     m.titleLabel = m.top.findNode("title")
     m.metaLine = m.top.findNode("metaLine")
     m.buttonsGroup = m.top.findNode("buttons")
+    m.extrasHeading = m.top.findNode("extrasHeading")
+    m.extrasList = m.top.findNode("extrasList")
 
     m.posterTile.authToken = m.appState.authToken
     m.posterTile.entryUrl = Swarm.Artwork.FullPoster(m.appState.serverBaseUrl, m.entry)
@@ -39,6 +41,22 @@ sub init()
     end if
     m.metaLine.text = metaParts.Join("  •  ")
 
+    extraLines = []
+    for each candidate in m.appState.catalogEntries
+        if candidate.extra_type <> invalid and candidate.parent_entry_key = m.entry.entry_key
+            title = candidate.title
+            if candidate.extra_title <> invalid and candidate.extra_title <> ""
+                title = candidate.extra_title
+            end if
+            extraLines.Push(extraTypeLabel(candidate.extra_type) + "  •  " + title)
+        end if
+    end for
+    if extraLines.Count() > 0
+        m.extrasHeading.visible = true
+        m.extrasList.text = extraLines.Join(Chr(10))
+        m.extrasList.visible = true
+    end if
+
     m.watchlistKey = "movie:" + m.entry.fingerprint
 
     m.buttons = []
@@ -52,6 +70,17 @@ sub init()
     m.top.setFocus(true)
     applyFocus()
 end sub
+
+function extraTypeLabel(extraType as dynamic) as string
+    if extraType = "behindTheScenes" then return "Behind the Scenes"
+    if extraType = "deletedScene" then return "Deleted Scene"
+    if extraType = "featurette" then return "Featurette"
+    if extraType = "interview" then return "Interview"
+    if extraType = "scene" then return "Scene"
+    if extraType = "short" then return "Short"
+    if extraType = "trailer" then return "Trailer"
+    return "Other"
+end function
 
 function likeLabel() as string
     if Swarm.Registry.IsLiked(m.entry.fingerprint)

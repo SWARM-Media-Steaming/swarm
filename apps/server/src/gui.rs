@@ -2189,6 +2189,11 @@ struct EntrySummary {
     community_rating: Option<f64>,
     community_rating_votes: Option<u64>,
     like_count: u32,
+    parent_entry_key: Option<String>,
+    extra_type: Option<String>,
+    extra_title: Option<String>,
+    extra_relative_path: Option<String>,
+    extra_category_path: Option<String>,
 }
 
 #[tauri::command]
@@ -2229,6 +2234,11 @@ async fn list_entries<R: tauri::Runtime>(
             rating: entry.rating,
             community_rating: entry.community_rating,
             community_rating_votes: entry.community_rating_votes,
+            parent_entry_key: entry.parent_entry_key,
+            extra_type: entry.extra_type,
+            extra_title: entry.extra_title,
+            extra_relative_path: entry.extra_relative_path,
+            extra_category_path: entry.extra_category_path,
         })
         .collect())
 }

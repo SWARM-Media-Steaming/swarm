@@ -489,6 +489,12 @@ fn from_catalog_projects_scraped_title_and_lowercased_genres() {
         community_rating_votes: Some(1200),
         like_count: 3,
         skip_segments: Vec::new(),
+        relative_path: None,
+        parent_entry_key: None,
+        extra_type: None,
+        extra_title: None,
+        extra_relative_path: None,
+        extra_category_path: None,
     };
     let li = LibraryItem::from_catalog(&entry);
     assert_eq!(li.title, "Galaxy Quest");

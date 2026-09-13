@@ -247,6 +247,11 @@ async fn guess_with_ai(client: &AiClient, relative_path: &str) -> Option<Classif
             plex_guid: None,
             edition: None,
             extra_kind: None,
+            extra_title: None,
+            extra_parent_title: None,
+            extra_parent_dir: None,
+            extra_relative_path: None,
+            extra_category_path: None,
         }),
         Some("episode")
             if guess.show_title.as_deref().is_some_and(|s| !s.trim().is_empty())
@@ -267,6 +272,11 @@ async fn guess_with_ai(client: &AiClient, relative_path: &str) -> Option<Classif
                 plex_guid: None,
                 edition: None,
                 extra_kind: None,
+                extra_title: None,
+                extra_parent_title: None,
+                extra_parent_dir: None,
+                extra_relative_path: None,
+                extra_category_path: None,
             })
         }
         _ => None,

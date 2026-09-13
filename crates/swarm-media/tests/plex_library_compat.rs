@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use swarm_core::entry_key::entry_key;
 use swarm_core::peer::MediaKind;
 use swarm_media::roots::MediaRoot;
-use swarm_media::scan::{scan_root, scan_roots};
+use swarm_media::scan::{scan_root, scan_roots, scan_roots_with_options, ScanOptions};
 use swarm_media::store::{EntryRecord, Library};
 
 struct Fixture {
@@ -73,6 +73,100 @@ fn find<'a>(entries: &'a [EntryRecord], relative: &str) -> &'a EntryRecord {
         .iter()
         .find(|e| e.entry_key == key)
         .unwrap_or_else(|| panic!("no catalog entry for {relative}"))
+}
+
+#[tokio::test]
+async fn nested_movie_extras_attach_to_the_feature_and_nearest_category_wins() {
+    let fx = fixture("nested-movie-extras").await;
+    let feature = "Movie/Movie.mkv";
+    let deleted = "Movie/Deleted Scenes/Scene 1.mkv";
+    let featurette = "Movie/Featurettes/Making Of.mkv";
+    let nested_deleted =
+        "Movie/Featurettes/The Movie/Deleted Scenes/Dorm Room Extended.mkv";
+    let nested_behind =
+        "Movie/Featurettes/Production/Behind The Scenes/Set Tour.mkv";
+    for path in [feature, deleted, featurette, nested_deleted, nested_behind] {
+        write(&fx.root, path, path.as_bytes());
+    }
+
+    scan_root(&fx.library, &fx.root).await.unwrap();
+    let entries = fx.library.list().await.unwrap();
+    let feature_key = entry_key(feature);
+    assert_eq!(entries.iter().filter(|entry| entry.extra_type.is_none()).count(), 1);
+    let pending_scrapes = fx.library.missing_scrape().await.unwrap();
+    assert_eq!(pending_scrapes.len(), 1, "extras must not enter movie scraping");
+    assert_eq!(pending_scrapes[0].entry_key, feature_key);
+
+    for (path, kind, title, category) in [
+        (deleted, "deletedScene", "Scene 1", "Deleted Scenes"),
+        (featurette, "featurette", "Making Of", "Featurettes"),
+        (
+            nested_deleted,
+            "deletedScene",
+            "Dorm Room Extended",
+            "Featurettes/The Movie/Deleted Scenes",
+        ),
+        (
+            nested_behind,
+            "behindTheScenes",
+            "Set Tour",
+            "Featurettes/Production/Behind The Scenes",
+        ),
+    ] {
+        let extra = find(&entries, path);
+        assert_eq!(extra.parent_entry_key.as_deref(), Some(feature_key.as_str()), "{path}");
+        assert_eq!(extra.extra_type.as_deref(), Some(kind), "{path}");
+        assert_eq!(extra.extra_title.as_deref(), Some(title), "{path}");
+        assert_eq!(extra.extra_category_path.as_deref(), Some(category), "{path}");
+        assert_eq!(
+            extra.to_catalog_entry().extra_relative_path.as_deref(),
+            path.strip_prefix("Movie/"),
+            "{path}",
+        );
+    }
+    let (_, catalog) = fx.library.catalog_snapshot().await.unwrap();
+    assert_eq!(catalog.iter().filter(|entry| entry.extra_type.is_none()).count(), 1);
+    let catalog_extra = catalog
+        .iter()
+        .find(|entry| entry.extra_title.as_deref() == Some("Dorm Room Extended"))
+        .unwrap();
+    assert_eq!(catalog_extra.parent_entry_key.as_deref(), Some(feature_key.as_str()));
+    assert_eq!(catalog_extra.relative_path.as_deref(), Some(nested_deleted));
+
+    // Rename/move and delete reconciliation uses the normal path-derived
+    // scan lifecycle; no stale standalone movie or extra association remains.
+    let moved_path = "Movie/Featurettes/Making Of Updated.mkv";
+    std::fs::rename(fx.root.join(featurette), fx.root.join(moved_path)).unwrap();
+    std::fs::remove_file(fx.root.join(deleted)).unwrap();
+    scan_root(&fx.library, &fx.root).await.unwrap();
+    let entries = fx.library.list().await.unwrap();
+    assert!(entries.iter().all(|entry| entry.relative_path != deleted));
+    assert!(entries.iter().all(|entry| entry.relative_path != featurette));
+    let moved = find(&entries, moved_path);
+    assert_eq!(moved.parent_entry_key.as_deref(), Some(feature_key.as_str()));
+    assert_eq!(moved.extra_title.as_deref(), Some("Making Of Updated"));
+
+    let comprehensive = scan_roots_with_options(
+        &fx.library,
+        &[MediaRoot {
+            label: "local".into(),
+            path: fx.root.clone(),
+            asset_type: Default::default(),
+        }],
+        None,
+        ScanOptions {
+            comprehensive_check: true,
+            scan_music_tracks: true,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(comprehensive.unchanged, 4);
+    let entries = fx.library.list().await.unwrap();
+    assert_eq!(
+        find(&entries, moved_path).extra_type.as_deref(),
+        Some("featurette")
+    );
 }
 
 #[tokio::test]

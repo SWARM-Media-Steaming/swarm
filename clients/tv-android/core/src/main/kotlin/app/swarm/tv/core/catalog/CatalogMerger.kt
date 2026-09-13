@@ -30,20 +30,35 @@ object CatalogMerger {
     fun merge(manifestsByServer: Map<String, CatalogManifest>): List<MergedEntry> {
         val sourcesByFingerprint = linkedMapOf<String, MutableList<String>>()
         val bestEntryByFingerprint = linkedMapOf<String, CatalogEntry>()
+        val bestServerByFingerprint = linkedMapOf<String, String>()
+        val fingerprintByServerEntryKey = mutableMapOf<Pair<String, String>, String>()
 
         for (serverId in manifestsByServer.keys.sorted()) {
             val manifest = manifestsByServer.getValue(serverId)
             for (entry in manifest.entries) {
+                fingerprintByServerEntryKey[serverId to entry.entryKey] = entry.fingerprint
                 sourcesByFingerprint.getOrPut(entry.fingerprint) { mutableListOf() }.add(serverId)
                 val existing = bestEntryByFingerprint[entry.fingerprint]
                 if (existing == null || isRicher(entry, existing)) {
                     bestEntryByFingerprint[entry.fingerprint] = entry
+                    bestServerByFingerprint[entry.fingerprint] = serverId
                 }
             }
         }
 
         return bestEntryByFingerprint.entries
-            .map { (fingerprint, entry) -> MergedEntry(fingerprint, sourcesByFingerprint.getValue(fingerprint).toList(), entry) }
+            .map { (fingerprint, entry) ->
+                val selectedServer = bestServerByFingerprint.getValue(fingerprint)
+                val parentFingerprint = entry.parentEntryKey?.let {
+                    fingerprintByServerEntryKey[selectedServer to it]
+                }
+                val canonicalParentKey = parentFingerprint?.let { bestEntryByFingerprint[it]?.entryKey }
+                MergedEntry(
+                    fingerprint,
+                    sourcesByFingerprint.getValue(fingerprint).toList(),
+                    if (canonicalParentKey != null) entry.copy(parentEntryKey = canonicalParentKey) else entry,
+                )
+            }
             .sortedWith(
                 compareBy<MergedEntry>(
                     { it.entry.catalogSortTitle() },

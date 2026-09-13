@@ -9,6 +9,7 @@ use crate::roots::{MediaRoot, MediaRootAssetType};
 use crate::scrape::artwork;
 use crate::store::{ArtworkKind, EntryRecord, Library, MissingDisposition, ScanManifestEntry};
 use crate::{classify, probe, tags};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -454,6 +455,40 @@ async fn scan_roots_scoped_inner(
     let entry_in_completed_scope =
         |relative_path: &str| path_in_completed_scope(relative_path, multi_root_namespace, &prefixes);
 
+    // Resolve extras to concrete feature ids from the complete manifest,
+    // before the mutation pass. This is cheap path parsing only and works
+    // regardless of lexicographic order or whether either file was already
+    // known to the catalog.
+    let mut movie_parents: HashMap<String, Vec<MovieParentCandidate>> = HashMap::new();
+    let mut parent_cursor = String::new();
+    loop {
+        let files = library.scan_manifest_page(scan_id, &parent_cursor, 256).await?;
+        if files.is_empty() {
+            break;
+        }
+        for file in files {
+            parent_cursor.clone_from(&file.relative_path);
+            if !entry_in_completed_scope(&file.relative_path) {
+                continue;
+            }
+            let asset_type = asset_type_for_path(roots, &file.relative_path, multi_root_namespace);
+            let Some(classified) = classify_for_asset_type(&file.relative_under_root, asset_type)
+            else {
+                continue;
+            };
+            if classified.kind == MediaKind::Movie && classified.extra_kind.is_none() {
+                movie_parents
+                    .entry(parent_dir(&file.relative_path).to_string())
+                    .or_default()
+                    .push(MovieParentCandidate {
+                        entry_key: entry_key::entry_key(&file.relative_path),
+                        title: classified.title,
+                        year: classified.year,
+                    });
+            }
+        }
+    }
+
     let mut cursor = String::new();
     loop {
         check_cancelled(cancel.as_deref())?;
@@ -472,11 +507,13 @@ async fn scan_roots_scoped_inner(
             if !entry_in_completed_scope(&relative) {
                 continue;
             }
+            let asset_type = asset_type_for_path(roots, &file.relative_path, multi_root_namespace);
+            let classified = classify_for_asset_type(&file.relative_under_root, asset_type);
+
             // Deterministic Plex-conformance check (issue #247). Pure string
             // work, no I/O — cheap even on a full rescan. Bounded so a very
             // messy library can't grow the report without limit.
             if report.validation_issues.len() < MAX_VALIDATION_ISSUES {
-                let classified = classify::classify(&file.relative_under_root);
                 if let Some(issue) = crate::plex::validate_media_file(
                     &file.relative_under_root,
                     classified.as_ref(),
@@ -485,6 +522,16 @@ async fn scan_roots_scoped_inner(
                 }
             }
             let known = library.known_entry_by_path(&relative).await?;
+            let extra_metadata = classified
+                .as_ref()
+                .filter(|entry| entry.kind == MediaKind::Movie && entry.extra_kind.is_some())
+                .map(|entry| ExtraMetadata {
+                    parent_entry_key: resolve_movie_parent(&relative, entry, &movie_parents),
+                    extra_type: entry.extra_kind.map(str::to_string),
+                    title: entry.extra_title.clone(),
+                    relative_path: entry.extra_relative_path.clone(),
+                    category_path: entry.extra_category_path.clone(),
+                });
             let mut comprehensive_fingerprint = None;
             if let Some(known_entry) = known.as_ref() {
                 if known_entry.size == file.size && known_entry.modified_time == file.modified_time {
@@ -508,8 +555,26 @@ async fn scan_roots_scoped_inner(
                         true
                     };
                     if content_matches {
+                        let metadata_changed = if let Some(metadata) = &extra_metadata {
+                            library
+                                .update_extra_metadata(
+                                    &entry_key::entry_key(&relative),
+                                    metadata.parent_entry_key.as_deref(),
+                                    metadata.extra_type.as_deref(),
+                                    metadata.title.as_deref(),
+                                    metadata.relative_path.as_deref(),
+                                    metadata.category_path.as_deref(),
+                                )
+                                .await?
+                        } else {
+                            false
+                        };
                         if known_entry.available {
-                            report.unchanged += 1;
+                            if metadata_changed {
+                                report.updated += 1;
+                            } else {
+                                report.unchanged += 1;
+                            }
                         } else if library.restore_available_by_path(&relative).await? {
                             report.added += 1;
                         }
@@ -531,9 +596,7 @@ async fn scan_roots_scoped_inner(
                 }
             }
 
-            let asset_type = asset_type_for_path(roots, &file.relative_path, multi_root_namespace);
-            let Some(classified) = classify_for_asset_type(&file.relative_under_root, asset_type)
-            else {
+            let Some(classified) = classified else {
                 continue;
             };
             // fingerprint_file/read_tags are synchronous std::fs I/O — each a
@@ -603,6 +666,17 @@ async fn scan_roots_scoped_inner(
                 rating: None,
                 community_rating: None,
                 community_rating_votes: None,
+                parent_entry_key: extra_metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.parent_entry_key.clone()),
+                extra_type: extra_metadata.as_ref().and_then(|metadata| metadata.extra_type.clone()),
+                extra_title: extra_metadata.as_ref().and_then(|metadata| metadata.title.clone()),
+                extra_relative_path: extra_metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.relative_path.clone()),
+                extra_category_path: extra_metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.category_path.clone()),
             };
             if known.as_ref().is_some_and(|entry| entry.kind_overridden) {
                 if let Ok(Some(existing)) = library.get(&entry_key).await {
@@ -845,6 +919,57 @@ fn asset_type_for_path(
         .first()
         .map(|root| root.asset_type)
         .unwrap_or_default()
+}
+
+#[derive(Debug)]
+struct MovieParentCandidate {
+    entry_key: String,
+    title: String,
+    year: Option<u32>,
+}
+
+#[derive(Debug)]
+struct ExtraMetadata {
+    parent_entry_key: Option<String>,
+    extra_type: Option<String>,
+    title: Option<String>,
+    relative_path: Option<String>,
+    category_path: Option<String>,
+}
+
+fn parent_dir(path: &str) -> &str {
+    path.rsplit_once('/').map_or("", |(parent, _)| parent)
+}
+
+fn resolve_movie_parent(
+    stored_relative_path: &str,
+    classified: &classify::Classified,
+    candidates: &HashMap<String, Vec<MovieParentCandidate>>,
+) -> Option<String> {
+    let extra_relative = classified.extra_relative_path.as_deref()?;
+    let movie_dir = stored_relative_path
+        .strip_suffix(extra_relative)?
+        .trim_end_matches('/');
+    let candidates = candidates.get(movie_dir)?;
+
+    // Folder/file spelling can legitimately differ. Prefer a title+year
+    // match, then title alone, then the sole feature in the directory.
+    let title = classified
+        .extra_parent_title
+        .as_deref()
+        .unwrap_or(&classified.title);
+    candidates
+        .iter()
+        .find(|candidate| {
+            candidate.title.eq_ignore_ascii_case(title) && candidate.year == classified.year
+        })
+        .or_else(|| {
+            candidates
+                .iter()
+                .find(|candidate| candidate.title.eq_ignore_ascii_case(title))
+        })
+        .or_else(|| (candidates.len() == 1).then(|| &candidates[0]))
+        .map(|candidate| candidate.entry_key.clone())
 }
 
 fn classify_for_asset_type(

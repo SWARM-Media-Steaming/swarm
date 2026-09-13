@@ -525,7 +525,7 @@ function wireBreadcrumb(container, parts) {
 
 function renderBrowseRoot(body) {
   const entries = filteredEntries();
-  const movies = entries.filter(e => e.kind === "movie");
+  const movies = entries.filter(e => e.kind === "movie" && !e.extra_type);
   const tracks = groupTracks(entries);
   const shows = groupEpisodes(entries);
 
@@ -598,7 +598,20 @@ function renderBrowseRoot(body) {
 
 // ---- browse: movie detail ---------------------------------------------------
 
-function detailView(entry, backCrumbs) {
+function extraTypeLabel(type) {
+  return ({
+    behindTheScenes: "Behind the Scenes",
+    deletedScene: "Deleted Scene",
+    featurette: "Featurette",
+    interview: "Interview",
+    scene: "Scene",
+    short: "Short",
+    trailer: "Trailer",
+    other: "Other",
+  })[type] || "Other";
+}
+
+function detailView(entry, backCrumbs, extras = []) {
   const cast = (entry.cast || []).slice(0, 10);
   const slash = entry.relative_path.lastIndexOf("/");
   const fileName = slash === -1 ? entry.relative_path : entry.relative_path.slice(slash + 1);
@@ -625,6 +638,16 @@ function detailView(entry, backCrumbs) {
           </p>
         </div>
       </div>
+      ${extras.length ? `<div class="asset-checklist">
+        <h2>Extras</h2>
+        <table><thead><tr><th>Type</th><th>Title</th><th>Location</th></tr></thead><tbody>
+          ${extras.map(extra => `<tr>
+            <td>${esc(extraTypeLabel(extra.extra_type))}</td>
+            <td>${esc(extra.extra_title || extra.title)}</td>
+            <td class="mono" title="${esc(extra.relative_path)}">${esc(extra.extra_relative_path || extra.relative_path)}</td>
+          </tr>`).join("")}
+        </tbody></table>
+      </div>` : ""}
       <div id="assetChecklist" class="asset-checklist"><span class="muted">Checking metadata &amp; artwork…</span></div>
       <div id="detailManage"></div>
     </div>`;
@@ -728,8 +751,11 @@ function wireDetailManage(entry) {
 function renderMovieDetail(body, entryKey) {
   const entry = libraryEntries.find(e => e.entry_key === entryKey);
   if (!entry) { browsePath = { kind: "root" }; return renderBrowse(); }
+  const extras = libraryEntries
+    .filter(candidate => candidate.parent_entry_key === entry.entry_key && candidate.extra_type)
+    .sort((a, b) => `${a.extra_type}:${a.extra_title}`.localeCompare(`${b.extra_type}:${b.extra_title}`));
   const crumbs = [{ label: "Media", onClick: () => browsePath = { kind: "root" } }, { label: displayEntryTitle(entry) }];
-  body.innerHTML = detailView(entry, crumbs);
+  body.innerHTML = detailView(entry, crumbs, extras);
   wireBreadcrumb(body, crumbs);
   wireDetailManage(entry);
   populateAssetChecklist(entry);

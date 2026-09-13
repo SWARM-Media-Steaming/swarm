@@ -26,6 +26,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -59,6 +61,7 @@ import coil.compose.AsyncImage
 @Composable
 fun MovieDetailScreen(
     entry: MergedEntry,
+    extras: List<MergedEntry>,
     artworkUrl: (MergedEntry) -> String?,
     backdropUrl: (MergedEntry) -> String?,
     onPlay: (MergedEntry) -> Unit,
@@ -218,8 +221,37 @@ fun MovieDetailScreen(
                         .testTag(UatTestTags.MOVIE_DETAIL_DESCRIPTION),
                 )
             }
+            if (extras.isNotEmpty()) {
+                Spacer(Modifier.height(14.dp))
+                Text("Extras", color = SwarmText, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(6.dp))
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    items(extras, key = { it.entry.entryKey }) { extra ->
+                        Button(
+                            onClick = { onPlay(extra) },
+                            colors = swarmActionButtonColors(),
+                            modifier = Modifier.testTag("movie-extra-${extra.entry.entryKey}"),
+                        ) {
+                            val kind = extraTypeLabel(extra.entry.extraType)
+                            val title = extra.entry.extraTitle ?: extra.entry.title
+                            Text("$kind • $title", fontSize = 13.sp, maxLines = 1)
+                        }
+                    }
+                }
+            }
         }
     }
+}
+
+private fun extraTypeLabel(type: String?): String = when (type) {
+    "behindTheScenes" -> "Behind the Scenes"
+    "deletedScene" -> "Deleted Scene"
+    "featurette" -> "Featurette"
+    "interview" -> "Interview"
+    "scene" -> "Scene"
+    "short" -> "Short"
+    "trailer" -> "Trailer"
+    else -> "Other"
 }
 
 @Composable

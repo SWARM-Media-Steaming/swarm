@@ -166,13 +166,16 @@ impl PlexExtraKind {
             .collect();
         Some(match key.as_str() {
             "behindthescenes" => Self::BehindTheScenes,
-            "deletedscenes" => Self::DeletedScenes,
-            "featurettes" => Self::Featurettes,
-            "interviews" => Self::Interviews,
-            "scenes" => Self::Scenes,
-            "shorts" => Self::Shorts,
-            "trailers" => Self::Trailers,
-            "other" => Self::Other,
+            "deleted" | "deletedscene" | "deletedscenes" => Self::DeletedScenes,
+            "featurette" | "featurettes" => Self::Featurettes,
+            "interview" | "interviews" => Self::Interviews,
+            "scene" | "scenes" => Self::Scenes,
+            "short" | "shorts" => Self::Shorts,
+            "trailer" | "trailers" => Self::Trailers,
+            // Plex documents `Other`; these long-standing SWARM aliases are
+            // intentionally retained as tolerant spellings of that category.
+            "other" | "others" | "extra" | "extras" | "special" | "specials"
+            | "bonus" | "bonusfeature" | "bonusfeatures" => Self::Other,
             _ => return None,
         })
     }
@@ -573,6 +576,8 @@ mod tests {
             Some(PlexExtraKind::DeletedScenes)
         );
         assert_eq!(PlexExtraKind::from_dir_name("Season 01"), None);
+        assert_eq!(PlexExtraKind::from_dir_name("featurette"), Some(PlexExtraKind::Featurettes));
+        assert_eq!(PlexExtraKind::from_dir_name("Bonus Features"), Some(PlexExtraKind::Other));
     }
 
     #[test]

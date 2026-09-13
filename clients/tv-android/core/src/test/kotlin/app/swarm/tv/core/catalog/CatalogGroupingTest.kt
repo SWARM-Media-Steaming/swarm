@@ -22,6 +22,34 @@ class CatalogGroupingTest {
         entry = CatalogEntry(entryKey = fp, fingerprint = fp, kind = MediaKind.EPISODE, title = title, size = 1000, showTitle = show, season = season, episode = episode, scrapedTitle = scrapedTitle),
     )
 
+    private fun movie(fp: String, parent: String? = null, extraType: String? = null, extraTitle: String? = null) = MergedEntry(
+        fingerprint = fp,
+        sources = listOf("server-a"),
+        entry = CatalogEntry(
+            entryKey = fp,
+            fingerprint = fp,
+            kind = MediaKind.MOVIE,
+            title = fp,
+            size = 1000,
+            parentEntryKey = parent,
+            extraType = extraType,
+            extraTitle = extraTitle,
+        ),
+    )
+
+    @Test
+    fun `movie extras are excluded from shelves and attached to their parent details`() {
+        val feature = movie("movie")
+        val otherFeature = movie("other-movie")
+        val featurette = movie("making-of", parent = "movie", extraType = "featurette", extraTitle = "Making Of")
+        val deleted = movie("deleted", parent = "movie", extraType = "deletedScene", extraTitle = "Dorm Room Extended")
+        val entries = listOf(feature, otherFeature, featurette, deleted)
+
+        assertEquals(listOf("movie", "other-movie"), CatalogGrouping.movies(entries).map { it.fingerprint })
+        assertEquals(listOf("deleted", "making-of"), CatalogGrouping.movieExtras(feature, entries).map { it.fingerprint })
+        assertTrue(CatalogGrouping.movieExtras(otherFeature, entries).isEmpty())
+    }
+
     @Test
     fun `tracks group by artist then album, sorted by track number`() {
         val entries = listOf(

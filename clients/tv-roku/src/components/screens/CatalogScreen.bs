@@ -43,6 +43,7 @@ sub onCatalogResult()
     end if
 
     entries = result.entries
+    m.appState.catalogEntries = entries
     if entries.Count() = 0
         m.loadingLabel.visible = false
         m.emptyLabel.visible = true

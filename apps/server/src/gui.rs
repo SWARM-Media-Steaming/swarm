@@ -11,9 +11,7 @@
 //! torn down, only the shared `SharedRootResolver` both the core and its
 //! `MediaService` hold is swapped and a scan run against the new set.
 
-mod ai;
 mod mcp;
-mod reorganize;
 mod settings;
 
 use rand::RngCore;
@@ -28,7 +26,7 @@ use swarm_media::roots::{MediaRoot, MediaRootAssetType};
 use swarm_media::scan::ScanProgressEvent;
 use swarm_media::scrape::{BulkScrapeReport, ScrapeConfig, ScrapeIssue, ScrapeProgressEvent};
 use swarm_server::{
-    ScanState, ServerConfig, ServerCore, ServerError, ServerStatus, TokenStoreMode,
+    ai, reorganize, ScanState, ServerConfig, ServerCore, ServerError, ServerStatus, TokenStoreMode,
 };
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};

@@ -3,10 +3,12 @@
 //! allowed-peer set synced with the swarm roster). The Tauri desktop app owns
 //! this core for its entire process lifetime, including while hidden to tray.
 
+pub mod ai;
 mod bandwidth;
 mod http_media;
 pub mod lan;
 pub mod punch_connect;
+pub mod reorganize;
 mod state_db;
 mod subtitle_download;
 pub mod transcode_activity;

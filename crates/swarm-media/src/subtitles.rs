@@ -127,13 +127,25 @@ const LANGUAGES: &[(&str, &str, &str)] = &[
 ];
 
 /// Trailing tokens that qualify a subtitle rather than name its language —
-/// `Movie.en.forced.srt`, `Movie.eng.sdh.srt`.
+/// `Movie.en.forced.srt`, `Movie.eng.sdh.srt`. `whisper` marks a track this
+/// server generated itself (see `transcription::whisper_subtitle_path`) as
+/// opposed to a downloaded one, which is worth surfacing in the label.
 const MODIFIER_TOKENS: &[(&str, &str)] = &[
     ("forced", "Forced"),
     ("sdh", "SDH"),
     ("cc", "CC"),
     ("hearingimpaired", "SDH"),
+    ("whisper", "Whisper"),
 ];
+
+/// Trailing tokens that are pure filler — they peel like a modifier so
+/// parsing can continue past them to a real language/modifier token behind
+/// them, but contribute nothing to the label themselves. `whisper_
+/// subtitle_path` names every generated file `<video-stem>-whisper-
+/// english-subtitles.vtt`; without peeling `subtitles` here, parsing halted
+/// on that generic word before ever reaching `english`, and the file could
+/// never be recognized as belonging to its own video.
+const NOISE_TOKENS: &[&str] = &["subtitle", "subtitles"];
 
 fn lookup_language(token: &str) -> Option<(&'static str, &'static str)> {
     LANGUAGES
@@ -147,6 +159,10 @@ fn lookup_modifier(token: &str) -> Option<&'static str> {
         .iter()
         .find(|(name, _)| *name == token)
         .map(|(_, label)| *label)
+}
+
+fn is_noise_token(token: &str) -> bool {
+    NOISE_TOKENS.contains(&token)
 }
 
 const SEPARATORS: [char; 4] = ['.', '_', ' ', '-'];
@@ -192,7 +208,7 @@ pub fn parse_subtitle_name(stem: &str) -> ParsedSubtitleName {
             modifiers.push(modifier);
             true
         } else {
-            false
+            is_noise_token(&lower)
         };
         if !consumed {
             break;
@@ -425,6 +441,19 @@ mod tests {
         assert_eq!(parsed.base_stem, "");
         assert_eq!(parsed.language.as_deref(), Some("en"));
         assert_eq!(parsed.label, "English");
+    }
+
+    #[test]
+    fn parses_a_whisper_generated_subtitle_name() {
+        // Exact shape `transcription::whisper_subtitle_path` produces:
+        // `<video-stem>-whisper-english-subtitles.vtt`. The generic
+        // trailing `subtitles` token must not block peeling through to the
+        // real language token behind it, or the file can never be matched
+        // back to its own video.
+        let parsed = parse_subtitle_name("28.Days.Later.2002.1080p-whisper-english-subtitles");
+        assert_eq!(parsed.base_stem, "28.Days.Later.2002.1080p");
+        assert_eq!(parsed.language.as_deref(), Some("en"));
+        assert_eq!(parsed.label, "English (Whisper)");
     }
 
     #[test]

@@ -15,6 +15,10 @@ required-features = ["gui"]
 name = "migrate-whisper-subtitles"
 path = "src/bin/migrate_whisper_subtitles.rs"
 
+[[bin]]
+name = "fix-movies-layout"
+path = "src/bin/fix_movies_layout.rs"
+
 [features]
 default = ["gui"]
 gui = ["dep:tauri", "dep:tauri-build", "dep:tauri-plugin-dialog", "dep:tauri-plugin-opener", "dep:tauri-plugin-single-instance", "dep:tauri-plugin-updater", "dep:tauri-plugin-process", "dep:keepawake", "dep:rmcp", "dep:schemars"]

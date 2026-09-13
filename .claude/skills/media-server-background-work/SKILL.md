@@ -141,6 +141,31 @@ authenticated loopback proxy. For VTT, attach Media3
 `SubtitleConfiguration`s to the same `MediaItem` so `PlayerView` supplies its
 normal subtitle selector/off control.
 
+## Any generated sidecar filename must stay sidecar-matchable
+
+If a worker writes a file named after its source media (a subtitle, a
+waveform sidecar, anything meant to travel with the video/track it was
+generated from), its naming suffix must parse back to the source's own stem
+through `swarm_media::subtitles::parse_subtitle_name` — or any tool that
+reconciles a sidecar to its owner (the live playback matcher
+`match_subtitle_to_video`, and `apps/server/src/reorganize.rs`'s
+`find_sidecar_moves`, used when a video gets renamed/moved) will never
+recognize the connection and the sidecar becomes permanently orphaned the
+moment its video is touched.
+
+Concretely: `transcription::whisper_subtitle_path` names every generated
+file `<video-stem>-whisper-english-subtitles.vtt`. `parse_subtitle_name`
+peels recognized trailing tokens right-to-left and **stops at the first
+unrecognized one** — so a new suffix word needs a `MODIFIER_TOKENS` (if it's
+worth surfacing in the label, e.g. `whisper` → "Whisper") or `NOISE_TOKENS`
+(if it's pure filler, e.g. `subtitles`) entry in `subtitles.rs`, or parsing
+halts before ever reaching a real language token behind it. This was a real,
+shipping bug (`subtitles`/`subtitle` weren't recognized) fixed alongside a
+one-off cleanup of a library where it had silently orphaned every
+Whisper-generated subtitle from its video. Add a test in `subtitles.rs`'s
+module built from the exact string your `*_path` function produces, not a
+simplified stand-in.
+
 ## Verify the whole slice
 
 At minimum run:

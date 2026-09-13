@@ -13,7 +13,6 @@ async function refreshAi(showDetectionProgress = false) {
   try {
     const settings = await invoke("get_settings");
     document.getElementById("mcpEnabledCheck").checked = settings.mcp_enabled;
-    document.getElementById("mcpPortInput").value = settings.mcp_port;
     const tokenInput = document.getElementById("mcpAccessTokenInput");
     tokenInput.value = settings.mcp_access_token || "";
     document.getElementById("generateMcpTokenBtn").innerHTML = settings.mcp_access_token
@@ -206,13 +205,35 @@ async function refreshScanAssist(settings) {
   });
 }
 
-document.getElementById("saveAiScanAssistBtn").addEventListener("click", async () => {
+document.getElementById("aiScanAssistCheck").addEventListener("change", async (event) => {
+  const enabled = event.currentTarget.checked;
   try {
-    await invoke("set_ai_scan_assist_enabled", { enabled: document.getElementById("aiScanAssistCheck").checked });
-    showToast("Saved.", "success");
+    await invoke("set_ai_scan_assist_enabled", { enabled });
     await refreshAi();
   } catch (err) {
+    event.currentTarget.checked = !enabled;
     showToast(String(err), "error");
+  }
+});
+
+document.getElementById("runScrapeAssistNowBtn").addEventListener("click", async () => {
+  const btn = document.getElementById("runScrapeAssistNowBtn");
+  btn.disabled = true;
+  const progressToast = showToast("Asking AI to resolve unmatched titles…", "progress", { duration: 0 });
+  try {
+    const outcome = await invoke("run_scrape_assist_now");
+    if (outcome.attempted === 0) {
+      showToast("Nothing to check — run a library scan first.", "success");
+    } else {
+      showToast(`Resolved ${outcome.resolved} of ${outcome.attempted}.`, "success");
+    }
+    await refreshAi();
+    await refreshLibrary();
+  } catch (err) {
+    showToast(String(err), "error");
+  } finally {
+    btn.disabled = false;
+    dismissToast(progressToast);
   }
 });
 
@@ -352,12 +373,13 @@ document.getElementById("aiReorganizeScanBtn").addEventListener("click", async (
   }
 });
 
-document.getElementById("saveAiReorganizeBtn").addEventListener("click", async () => {
+document.getElementById("aiReorganizeCheck").addEventListener("change", async (event) => {
+  const enabled = event.currentTarget.checked;
   try {
-    await invoke("set_ai_reorganize_enabled", { enabled: document.getElementById("aiReorganizeCheck").checked });
-    showToast("Saved.", "success");
+    await invoke("set_ai_reorganize_enabled", { enabled });
     await refreshAi();
   } catch (err) {
+    event.currentTarget.checked = !enabled;
     showToast(String(err), "error");
   }
 });
@@ -398,14 +420,7 @@ document.getElementById("saveMcpSettingsBtn").addEventListener("click", async ()
       showToast("Create an access token before enabling the MCP Server.", "error");
       return;
     }
-    const portValue = document.getElementById("mcpPortInput").value.trim();
-    const port = portValue ? Number(portValue) : 7890;
-    if (!Number.isInteger(port) || port < 1 || port > 65535) {
-      showToast("Port must be a whole number between 1 and 65535.", "error");
-      return;
-    }
     await invoke("set_mcp_enabled", { enabled });
-    await invoke("set_mcp_port", { port });
     showToast("Saved. Restart the app for this to take effect.", "success");
     await refreshAi();
   } catch (err) {

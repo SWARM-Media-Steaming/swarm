@@ -159,34 +159,35 @@ const INFO_TOPICS = {
     body: "Every stream travels straight from your server to your client over a private connection — no third-party relay ever sits in the middle.",
     link: "https://en.wikipedia.org/wiki/Peer-to-peer", linkLabel: "Learn about peer-to-peer",
   },
-  "mcp-protocol": {
-    icon: "bi-stars", title: "What is MCP?",
-    body: "The Model Context Protocol is an open standard that lets an AI assistant talk directly to outside tools and data. SWARM exposes a small, read-only MCP API so an assistant like Claude can look things up in your library on your behalf.",
-    link: "https://modelcontextprotocol.io", linkLabel: "Read the MCP spec",
-  },
-  "try-asking": {
-    icon: "bi-chat-square-text-fill", title: "Ask with an AI tool",
-    body: "After you add this MCP Server to an AI tool, ask ordinary questions about your library. The tool chooses the read-only SWARM functions it needs and turns the results into a conversational answer.",
+  "mcp-help": {
+    icon: "bi-stars", title: "About MCP & the AI tools API",
+    body:
+      "The Model Context Protocol is an open standard that lets an AI assistant talk directly to outside tools and data. SWARM exposes a small, read-only MCP API so an assistant like Claude can look things up in your library on your behalf — it can search and check status, but it can't change settings or touch your files.\n\n" +
+      "Once you've added this MCP Server to an AI tool, just ask ordinary questions about your library — the tool picks the function it needs and turns the results into a conversational answer:\n" +
+      "You: What comedies are in my library?\n" +
+      "AI: I found 18 comedies. A few highlights are Game Night, Palm Springs, and Clue.\n\n" +
+      "Available functions:\n" +
+      "• search_library — find entries by title, kind, genre, rating, or liked status\n" +
+      "• get_entry_details — full synopsis, cast, rating, and genres for one entry\n" +
+      "• list_swarm_devices — which devices in your swarm are online\n" +
+      "• list_client_errors — recent playback/report issues, for triage",
     links: [
+      { href: "https://modelcontextprotocol.io", label: "Read the MCP spec" },
       { href: "https://developers.openai.com/codex/", label: "Learn about Codex" },
       { href: "https://claude.ai/", label: "Open Claude" },
     ],
   },
-  "tool-search-library": {
-    icon: "bi-search", title: "search_library",
-    body: "Finds entries in your library by title, kind, genre, rating, or liked status — the same filtering the Media tab's search box uses.",
+  "mcp-server": {
+    icon: "bi-hdd-network-fill", title: "MCP Server",
+    body: "Create a token, enable the server, save, and restart SWARM. Your AI tool sends this token with each MCP request so only clients you configure can access your library. The port is fixed at 7890.",
   },
-  "tool-get-entry-details": {
-    icon: "bi-info-circle-fill", title: "get_entry_details",
-    body: "Looks up everything known about one entry: its full synopsis, cast, rating, and genres.",
+  "scan-scrape-assist": {
+    icon: "bi-search-heart-fill", title: "Scan & scrape assist",
+    body: "When a scrape can't find a confident TMDb match, AI suggests a cleaner title from the filename and retries the lookup. When this is enabled, \"Scan and update library\" resolves what it can automatically — no per-item approval. Use \"Check now\" to resolve currently-known issues on demand without a full rescan; anything still unresolved stays listed below for manual review.",
   },
-  "tool-list-swarm-devices": {
-    icon: "bi-diagram-3-fill", title: "list_swarm_devices",
-    body: "Lists every device in your swarm and whether it's currently online — the same roster shown on the Swarm tab.",
-  },
-  "tool-list-client-errors": {
-    icon: "bi-bell-fill", title: "list_client_errors",
-    body: "Returns recent client-reported problems, like failed playback or an unreachable server — the same list shown on the Notifications tab.",
+  "reorganize-media": {
+    icon: "bi-folder-symlink-fill", title: "Reorganize media",
+    body: "Scan a media root and propose consistent folder names and file locations (subtitles included) so both the scanner and you can read your library easily. Nothing changes until you review and approve the plan — SWARM only ever renames/moves files here, never deletes.",
   },
   "approve-tv": {
     icon: "bi-shield-check", title: "Approve a TV",

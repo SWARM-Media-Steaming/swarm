@@ -378,12 +378,12 @@ async function main() {
     }
   }
   testMediaRoots = [];
-  document.querySelector('[data-info="try-asking"]').click();
+  document.querySelector('[data-info="mcp-help"]').click();
   if (document.getElementById("infoModalBackdrop").classList.contains("d-none")) {
-    failures.push("Expected clicking Try asking to open its information modal.");
+    failures.push("Expected clicking About MCP & the AI tools API to open its information modal.");
   }
-  if (document.querySelectorAll("#infoModalLinks a").length !== 2) {
-    failures.push("Expected Try asking help to offer both Codex and Claude links.");
+  if (document.querySelectorAll("#infoModalLinks a").length !== 3) {
+    failures.push("Expected MCP help to offer the MCP spec, Codex, and Claude links.");
   }
 
   document.getElementById("connectNetworkRootBtn").click();

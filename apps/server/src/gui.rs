@@ -1662,14 +1662,6 @@ async fn set_mcp_enabled<R: tauri::Runtime>(app: tauri::AppHandle<R>, enabled: b
 }
 
 #[tauri::command]
-async fn set_mcp_port<R: tauri::Runtime>(app: tauri::AppHandle<R>, port: u16) -> Result<(), String> {
-    let dir = app_data_dir(&app)?;
-    let mut settings: Settings = settings::load(&dir);
-    settings.mcp_port = port;
-    settings::save(&dir, &settings).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
 async fn generate_mcp_access_token<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<String, String> {
     let mut bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut bytes);
@@ -2417,6 +2409,10 @@ enum LibraryMaintenanceProgressEvent {
         progress: Option<ScrapeProgressEvent>,
     },
     FixingClassifications,
+    AiAssist {
+        resolved: u32,
+        total: u32,
+    },
 }
 
 #[derive(serde::Serialize)]
@@ -2424,6 +2420,9 @@ struct LibraryMaintenanceResult {
     scan: RescanResult,
     scrape: BulkScrapeReport,
     classifications: swarm_media::store::ReclassifyReport,
+    /// `None` when AI scan assist is disabled, not configured, or there was
+    /// nothing to resolve — see `auto_apply_ai_scrape_assist`.
+    ai_assist: Option<AiAssistOutcome>,
 }
 
 /// Performs the complete browse-page maintenance sequence as one operation:
@@ -2527,6 +2526,43 @@ async fn run_library_maintenance<R: tauri::Runtime>(
             return Err("cancelled".to_string());
         }
 
+        // AI scan assist, automatic: when enabled and a provider/TMDb key
+        // are actually ready, resolve as many of this run's unmatched
+        // titles as possible right here — no per-item approval, per the
+        // "users don't want to approve one at a time" request. A disabled
+        // feature or an unready provider/key is treated as "nothing to do"
+        // rather than a library-maintenance failure; scan/scrape/reclassify
+        // must never fail because of this best-effort addition.
+        let ai_assist = if !scrape.issues.is_empty() {
+            let settings = settings::load(&app_data_dir(&app)?);
+            let ready = settings.ai_scan_assist_enabled.then(|| settings.tmdb_api_key.clone()).flatten();
+            match ready {
+                Some(tmdb_api_key) => match ai_client_from_settings(&settings).await {
+                    Ok(client) => {
+                        let config = ScrapeConfig {
+                            tmdb_api_key: Some(tmdb_api_key.clone()),
+                            ..Default::default()
+                        };
+                        let (remaining, outcome) =
+                            auto_apply_ai_scrape_assist(&core, &client, &tmdb_api_key, &config, &scrape.issues).await;
+                        *state.last_scrape_issues.lock().await = remaining;
+                        let _ = app.emit(
+                            LIBRARY_MAINTENANCE_PROGRESS_EVENT,
+                            LibraryMaintenanceProgressEvent::AiAssist {
+                                resolved: outcome.resolved,
+                                total: outcome.attempted,
+                            },
+                        );
+                        Some(outcome)
+                    }
+                    Err(_) => None,
+                },
+                None => None,
+            }
+        } else {
+            None
+        };
+
         Ok(LibraryMaintenanceResult {
             scan: RescanResult {
                 added: scan.added,
@@ -2538,6 +2574,7 @@ async fn run_library_maintenance<R: tauri::Runtime>(
             },
             scrape,
             classifications,
+            ai_assist,
         })
     }
     .await;
@@ -2658,32 +2695,21 @@ struct AiScrapeSuggestion {
     poster_url: Option<String>,
 }
 
-/// Asks the configured AI provider to guess a clean title/year for an entry
-/// the ordinary scrape pass couldn't match on TMDb, then retries the TMDb
-/// search with that guess. Never writes anything itself — it only returns a
-/// suggestion; the frontend applies it (if the user accepts) through the
-/// existing `rescrape_entry` command, exactly like a manual TMDb URL fix.
-#[tauri::command]
-async fn ai_scrape_assist<R: tauri::Runtime>(
-    app: tauri::AppHandle<R>,
-    state: tauri::State<'_, AppState>,
-    entry_key: String,
+/// Asks `client` to guess a clean title/year for `entry_key` from its
+/// filename, then retries TMDb with that guess. Never writes anything
+/// itself — shared by the manual per-item "Ask AI" command
+/// (`ai_scrape_assist`) and the automatic batch pass
+/// (`auto_apply_ai_scrape_assist`), which additionally applies the result
+/// through `rescrape_entry` on the caller's behalf.
+async fn guess_scrape_suggestion(
+    core: &ServerCore,
+    client: &ai::AiClient,
+    tmdb_api_key: &str,
+    entry_key: &str,
 ) -> Result<AiScrapeSuggestion, String> {
-    let dir = app_data_dir(&app)?;
-    let settings = settings::load(&dir);
-    if !settings.ai_scan_assist_enabled {
-        return Err("Enable \"AI scan & scrape assist\" on the AI tab first.".to_string());
-    }
-    let client = ai_client_from_settings(&settings).await?;
-    let tmdb_api_key = settings
-        .tmdb_api_key
-        .clone()
-        .ok_or_else(|| "Add a TMDb API key on the Settings tab before using scan assist.".to_string())?;
-
-    let core = state.core(&app).await?;
     let entry = core
         .library
-        .get(&entry_key)
+        .get(entry_key)
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "entry not found".to_string())?;
@@ -2712,7 +2738,7 @@ async fn ai_scrape_assist<R: tauri::Runtime>(
         return Err("AI could not suggest a title for this file.".to_string());
     }
 
-    let tmdb = swarm_media::scrape::tmdb::TmdbClient::new(tmdb_api_key);
+    let tmdb = swarm_media::scrape::tmdb::TmdbClient::new(tmdb_api_key.to_string());
     let scraped = if entry.kind == MediaKind::Episode {
         tmdb.search_and_fetch_tv(guess.title.trim()).await
     } else {
@@ -2733,6 +2759,111 @@ async fn ai_scrape_assist<R: tauri::Runtime>(
         tmdb_url,
         poster_url: scraped.poster_url,
     })
+}
+
+/// Asks the configured AI provider to guess a clean title/year for an entry
+/// the ordinary scrape pass couldn't match on TMDb, then retries the TMDb
+/// search with that guess. Never writes anything itself — it only returns a
+/// suggestion; the frontend applies it (if the user accepts) through the
+/// existing `rescrape_entry` command, exactly like a manual TMDb URL fix.
+/// See `auto_apply_ai_scrape_assist` for the automatic, no-review variant.
+#[tauri::command]
+async fn ai_scrape_assist<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    entry_key: String,
+) -> Result<AiScrapeSuggestion, String> {
+    let dir = app_data_dir(&app)?;
+    let settings = settings::load(&dir);
+    if !settings.ai_scan_assist_enabled {
+        return Err("Enable \"AI scan & scrape assist\" on the AI tab first.".to_string());
+    }
+    let client = ai_client_from_settings(&settings).await?;
+    let tmdb_api_key = settings
+        .tmdb_api_key
+        .clone()
+        .ok_or_else(|| "Add a TMDb API key on the Settings tab before using scan assist.".to_string())?;
+    let core = state.core(&app).await?;
+    guess_scrape_suggestion(&core, &client, &tmdb_api_key, &entry_key).await
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+struct AiAssistOutcome {
+    resolved: u32,
+    attempted: u32,
+}
+
+/// Automatically resolves as many `issues` as possible: for each, get an AI
+/// guess (`guess_scrape_suggestion`) and, on success, apply it immediately
+/// via `ServerCore::rescrape_entry` — the exact same two operations the
+/// manual "Ask AI" → "Apply" flow performs, just chained without a human in
+/// the loop, per the user's "I don't want to approve one at a time" request.
+/// Returns the issues still unresolved (AI failed, or no confident TMDb
+/// match) so the caller can keep offering those for manual review.
+async fn auto_apply_ai_scrape_assist(
+    core: &ServerCore,
+    client: &ai::AiClient,
+    tmdb_api_key: &str,
+    config: &ScrapeConfig,
+    issues: &[ScrapeIssue],
+) -> (Vec<ScrapeIssue>, AiAssistOutcome) {
+    let mut remaining = Vec::new();
+    let mut resolved = 0u32;
+    for issue in issues {
+        let applied = match guess_scrape_suggestion(core, client, tmdb_api_key, &issue.entry_key).await {
+            Ok(suggestion) => core
+                .rescrape_entry(
+                    &issue.entry_key,
+                    config.clone(),
+                    Some(swarm_media::scrape::TmdbOverride::Url(suggestion.tmdb_url)),
+                )
+                .await
+                .is_ok(),
+            Err(_) => false,
+        };
+        if applied {
+            resolved += 1;
+        } else {
+            remaining.push(issue.clone());
+        }
+    }
+    (
+        remaining,
+        AiAssistOutcome {
+            resolved,
+            attempted: issues.len() as u32,
+        },
+    )
+}
+
+/// Runs `auto_apply_ai_scrape_assist` against whatever `list_scrape_issues`
+/// currently holds — the AI tab's "Check now" button, for resolving
+/// already-known issues on demand without a full library rescan. Same
+/// settings/provider/TMDb-key gating as `ai_scrape_assist`.
+#[tauri::command]
+async fn run_scrape_assist_now<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+) -> Result<AiAssistOutcome, String> {
+    let dir = app_data_dir(&app)?;
+    let settings = settings::load(&dir);
+    if !settings.ai_scan_assist_enabled {
+        return Err("Enable \"AI scan & scrape assist\" on the AI tab first.".to_string());
+    }
+    let client = ai_client_from_settings(&settings).await?;
+    let tmdb_api_key = settings
+        .tmdb_api_key
+        .clone()
+        .ok_or_else(|| "Add a TMDb API key on the Settings tab before using scan assist.".to_string())?;
+    let core = state.core(&app).await?;
+    let issues = state.last_scrape_issues.lock().await.clone();
+    let config = ScrapeConfig {
+        tmdb_api_key: Some(tmdb_api_key.clone()),
+        ..Default::default()
+    };
+    let (remaining, outcome) = auto_apply_ai_scrape_assist(&core, &client, &tmdb_api_key, &config, &issues).await;
+    *state.last_scrape_issues.lock().await = remaining;
+    Ok(outcome)
 }
 
 /// Manually override an entry's display title, genre/category list,
@@ -3485,7 +3616,6 @@ fn main() {
             generate_subtitles_for_entry,
             get_transcription_status,
             set_mcp_enabled,
-            set_mcp_port,
             generate_mcp_access_token,
             get_status,
             get_bandwidth_history,
@@ -3537,6 +3667,7 @@ fn main() {
             detect_ai_tools,
             list_scrape_issues,
             ai_scrape_assist,
+            run_scrape_assist_now,
             ai_reorganize_scan,
             list_ai_reorg_plans,
             approve_ai_reorg_plan,

@@ -1580,17 +1580,23 @@ async function runLibraryMaintenance(force) {
       progressStage.textContent = "Step 3 of 3 — Fixing classifications";
       progressFill.style.width = "85%";
       progressText.textContent = "Checking library sections and grouping…";
+    } else if (payload.stage === "ai_assist") {
+      progressStage.textContent = "AI resolving unmatched titles…";
+      progressFill.style.width = "95%";
+      progressText.textContent = `Resolved ${payload.resolved} of ${payload.total}.`;
     }
   });
   try {
     const result = await invoke("run_library_maintenance", { force });
     progressFill.style.width = "100%";
     progressStage.textContent = "Library update complete";
-    const issueCount = Number(result.scrape.failed || 0) + Number(result.scrape.not_found || 0);
+    const aiResolved = result.ai_assist ? result.ai_assist.resolved : 0;
+    const issueCount = Number(result.scrape.failed || 0) + Number(result.scrape.not_found || 0) - aiResolved;
+    const aiNote = aiResolved > 0 ? ` AI resolved ${aiResolved} unmatched title${aiResolved === 1 ? "" : "s"} automatically.` : "";
     showToast(
       issueCount > 0
-        ? `Library updated with ${issueCount} metadata issue${issueCount === 1 ? "" : "s"}. View Notifications for details.`
-        : `Library updated: +${result.scan.added} added, ${result.scan.updated} updated, ${result.scrape.matched} metadata matches, ${result.classifications.changed} classifications corrected.`,
+        ? `Library updated with ${issueCount} metadata issue${issueCount === 1 ? "" : "s"}.${aiNote} View Notifications for details.`
+        : `Library updated: +${result.scan.added} added, ${result.scan.updated} updated, ${result.scrape.matched} metadata matches, ${result.classifications.changed} classifications corrected.${aiNote}`,
       issueCount > 0 ? "warning" : "success",
     );
     if (issueCount > 0) await refreshNotificationBadge();

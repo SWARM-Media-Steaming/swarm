@@ -340,26 +340,28 @@
       <div id="aiProvidersList"></div>
     </div>
     <div class="card">
-      <div class="card-head"><h2><i class="bi bi-search-heart-fill heading-icon"></i>Scan &amp; scrape assist</h2></div>
-      <div class="row">
-        <label class="checkbox-label"><input type="checkbox" id="aiScanAssistCheck"> Enable AI scan &amp; scrape assist</label>
-        <button id="saveAiScanAssistBtn" class="secondary"><i class="bi bi-check-lg"></i>Save</button>
+      <p class="eyebrow">AUTOMATION</p>
+      <h2><i class="bi bi-magic heading-icon"></i>AI automation</h2>
+      <div class="row" style="align-items:center">
+        <label class="checkbox-label"><input type="checkbox" id="aiScanAssistCheck"> Scan &amp; scrape assist</label>
+        <span id="aiScanAssistStatus" class="note"></span>
       </div>
-      <p class="muted" style="margin-top:8px">When a scrape can't find a confident TMDb match, ask AI to suggest a cleaner title from the filename and retry the lookup. Nothing is changed automatically — you review and apply each suggestion yourself.</p>
-      <p id="aiScanAssistStatus" class="note"></p>
+      <div class="row" style="align-items:center">
+        <label class="checkbox-label"><input type="checkbox" id="aiReorganizeCheck"> Reorganize media</label>
+        <span id="aiReorganizeStatus" class="note"></span>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2 class="info-trigger" data-info="scan-scrape-assist" tabindex="0" role="button"><i class="bi bi-search-heart-fill heading-icon"></i>Scan &amp; scrape assist <i class="bi bi-info-circle info-affordance"></i></h2>
+        <button id="runScrapeAssistNowBtn" class="secondary"><i class="bi bi-stars"></i>Check now</button>
+      </div>
       <div id="scrapeAssistWrap" class="d-none">
         <h3 style="margin:14px 0 8px; font-size:.95rem">Needs review</h3>
         <ul id="scrapeAssistList" class="issue-list"></ul>
       </div>
     </div>
     <div class="card">
-      <div class="card-head"><h2><i class="bi bi-folder-symlink-fill heading-icon"></i>Reorganize media</h2></div>
-      <div class="row">
-        <label class="checkbox-label"><input type="checkbox" id="aiReorganizeCheck"> Enable AI reorganize</label>
-        <button id="saveAiReorganizeBtn" class="secondary"><i class="bi bi-check-lg"></i>Save</button>
-      </div>
-      <p class="muted" style="margin-top:8px">Scan a media root and propose consistent folder names and file locations (subtitles included) so both the scanner and you can read your library easily. Nothing changes until you review and approve the plan — SWARM only ever renames/moves files here, never deletes.</p>
-      <p id="aiReorganizeStatus" class="note"></p>
+      <div class="card-head"><h2 class="info-trigger" data-info="reorganize-media" tabindex="0" role="button"><i class="bi bi-folder-symlink-fill heading-icon"></i>Reorganize media <i class="bi bi-info-circle info-affordance"></i></h2></div>
       <div id="aiReorganizeScanWrap" class="row d-none" style="margin-top:10px">
         <select id="aiReorganizeRootSelect" style="flex:1"></select>
         <button id="aiReorganizeScanBtn" class="secondary"><i class="bi bi-search"></i>Scan for cleanup</button>
@@ -367,23 +369,12 @@
       <div id="aiReorgPlansList"></div>
     </div>
     <div class="card">
-      <h2 class="info-trigger" data-info="mcp-protocol" tabindex="0" role="button"><i class="bi bi-question-circle-fill heading-icon"></i>What is MCP? <i class="bi bi-info-circle info-affordance"></i></h2>
-      <p class="muted">MCP lets an AI assistant — Claude, Codex, or any other MCP-compatible client — look things up in your library on your behalf. It's read-only: it can search and check status, but it can't change settings or touch your files.</p>
+      <h2 class="info-trigger" data-info="mcp-help" tabindex="0" role="button"><i class="bi bi-question-circle-fill heading-icon"></i>About MCP &amp; the AI tools API <i class="bi bi-info-circle info-affordance"></i></h2>
     </div>
     <div class="card">
-      <h2 class="info-trigger" data-info="try-asking" tabindex="0" role="button"><i class="bi bi-chat-square-text-fill heading-icon"></i>Try asking <i class="bi bi-info-circle info-affordance"></i></h2>
-      <p class="muted">Once connected, just ask in plain language — no special syntax needed:</p>
-      <div class="ai-console">
-        <div class="ai-console-head"><i class="bi bi-terminal-fill"></i> Claude / Codex</div>
-        <div class="ai-console-line"><span class="ai-console-prompt">You:</span> What comedies are in my library?</div>
-        <div class="ai-console-line ai-console-response"><span class="ai-console-prompt">AI:</span> I found 18 comedies. A few highlights are <em>Game Night</em>, <em>Palm Springs</em>, and <em>Clue</em>.</div>
-      </div>
-    </div>
-    <div class="card">
-      <div class="card-head"><h2><i class="bi bi-hdd-network-fill heading-icon"></i>MCP Server</h2></div>
+      <div class="card-head"><h2 class="info-trigger" data-info="mcp-server" tabindex="0" role="button"><i class="bi bi-hdd-network-fill heading-icon"></i>MCP Server <i class="bi bi-info-circle info-affordance"></i></h2></div>
       <div class="row">
         <label class="checkbox-label"><input type="checkbox" id="mcpEnabledCheck"> Enable MCP server</label>
-        <input id="mcpPortInput" placeholder="Port (default 7890)" style="flex:0 0 160px">
         <button id="saveMcpSettingsBtn" class="secondary"><i class="bi bi-check-lg"></i>Save</button>
       </div>
       <div class="row token-row">
@@ -391,34 +382,12 @@
         <button id="generateMcpTokenBtn" class="secondary"><i class="bi bi-key-fill"></i>Create access token</button>
         <button id="copyMcpTokenBtn" class="secondary"><i class="bi bi-copy"></i>Copy</button>
       </div>
-      <p class="muted" style="margin-top:8px">Create a token, enable the server, save, and restart SWARM. Your AI tool sends this token with each MCP request so only clients you configure can access your library.</p>
       <p id="mcpStatus" class="note"></p>
     </div>
     <div class="card" id="mcpConfigCard">
       <h2><i class="bi bi-plug-fill heading-icon"></i>Connect an AI tool</h2>
       <p class="muted">Add this Streamable HTTP server to your AI tool's MCP configuration. Replace the LAN IP, keep the bearer token private, then restart the AI tool.</p>
       <pre id="mcpConfigSnippet" class="mono" style="background:var(--surface-muted); border:1px solid var(--border); border-radius:8px; padding:12px; overflow-x:auto; font-size:.78rem"></pre>
-    </div>
-    <div class="card">
-      <h2 class="info-trigger" data-info="mcp-protocol" tabindex="0" role="button"><i class="bi bi-braces-asterisk heading-icon"></i>MCP Server API <i class="bi bi-info-circle info-affordance"></i></h2>
-      <ul class="issue-list" style="background:transparent">
-        <li class="info-trigger" data-info="tool-search-library" tabindex="0" role="button">
-          <i class="bi bi-search tool-icon"></i>
-          <span class="issue-title">search_library</span> — <span class="muted">find entries by title, kind, genre, rating, or liked status</span>
-        </li>
-        <li class="info-trigger" data-info="tool-get-entry-details" tabindex="0" role="button">
-          <i class="bi bi-info-circle-fill tool-icon"></i>
-          <span class="issue-title">get_entry_details</span> — <span class="muted">full synopsis, cast, rating, and genres for one entry</span>
-        </li>
-        <li class="info-trigger" data-info="tool-list-swarm-devices" tabindex="0" role="button">
-          <i class="bi bi-diagram-3-fill tool-icon"></i>
-          <span class="issue-title">list_swarm_devices</span> — <span class="muted">which devices in your swarm are online</span>
-        </li>
-        <li class="info-trigger" data-info="tool-list-client-errors" tabindex="0" role="button">
-          <i class="bi bi-bell-fill tool-icon"></i>
-          <span class="issue-title">list_client_errors</span> — <span class="muted">recent playback/report issues, for triage</span>
-        </li>
-      </ul>
     </div>
   </div>
 

@@ -11,8 +11,9 @@
 use super::harness::{test_app, test_app_with_media_root};
 use crate::{
     ai_reorganize_scan, ai_scrape_assist, approve_ai_reorg_plan, get_settings, list_ai_reorg_plans,
-    list_scrape_issues, reject_ai_reorg_plan, set_ai_provider_api_key, set_ai_provider_enabled,
-    set_ai_provider_model, set_ai_reorganize_enabled, set_ai_scan_assist_enabled, test_ai_provider,
+    list_scrape_issues, reject_ai_reorg_plan, run_scrape_assist_now, set_ai_provider_api_key,
+    set_ai_provider_enabled, set_ai_provider_model, set_ai_reorganize_enabled, set_ai_scan_assist_enabled,
+    test_ai_provider,
 };
 use tauri::Manager;
 
@@ -123,6 +124,20 @@ async fn ai_scrape_assist_refuses_to_run_until_scan_assist_is_enabled() {
     let app = test_app.handle();
 
     let error = ai_scrape_assist(app.clone(), app.state(), "whatever-entry-key".to_string())
+        .await
+        .expect_err("scan assist should refuse to run while disabled");
+    assert!(error.contains("Enable"));
+}
+
+#[tokio::test]
+async fn run_scrape_assist_now_refuses_to_run_until_scan_assist_is_enabled() {
+    // Same gate as the per-item command — the "Check now" button (issue:
+    // AI tab automation) must not silently no-op when disabled, it should
+    // report exactly why, same as ai_scrape_assist does.
+    let test_app = test_app();
+    let app = test_app.handle();
+
+    let error = run_scrape_assist_now(app.clone(), app.state())
         .await
         .expect_err("scan assist should refuse to run while disabled");
     assert!(error.contains("Enable"));

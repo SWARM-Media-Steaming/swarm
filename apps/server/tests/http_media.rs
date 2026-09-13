@@ -118,6 +118,11 @@ fn direct_play_entry(entry_key: &str, relative_path: &str, size: u64) -> EntryRe
         rating: None,
         community_rating: None,
         community_rating_votes: None,
+        parent_entry_key: None,
+        extra_type: None,
+        extra_title: None,
+        extra_relative_path: None,
+        extra_category_path: None,
     }
 }
 
@@ -193,9 +198,13 @@ async fn pair_negotiate_and_range_fetch_media_over_real_http() {
         rating: None,
         community_rating: None,
         community_rating_votes: None,
+        parent_entry_key: None,
+        extra_type: None,
+        extra_title: None,
+        extra_relative_path: None,
+        extra_category_path: None,
     };
     core.library.upsert(&entry).await.unwrap();
-
     let base_url = format!("http://{}", core.http_media_addr);
     let client = reqwest::Client::new();
 
@@ -334,8 +343,26 @@ async fn browse_catalog_and_fetch_artwork_over_real_http() {
         rating: None,
         community_rating: None,
         community_rating_votes: None,
+        parent_entry_key: None,
+        extra_type: None,
+        extra_title: None,
+        extra_relative_path: None,
+        extra_category_path: None,
     };
     core.library.upsert(&entry).await.unwrap();
+    let mut extra = direct_play_entry(
+        "0123abcd4567efab8901cdef",
+        "movies/Featurettes/Production/Behind The Scenes/Set Tour.mp4",
+        2_000,
+    );
+    extra.fingerprint = "extra-fingerprint".into();
+    extra.parent_entry_key = Some(entry.entry_key.clone());
+    extra.extra_type = Some("behindTheScenes".into());
+    extra.extra_title = Some("Set Tour".into());
+    extra.extra_relative_path =
+        Some("Featurettes/Production/Behind The Scenes/Set Tour.mp4".into());
+    extra.extra_category_path = Some("Featurettes/Production/Behind The Scenes".into());
+    core.library.upsert(&extra).await.unwrap();
 
     let poster_relative_path = "movies/poster.jpg";
     let poster_bytes = deterministic_bytes(2_000, 7);
@@ -360,7 +387,7 @@ async fn browse_catalog_and_fetch_artwork_over_real_http() {
         .json()
         .await
         .unwrap();
-    assert_eq!(thumbprint.entry_count, 1);
+    assert_eq!(thumbprint.entry_count, 2);
 
     // --- /catalog/manifest (plain) ---
     let manifest: CatalogManifest = client
@@ -372,8 +399,19 @@ async fn browse_catalog_and_fetch_artwork_over_real_http() {
         .json()
         .await
         .unwrap();
-    assert_eq!(manifest.entries.len(), 1);
-    assert_eq!(manifest.entries[0].entry_key, entry.entry_key);
+    assert_eq!(manifest.entries.len(), 2);
+    let catalog_extra = manifest
+        .entries
+        .iter()
+        .find(|candidate| candidate.entry_key == extra.entry_key)
+        .unwrap();
+    assert_eq!(catalog_extra.parent_entry_key.as_deref(), Some(entry.entry_key.as_str()));
+    assert_eq!(catalog_extra.extra_type.as_deref(), Some("behindTheScenes"));
+    assert_eq!(catalog_extra.extra_title.as_deref(), Some("Set Tour"));
+    assert_eq!(
+        catalog_extra.extra_category_path.as_deref(),
+        Some("Featurettes/Production/Behind The Scenes")
+    );
     assert_eq!(manifest.thumbprint, thumbprint.thumbprint);
 
     // --- /catalog/manifest.gz — same content, compressed ---
@@ -390,7 +428,10 @@ async fn browse_catalog_and_fetch_artwork_over_real_http() {
         .read_to_string(&mut decompressed)
         .unwrap();
     let gz_manifest: CatalogManifest = serde_json::from_str(&decompressed).unwrap();
-    assert_eq!(gz_manifest.entries[0].entry_key, entry.entry_key);
+    assert!(gz_manifest
+        .entries
+        .iter()
+        .any(|candidate| candidate.entry_key == extra.entry_key));
 
     // --- /art/{entry_key}/poster — real bytes, plus the ETag/304 round trip
     // artwork caching depends on. ---

@@ -1047,6 +1047,7 @@ private fun SwarmApp(
             is UiState.MovieDetail ->
                 MovieDetailScreen(
                     state.entry,
+                    state.extras,
                     fullArtworkUrl,
                     backdropUrl,
                     onPlay = onPlay,

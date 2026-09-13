@@ -226,7 +226,11 @@ sealed class UiState {
     /** Movies: Movies row -> here (all movies, "Browse all") -> [MovieDetail]. */
     data class MovieShelf(val catalog: Catalog, val movies: List<MergedEntry>) : UiState()
     /** Movies: Movies row or [MovieShelf] -> here (detail before play) -> [Player]. [previous] is whichever of those it was opened from, so Back returns to the right one — same reasoning as [Player.previous]. */
-    data class MovieDetail(val previous: UiState, val entry: MergedEntry) : UiState()
+    data class MovieDetail(
+        val previous: UiState,
+        val entry: MergedEntry,
+        val extras: List<MergedEntry> = emptyList(),
+    ) : UiState()
     /** Shows: Shows row -> here (grouped, replacing the old flat-episode shelf) -> [ShowSeasons]. */
     data class ShowShelf(val catalog: Catalog, val shows: List<ShowGroup>) : UiState()
     /** One show's seasons; [SeasonScreen] handles the season-list<->episode-grid sub-navigation locally. */
@@ -1737,7 +1741,7 @@ class SwarmViewModel(
         )
         is UiState.MovieShelf -> state.copy(
             catalog = catalog,
-            movies = catalog.entries.filter { it.entry.kind == MediaKind.MOVIE },
+            movies = CatalogGrouping.movies(catalog.entries),
         )
         is UiState.ShowShelf -> state.copy(
             catalog = catalog,
@@ -1765,10 +1769,14 @@ class SwarmViewModel(
                 },
             )
         }
-        is UiState.MovieDetail -> state.copy(
-            previous = replaceEmbeddedCatalog(state.previous, catalog),
-            entry = catalog.entries.find { it.fingerprint == state.entry.fingerprint } ?: state.entry,
-        )
+        is UiState.MovieDetail -> {
+            val entry = catalog.entries.find { it.fingerprint == state.entry.fingerprint } ?: state.entry
+            state.copy(
+                previous = replaceEmbeddedCatalog(state.previous, catalog),
+                entry = entry,
+                extras = CatalogGrouping.movieExtras(entry, catalog.entries),
+            )
+        }
         is UiState.PreparingPlayback -> state.copy(
             previous = replaceEmbeddedCatalog(state.previous, catalog),
             prepared = state.prepared?.let { replaceEmbeddedCatalog(it, catalog) as? UiState.Player },
@@ -3122,7 +3130,8 @@ class SwarmViewModel(
     fun openMovieDetail(entry: MergedEntry) {
         val current = _state.value
         if (current !is UiState.Catalog && current !is UiState.MovieShelf) return
-        _state.value = UiState.MovieDetail(current, entry)
+        val catalog = current.embeddedCatalog() ?: return
+        _state.value = UiState.MovieDetail(current, entry, CatalogGrouping.movieExtras(entry, catalog.entries))
     }
 
     fun backFromMovieDetail() {
@@ -3136,7 +3145,7 @@ class SwarmViewModel(
     fun openMovieShelf(movies: List<MergedEntry>? = null) {
         val current = _state.value
         if (current !is UiState.Catalog) return
-        _state.value = UiState.MovieShelf(current, movies ?: current.entries.filter { it.entry.kind == MediaKind.MOVIE })
+        _state.value = UiState.MovieShelf(current, movies ?: CatalogGrouping.movies(current.entries))
     }
 
     fun backFromMovieShelf() {

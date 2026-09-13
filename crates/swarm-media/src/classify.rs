@@ -169,55 +169,53 @@ fn is_video_type_wrapper(name: &str) -> bool {
 /// Plex/Kodi/Jellyfin "local extras" convention (`Movie (2019)/Featurettes/
 /// Making Of.mkv`). A video inside one of these, with no show/episode
 /// signal of its own, is part of that movie rather than a separate film.
-const EXTRAS_FOLDER_NAMES: &[&str] = &[
-    "featurettes",
-    "featurette",
-    "specials",
-    "special",
-    "extras",
-    "extra",
-    "behind the scenes",
-    "behindthescenes",
-    "deleted scenes",
-    "deletedscenes",
-    "deleted",
-    "interviews",
-    "interview",
-    "trailers",
-    "trailer",
-    "shorts",
-    "short",
-    "scenes",
-    "bonus",
-    "bonus features",
-    "bonusfeatures",
-    "other",
-    "others",
-];
-
 fn is_extras_folder(name: &str) -> bool {
-    EXTRAS_FOLDER_NAMES.contains(&name.to_lowercase().as_str())
+    crate::plex::PlexExtraKind::from_dir_name(name).is_some()
 }
 
-/// If `dirs` places the file inside a recognized [`EXTRAS_FOLDER_NAMES`]
-/// subfolder of a movie folder, return `(movie_title, movie_year,
-/// clip_name)`. Deliberately conservative: the folder directly above the
-/// extras folder must itself carry a 4-digit year (`Title (2019)`), the
-/// dominant "this is a movie folder" convention — otherwise a stray
-/// `Trailers/` directly under a media root would start swallowing loose
-/// clips under an invented movie name. `dirs` is the file's ancestor chain
-/// with disc folders already absorbed; the outermost extras folder wins so
-/// `Movie (2019)/Extras/Interviews/x.mkv` resolves against the movie folder.
-fn movie_extra_from_dirs(dirs: &[&str], clip_stem: &str) -> Option<(String, u32, String)> {
+#[derive(Debug)]
+struct MovieExtra {
+    movie_title: String,
+    movie_year: Option<u32>,
+    display_title: String,
+    kind: crate::plex::PlexExtraKind,
+    parent_dir: String,
+    relative_path: String,
+    category_path: Option<String>,
+}
+
+/// Resolve a file anywhere below a recognized movie-extras directory. The
+/// first extras directory anchors the owning movie folder; the nearest
+/// recognized directory supplies the type, so nested category overrides are
+/// deterministic (`Featurettes/x/Deleted Scenes/y.mkv` is a deleted scene).
+fn movie_extra_from_dirs(dirs: &[&str], file_name: &str, clip_stem: &str) -> Option<MovieExtra> {
     let extras_idx = dirs.iter().position(|dir| is_extras_folder(dir))?;
     let parent = dirs.get(extras_idx.checked_sub(1)?)?;
+    // A real movie folder does not need a year; Plex recommends one but does
+    // not require SWARM to reject otherwise unambiguous existing libraries.
     let (stripped, year) = extract_year_and_strip(parent);
-    let year = year?;
     let movie_title = clean_title(&stripped);
     if movie_title.is_empty() {
         return None;
     }
-    Some((movie_title, year, clean_title(clip_stem)))
+    let kind = dirs[extras_idx..]
+        .iter()
+        .rev()
+        .find_map(|dir| crate::plex::PlexExtraKind::from_dir_name(dir))?;
+    Some(MovieExtra {
+        movie_title,
+        movie_year: year,
+        display_title: clean_title(clip_stem),
+        kind,
+        parent_dir: dirs[..extras_idx].join("/"),
+        relative_path: dirs[extras_idx..]
+            .iter()
+            .chain(std::iter::once(&file_name))
+            .copied()
+            .collect::<Vec<_>>()
+            .join("/"),
+        category_path: Some(dirs[extras_idx..].join("/")),
+    })
 }
 
 /// The show folder immediately below a recognized Shows/TV wrapper folder
@@ -385,6 +383,18 @@ pub struct Classified {
     /// deleted scene / …) rather than a feature or a numbered episode, the
     /// extras category slug (see [`crate::plex::PlexExtraKind::slug`]).
     pub extra_kind: Option<&'static str>,
+    /// Clean, user-facing title of an extra, independent of the feature's
+    /// grouping title (for example `Dorm Room Extended`).
+    pub extra_title: Option<String>,
+    /// Path-derived owning movie title used to resolve the concrete parent
+    /// entry without parsing the presentation title back apart.
+    pub extra_parent_title: Option<String>,
+    /// Library-relative directory containing the owning movie.
+    pub extra_parent_dir: Option<String>,
+    /// Path from the movie directory to this extra, including its filename.
+    pub extra_relative_path: Option<String>,
+    /// Optional directory/category path between the movie and extra file.
+    pub extra_category_path: Option<String>,
 }
 
 /// A `Classified` with every field at its neutral default, so the many
@@ -405,6 +415,11 @@ fn blank_classified() -> Classified {
         plex_guid: None,
         edition: None,
         extra_kind: None,
+        extra_title: None,
+        extra_parent_title: None,
+        extra_parent_dir: None,
+        extra_relative_path: None,
+        extra_category_path: None,
     }
 }
 
@@ -646,6 +661,7 @@ pub fn classify(relative_path: &str) -> Option<Classified> {
         let extra_kind = (season == 0)
             .then(|| {
                 dirs.iter()
+                    .rev()
                     .find_map(|d| crate::plex::PlexExtraKind::from_dir_name(d))
             })
             .flatten()
@@ -681,6 +697,7 @@ pub fn classify(relative_path: &str) -> Option<Classified> {
     if let Some(show_title) = wrapper_derived_show_name(&dirs) {
         let extra_kind = dirs
             .iter()
+            .rev()
             .find_map(|d| crate::plex::PlexExtraKind::from_dir_name(d))
             .map(|k| k.slug());
         return Some(Classified {
@@ -701,22 +718,25 @@ pub fn classify(relative_path: &str) -> Option<Classified> {
     // right. It is catalogued as a Movie sharing the parent movie's title
     // and year — so it groups with the feature and scrapes as the same
     // title — with the clip's own name appended for the catalog list.
-    if let Some((movie_title, movie_year, clip)) = movie_extra_from_dirs(&dirs, &stem_clean) {
-        let extra_kind = dirs
-            .iter()
-            .find_map(|d| crate::plex::PlexExtraKind::from_dir_name(d))
-            .map(|k| k.slug());
+    if let Some(extra) = movie_extra_from_dirs(&dirs, file_name, &stem_clean) {
         return Some(Classified {
             kind: MediaKind::Movie,
-            title: if clip.is_empty() || clip.eq_ignore_ascii_case(&movie_title) {
-                movie_title
+            title: if extra.display_title.is_empty()
+                || extra.display_title.eq_ignore_ascii_case(&extra.movie_title)
+            {
+                extra.movie_title.clone()
             } else {
-                format!("{movie_title} - {clip}")
+                format!("{} - {}", extra.movie_title, extra.display_title)
             },
-            year: year.or(Some(movie_year)),
+            year: year.or(extra.movie_year),
             plex_guid,
             edition,
-            extra_kind,
+            extra_kind: Some(extra.kind.slug()),
+            extra_title: Some(extra.display_title),
+            extra_parent_title: Some(extra.movie_title),
+            extra_parent_dir: Some(extra.parent_dir),
+            extra_relative_path: Some(extra.relative_path),
+            extra_category_path: extra.category_path,
             ..blank_classified()
         });
     }
@@ -727,15 +747,24 @@ pub fn classify(relative_path: &str) -> Option<Classified> {
     // groups and scrapes with the feature.
     if let Some((extra_kind, base)) = crate::plex::PlexExtraKind::from_filename_suffix(stem) {
         let (base_clean, base_year) = extract_year_and_strip(&base);
-        let base_title = clean_title(&base_clean);
-        if !base_title.is_empty() {
+        let display_title = clean_title(&base_clean);
+        if !display_title.is_empty() {
+            let parent = dirs.last();
+            let (parent_title, parent_year) = parent
+                .map(|dir| extract_year_and_strip(dir))
+                .map(|(title, year)| (clean_title(&title), year))
+                .unwrap_or_else(|| (display_title.clone(), base_year));
             return Some(Classified {
                 kind: MediaKind::Movie,
-                title: base_title,
-                year: year.or(base_year),
+                title: parent_title.clone(),
+                year: year.or(parent_year).or(base_year),
                 plex_guid,
                 edition,
                 extra_kind: Some(extra_kind.slug()),
+                extra_title: Some(display_title),
+                extra_parent_title: Some(parent_title.clone()),
+                extra_parent_dir: Some(dirs.join("/")),
+                extra_relative_path: Some(file_name.to_string()),
                 ..blank_classified()
             });
         }
@@ -2224,13 +2253,43 @@ mod tests {
     }
 
     #[test]
-    fn extras_folder_without_a_year_bearing_parent_is_left_as_its_own_movie() {
-        // Conservative guard: no "(YYYY)" on the folder above the extras
-        // folder → treat the clip as an ordinary standalone entry rather
-        // than inventing a movie grouping.
-        let entry = classify("movies/Trailers/Upcoming Thing.mkv").unwrap();
+    fn nested_movie_extra_uses_nearest_category_and_accepts_a_yearless_movie_folder() {
+        let entry = classify(
+            "Movies/Aqua Teen Hunger Force/Featurettes/The Movie/Deleted Scenes/Dorm Room Extended.mkv",
+        )
+        .unwrap();
+        assert_eq!(entry.kind, MediaKind::Movie);
+        assert_eq!(entry.title, "Aqua Teen Hunger Force - Dorm Room Extended");
+        assert_eq!(entry.year, None);
+        assert_eq!(entry.extra_kind, Some("deletedScene"));
+        assert_eq!(entry.extra_title.as_deref(), Some("Dorm Room Extended"));
+        assert_eq!(entry.extra_parent_dir.as_deref(), Some("Movies/Aqua Teen Hunger Force"));
+        assert_eq!(
+            entry.extra_relative_path.as_deref(),
+            Some("Featurettes/The Movie/Deleted Scenes/Dorm Room Extended.mkv")
+        );
+        assert_eq!(
+            entry.extra_category_path.as_deref(),
+            Some("Featurettes/The Movie/Deleted Scenes")
+        );
+    }
+
+    #[test]
+    fn nested_movie_extra_inherits_outer_category_without_a_deeper_override() {
+        let entry = classify(
+            "Movies/Aqua Teen Hunger Force/Featurettes/The Movie/Making Of.mkv",
+        )
+        .unwrap();
+        assert_eq!(entry.extra_kind, Some("featurette"));
+        assert_eq!(entry.extra_title.as_deref(), Some("Making Of"));
+    }
+
+    #[test]
+    fn extras_folder_without_a_parent_movie_is_not_invented_as_a_movie() {
+        let entry = classify("Trailers/Upcoming Thing.mkv").unwrap();
         assert_eq!(entry.kind, MediaKind::Movie);
         assert_eq!(entry.title, "Upcoming Thing");
+        assert_eq!(entry.extra_kind, None);
     }
 
     #[test]

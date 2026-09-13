@@ -93,6 +93,11 @@ async fn transcription_queue_resumes_segments_and_cascades_with_media() {
         rating: None,
         community_rating: None,
         community_rating_votes: None,
+        parent_entry_key: None,
+        extra_type: None,
+        extra_title: None,
+        extra_relative_path: None,
+        extra_category_path: None,
     };
     fx.library.upsert(&entry).await.unwrap();
     assert_eq!(
@@ -209,6 +214,11 @@ fn movie_entry(entry_key: &str, relative_path: &str, fingerprint: &str) -> Entry
         rating: None,
         community_rating: None,
         community_rating_votes: None,
+        parent_entry_key: None,
+        extra_type: None,
+        extra_title: None,
+        extra_relative_path: None,
+        extra_category_path: None,
     }
 }
 
@@ -1710,6 +1720,11 @@ async fn reclassify_all_repairs_stale_bonus_content_and_leaves_correct_entries_u
         rating: None,
         community_rating: None,
         community_rating_votes: None,
+        parent_entry_key: None,
+        extra_type: None,
+        extra_title: None,
+        extra_relative_path: None,
+        extra_category_path: None,
     };
     fx.library.upsert(&wrong_entry).await.unwrap();
     // upsert() deliberately never writes scrape/artwork columns (a rescan
@@ -1767,6 +1782,11 @@ async fn reclassify_all_repairs_stale_bonus_content_and_leaves_correct_entries_u
         rating: None,
         community_rating: None,
         community_rating_votes: None,
+        parent_entry_key: None,
+        extra_type: None,
+        extra_title: None,
+        extra_relative_path: None,
+        extra_category_path: None,
     };
     fx.library.upsert(&correct_entry).await.unwrap();
     fx.library
@@ -1872,6 +1892,11 @@ async fn reclassify_all_repairs_a_track_whose_only_wrong_fields_are_artist_and_a
         rating: None,
         community_rating: None,
         community_rating_votes: None,
+        parent_entry_key: None,
+        extra_type: None,
+        extra_title: None,
+        extra_relative_path: None,
+        extra_category_path: None,
     };
     fx.library.upsert(&wrong_entry).await.unwrap();
     fx.library

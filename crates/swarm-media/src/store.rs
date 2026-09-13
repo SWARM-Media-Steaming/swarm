@@ -63,6 +63,17 @@ pub struct EntryRecord {
     pub community_rating: Option<f64>,
     /// Number of provider votes behind `community_rating`, when supplied.
     pub community_rating_votes: Option<u64>,
+    /// Owning feature row for a local movie extra. `None` for ordinary
+    /// entries and temporarily orphaned extras.
+    pub parent_entry_key: Option<String>,
+    /// Stable Plex extras slug (`deletedScene`, `featurette`, ...).
+    pub extra_type: Option<String>,
+    /// Clean filename-derived display title for a local movie extra.
+    pub extra_title: Option<String>,
+    /// Path from the owning movie directory through the extra filename.
+    pub extra_relative_path: Option<String>,
+    /// Optional nested/category directory path below the movie directory.
+    pub extra_category_path: Option<String>,
 }
 
 /// Bump whenever a successful online scrape begins populating new durable
@@ -462,12 +473,23 @@ impl Library {
             ("missing_scan_count", "INTEGER NOT NULL DEFAULT 0"),
             ("missing_since_ms", "INTEGER"),
             ("missing_confirmed", "INTEGER NOT NULL DEFAULT 0"),
+            ("parent_entry_key", "TEXT"),
+            ("extra_type", "TEXT"),
+            ("extra_title", "TEXT"),
+            ("extra_relative_path", "TEXT"),
+            ("extra_category_path", "TEXT"),
         ] {
             ensure_column(&pool, "library_entries", column, ddl_type).await?;
         }
         for (column, ddl_type) in [("tmdb_id", "INTEGER"), ("skip_segments_json", "TEXT")] {
             ensure_column(&pool, "asset_metadata_history", column, ddl_type).await?;
         }
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_entries_parent_extra \
+             ON library_entries(parent_entry_key, extra_type)",
+        )
+        .execute(&pool)
+        .await?;
         for (column, ddl_type) in [
             ("resolution_comments", "TEXT"),
             ("resolved_at_ms", "INTEGER"),
@@ -761,8 +783,9 @@ impl Library {
             INSERT INTO library_entries
                 (entry_key, relative_path, kind, title, size, modified_time, fingerprint,
                  artist, album, track_number, show_title, season, episode,
-                 duration_secs, video_json, audio_json, year)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 duration_secs, video_json, audio_json, year, parent_entry_key, extra_type,
+                 extra_title, extra_relative_path, extra_category_path)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(entry_key) DO UPDATE SET
                 relative_path = excluded.relative_path, kind = excluded.kind, title = excluded.title,
                 size = excluded.size, modified_time = excluded.modified_time, fingerprint = excluded.fingerprint,
@@ -770,6 +793,9 @@ impl Library {
                 show_title = excluded.show_title, season = excluded.season, episode = excluded.episode,
                 duration_secs = excluded.duration_secs, video_json = excluded.video_json,
                 audio_json = excluded.audio_json, year = excluded.year,
+                parent_entry_key = excluded.parent_entry_key, extra_type = excluded.extra_type,
+                extra_title = excluded.extra_title, extra_relative_path = excluded.extra_relative_path,
+                extra_category_path = excluded.extra_category_path,
                 available = 1, missing_scan_count = 0, missing_since_ms = NULL, missing_confirmed = 0
             "#,
         )
@@ -790,6 +816,11 @@ impl Library {
         .bind(record.video.as_ref().map(|v| serde_json::to_string(v).unwrap_or_default()))
         .bind(record.audio.as_ref().map(|a| serde_json::to_string(a).unwrap_or_default()))
         .bind(record.year.map(|n| n as i64))
+        .bind(&record.parent_entry_key)
+        .bind(&record.extra_type)
+        .bind(&record.extra_title)
+        .bind(&record.extra_relative_path)
+        .bind(&record.extra_category_path)
         .execute(&self.pool)
         .await?;
         sqlx::query(
@@ -805,6 +836,50 @@ impl Library {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    /// Refresh path-derived movie-extra metadata even when the media bytes,
+    /// size, and mtime are unchanged. Classification fixes and a moved parent
+    /// movie must not require touching the extra file itself to reach clients.
+    pub async fn update_extra_metadata(
+        &self,
+        entry_key: &str,
+        parent_entry_key: Option<&str>,
+        extra_type: Option<&str>,
+        extra_title: Option<&str>,
+        extra_relative_path: Option<&str>,
+        extra_category_path: Option<&str>,
+    ) -> sqlx::Result<bool> {
+        let result = sqlx::query(
+            "UPDATE library_entries SET parent_entry_key = ?, extra_type = ?, extra_title = ?, \
+             extra_relative_path = ?, extra_category_path = ? WHERE entry_key = ? AND (\
+             parent_entry_key IS NOT ? OR extra_type IS NOT ? OR extra_title IS NOT ? OR \
+             extra_relative_path IS NOT ? OR extra_category_path IS NOT ?)",
+        )
+        .bind(parent_entry_key)
+        .bind(extra_type)
+        .bind(extra_title)
+        .bind(extra_relative_path)
+        .bind(extra_category_path)
+        .bind(entry_key)
+        .bind(parent_entry_key)
+        .bind(extra_type)
+        .bind(extra_title)
+        .bind(extra_relative_path)
+        .bind(extra_category_path)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Ok(false);
+        }
+        sqlx::query(
+            "INSERT INTO library_changes (entry_key, operation) VALUES (?, 'upsert') \
+             ON CONFLICT(entry_key) DO UPDATE SET operation = 'upsert'",
+        )
+        .bind(entry_key)
+        .execute(&self.pool)
+        .await?;
+        Ok(true)
     }
 
     /// Keep the currently-visible metadata while making a changed asset
@@ -1621,7 +1696,7 @@ impl Library {
         let rows = if dir.is_empty() {
             sqlx::query_as::<_, EntryRow>(&format!(
                 "{ENTRY_SELECT} WHERE available = 1 AND kind IN ('movie', 'episode') \
-                 ORDER BY relative_path"
+                 AND extra_type IS NULL ORDER BY relative_path"
             ))
             .fetch_all(&self.pool)
             .await?
@@ -1629,7 +1704,7 @@ impl Library {
             let prefix = format!("{dir}/");
             sqlx::query_as::<_, EntryRow>(&format!(
                 "{ENTRY_SELECT} WHERE available = 1 AND kind IN ('movie', 'episode') \
-                 AND substr(relative_path, 1, ?) = ? ORDER BY relative_path"
+                 AND extra_type IS NULL AND substr(relative_path, 1, ?) = ? ORDER BY relative_path"
             ))
             .bind(prefix.chars().count() as i64)
             .bind(prefix)
@@ -1899,7 +1974,7 @@ impl Library {
     /// added after an existing library was already scraped.
     pub async fn missing_scrape(&self) -> sqlx::Result<Vec<EntryRecord>> {
         let rows = sqlx::query_as::<_, EntryRow>(&format!(
-            "{ENTRY_SELECT} WHERE available = 1 AND (scraped_title IS NULL OR scrape_version < ?) ORDER BY relative_path"
+            "{ENTRY_SELECT} WHERE available = 1 AND extra_type IS NULL AND (scraped_title IS NULL OR scrape_version < ?) ORDER BY relative_path"
         ))
             .bind(CURRENT_SCRAPE_VERSION)
             .fetch_all(&self.pool)
@@ -1915,7 +1990,7 @@ impl Library {
     /// option.
     pub async fn incomplete_scrape(&self) -> sqlx::Result<Vec<EntryRecord>> {
         let rows = sqlx::query_as::<_, EntryRow>(&format!(
-            "{ENTRY_SELECT} WHERE available = 1 AND (scrape_version < ? \
+            "{ENTRY_SELECT} WHERE available = 1 AND extra_type IS NULL AND (scrape_version < ? \
              OR (kind IN ('movie', 'episode') AND (\
                  scraped_title IS NULL OR TRIM(scraped_title) = '' \
                  OR genres_json IS NULL OR genres_json IN ('', '[]', 'null') \
@@ -2778,7 +2853,8 @@ const ENTRY_SELECT: &str =
     "SELECT entry_key, relative_path, kind, title, size, modified_time, fingerprint, artist, album, \
      track_number, show_title, season, episode, duration_secs, video_json, audio_json, \
      scraped_title, episode_title, genres_json, artwork_version, year, cast_json, overview, rating, \
-     community_rating, community_rating_votes FROM library_entries";
+     community_rating, community_rating_votes, parent_entry_key, extra_type, extra_title, \
+     extra_relative_path, extra_category_path FROM library_entries";
 
 #[derive(sqlx::FromRow)]
 struct EntryRow {
@@ -2808,6 +2884,11 @@ struct EntryRow {
     rating: Option<String>,
     community_rating: Option<f64>,
     community_rating_votes: Option<i64>,
+    parent_entry_key: Option<String>,
+    extra_type: Option<String>,
+    extra_title: Option<String>,
+    extra_relative_path: Option<String>,
+    extra_category_path: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -2898,6 +2979,11 @@ impl From<EntryRow> for EntryRecord {
             rating: row.rating,
             community_rating: row.community_rating,
             community_rating_votes: row.community_rating_votes.map(|votes| votes as u64),
+            parent_entry_key: row.parent_entry_key,
+            extra_type: row.extra_type,
+            extra_title: row.extra_title,
+            extra_relative_path: row.extra_relative_path,
+            extra_category_path: row.extra_category_path,
         }
     }
 }
@@ -2946,6 +3032,12 @@ impl EntryRecord {
             // the JSON out of EntryRecord avoids inflating scan/probe paths
             // that never consume playback markers.
             skip_segments: Vec::new(),
+            relative_path: Some(self.relative_path.clone()),
+            parent_entry_key: self.parent_entry_key.clone(),
+            extra_type: self.extra_type.clone(),
+            extra_title: self.extra_title.clone(),
+            extra_relative_path: self.extra_relative_path.clone(),
+            extra_category_path: self.extra_category_path.clone(),
         }
     }
 }

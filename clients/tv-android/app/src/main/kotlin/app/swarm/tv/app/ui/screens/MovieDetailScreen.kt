@@ -55,6 +55,7 @@ import app.swarm.tv.app.ui.components.swarmActionButtonColors
 import app.swarm.tv.app.ui.theme.SwarmBackground
 import app.swarm.tv.app.ui.theme.SwarmMuted
 import app.swarm.tv.app.ui.theme.SwarmText
+import app.swarm.tv.core.catalog.CatalogGrouping
 import app.swarm.tv.core.catalog.MergedEntry
 import coil.compose.AsyncImage
 
@@ -232,7 +233,7 @@ fun MovieDetailScreen(
                             colors = swarmActionButtonColors(),
                             modifier = Modifier.testTag("movie-extra-${extra.entry.entryKey}"),
                         ) {
-                            val kind = extraTypeLabel(extra.entry.extraType)
+                            val kind = CatalogGrouping.extraTypeLabel(extra.entry.extraType)
                             val title = extra.entry.extraTitle ?: extra.entry.title
                             Text("$kind • $title", fontSize = 13.sp, maxLines = 1)
                         }
@@ -241,17 +242,6 @@ fun MovieDetailScreen(
             }
         }
     }
-}
-
-private fun extraTypeLabel(type: String?): String = when (type) {
-    "behindTheScenes" -> "Behind the Scenes"
-    "deletedScene" -> "Deleted Scene"
-    "featurette" -> "Featurette"
-    "interview" -> "Interview"
-    "scene" -> "Scene"
-    "short" -> "Short"
-    "trailer" -> "Trailer"
-    else -> "Other"
 }
 
 @Composable

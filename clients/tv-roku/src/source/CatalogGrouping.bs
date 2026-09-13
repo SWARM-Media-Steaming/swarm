@@ -91,33 +91,39 @@ namespace Swarm.CatalogGrouping
     ' Lowest (season, episode) pair, unnumbered treated as last -- used for
     ' v1's "select a show plays its first episode" simplification (full
     ' season/episode navigation is deferred, see feature-inventory.md).
+    ' Bonus content (extra_type set -- a featurette/deleted scene/etc. living
+    ' in a season-0 extras folder) is never eligible: it must stay nested
+    ' under the show, never hijacking the "play the show" default action.
     function FirstEpisode(episodes as object) as dynamic
         best = invalid
         for each e in episodes
-            if best = invalid
-                best = e
-            else
-                eSeason = 999999
-                if e.season <> invalid
-                    eSeason = e.season
-                end if
-                bestSeason = 999999
-                if best.season <> invalid
-                    bestSeason = best.season
-                end if
-                if eSeason < bestSeason
+            isExtra = e.extra_type <> invalid and e.extra_type <> ""
+            if not isExtra
+                if best = invalid
                     best = e
-                else if eSeason = bestSeason
-                    eEpisode = 999999
-                    if e.episode <> invalid
-                        eEpisode = e.episode
+                else
+                    eSeason = 999999
+                    if e.season <> invalid
+                        eSeason = e.season
                     end if
-                    bestEpisode = 999999
-                    if best.episode <> invalid
-                        bestEpisode = best.episode
+                    bestSeason = 999999
+                    if best.season <> invalid
+                        bestSeason = best.season
                     end if
-                    if eEpisode < bestEpisode
+                    if eSeason < bestSeason
                         best = e
+                    else if eSeason = bestSeason
+                        eEpisode = 999999
+                        if e.episode <> invalid
+                            eEpisode = e.episode
+                        end if
+                        bestEpisode = 999999
+                        if best.episode <> invalid
+                            bestEpisode = best.episode
+                        end if
+                        if eEpisode < bestEpisode
+                            best = e
+                        end if
                     end if
                 end if
             end if

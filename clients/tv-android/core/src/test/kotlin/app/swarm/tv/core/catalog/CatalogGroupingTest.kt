@@ -16,10 +16,31 @@ class CatalogGroupingTest {
         entry = CatalogEntry(entryKey = fp, fingerprint = fp, kind = MediaKind.TRACK, title = title, size = 1000, artist = artist, album = album, trackNumber = trackNumber),
     )
 
-    private fun episode(fp: String, show: String?, season: Int?, episode: Int?, title: String = fp, scrapedTitle: String? = null) = MergedEntry(
+    private fun episode(
+        fp: String,
+        show: String?,
+        season: Int?,
+        episode: Int?,
+        title: String = fp,
+        scrapedTitle: String? = null,
+        extraType: String? = null,
+        extraTitle: String? = null,
+    ) = MergedEntry(
         fingerprint = fp,
         sources = listOf("server-a"),
-        entry = CatalogEntry(entryKey = fp, fingerprint = fp, kind = MediaKind.EPISODE, title = title, size = 1000, showTitle = show, season = season, episode = episode, scrapedTitle = scrapedTitle),
+        entry = CatalogEntry(
+            entryKey = fp,
+            fingerprint = fp,
+            kind = MediaKind.EPISODE,
+            title = title,
+            size = 1000,
+            showTitle = show,
+            season = season,
+            episode = episode,
+            scrapedTitle = scrapedTitle,
+            extraType = extraType,
+            extraTitle = extraTitle,
+        ),
     )
 
     private fun movie(fp: String, parent: String? = null, extraType: String? = null, extraTitle: String? = null) = MergedEntry(
@@ -48,6 +69,18 @@ class CatalogGroupingTest {
         assertEquals(listOf("movie", "other-movie"), CatalogGrouping.movies(entries).map { it.fingerprint })
         assertEquals(listOf("deleted", "making-of"), CatalogGrouping.movieExtras(feature, entries).map { it.fingerprint })
         assertTrue(CatalogGrouping.movieExtras(otherFeature, entries).isEmpty())
+    }
+
+    @Test
+    fun `episode extras are excluded from the season episode list and grouped separately`() {
+        val real = episode("real", "Dexter", 0, 1)
+        val featurette = episode("making-of", "Dexter", 0, null, extraType = "featurette", extraTitle = "Making Of")
+        val deleted = episode("deleted", "Dexter", 0, null, extraType = "deletedScene", extraTitle = "Cut Scene")
+        val show = CatalogGrouping.groupEpisodesByShowSeason(listOf(real, featurette, deleted)).single()
+        val season0 = show.seasons.single { it.season == 0 }
+
+        assertEquals(listOf("real"), CatalogGrouping.seasonEpisodes(season0).map { it.fingerprint })
+        assertEquals(listOf("deleted", "making-of"), CatalogGrouping.seasonExtras(season0).map { it.fingerprint })
     }
 
     @Test

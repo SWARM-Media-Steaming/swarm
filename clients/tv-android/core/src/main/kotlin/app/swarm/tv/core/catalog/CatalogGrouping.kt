@@ -77,6 +77,33 @@ object CatalogGrouping {
         entries.filter { it.entry.extraType != null && it.entry.parentEntryKey == movie.entry.entryKey }
             .sortedWith(compareBy({ it.entry.extraType }, { it.entry.extraTitle?.lowercase() }))
 
+    /** A season's true episodes/specials, excluding bonus content — see [seasonExtras]. */
+    fun seasonEpisodes(season: SeasonGroup): List<MergedEntry> =
+        season.episodes.filter { it.entry.extraType == null }
+
+    /**
+     * A season's own bonus content (featurettes/deleted scenes/etc. living
+     * in a season-0 extras folder) — same "nested under the parent, not a
+     * plain listing" treatment as [movieExtras], but keyed by season
+     * membership rather than `parentEntryKey` since a show has no synthetic
+     * parent row to point at (it links via `showTitle` alone).
+     */
+    fun seasonExtras(season: SeasonGroup): List<MergedEntry> =
+        season.episodes.filter { it.entry.extraType != null }
+            .sortedWith(compareBy({ it.entry.extraType }, { it.entry.extraTitle?.lowercase() }))
+
+    /** Human label for a Plex-style extras slug, shared by [MovieDetailScreen] and [SeasonScreen]. */
+    fun extraTypeLabel(type: String?): String = when (type) {
+        "behindTheScenes" -> "Behind the Scenes"
+        "deletedScene" -> "Deleted Scene"
+        "featurette" -> "Featurette"
+        "interview" -> "Interview"
+        "scene" -> "Scene"
+        "short" -> "Short"
+        "trailer" -> "Trailer"
+        else -> "Other"
+    }
+
     fun groupTracksByArtistAlbum(entries: List<MergedEntry>): List<ArtistGroup> {
         val byArtist = entries.filter { it.entry.kind == MediaKind.TRACK }.groupBy { artistNameOf(it) }
         return byArtist.entries

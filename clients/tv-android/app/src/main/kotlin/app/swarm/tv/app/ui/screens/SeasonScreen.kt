@@ -42,6 +42,7 @@ import androidx.tv.material3.CardDefaults
 import androidx.tv.material3.Button
 import app.swarm.tv.app.ui.UatTestTags
 import app.swarm.tv.app.ui.components.swarmActionButtonColors
+import app.swarm.tv.core.catalog.CatalogGrouping
 import app.swarm.tv.core.catalog.displayTitle
 import app.swarm.tv.app.ui.theme.SwarmMuted
 import app.swarm.tv.app.ui.theme.SwarmSurface
@@ -150,7 +151,9 @@ private fun SeasonList(
             contentType = { _, _ -> "season" },
         ) { index, season ->
             val focusModifier = if (index == 0) Modifier.focusRequester(firstCardFocusRequester) else Modifier
-            val seasonArt = season.episodes.firstOrNull()?.let(seasonArtworkUrl)
+            val realEpisodes = CatalogGrouping.seasonEpisodes(season)
+            val extras = CatalogGrouping.seasonExtras(season)
+            val seasonArt = (realEpisodes.firstOrNull() ?: extras.firstOrNull())?.let(seasonArtworkUrl)
             Card(
                 onClick = { onOpenSeason(season) },
                 colors = CardDefaults.colors(containerColor = SwarmSurface),
@@ -168,7 +171,9 @@ private fun SeasonList(
                     Column(Modifier.padding(14.dp)) {
                         Text(seasonLabel(season.season), color = SwarmText, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
                         Spacer(Modifier.height(4.dp))
-                        Text("${season.episodes.size} episode" + if (season.episodes.size == 1) "" else "s", color = SwarmMuted, fontSize = 11.sp)
+                        val episodeCount = "${realEpisodes.size} episode" + if (realEpisodes.size == 1) "" else "s"
+                        val extrasCount = if (extras.isNotEmpty()) ", ${extras.size} extra" + if (extras.size == 1) "" else "s" else ""
+                        Text(episodeCount + extrasCount, color = SwarmMuted, fontSize = 11.sp)
                     }
                 }
             }
@@ -182,8 +187,10 @@ private fun EpisodeGrid(
     episodeArtworkUrl: (MergedEntry) -> String?,
     onPlayEpisode: (MergedEntry) -> Unit,
 ) {
+    val episodes = CatalogGrouping.seasonEpisodes(season)
+    val extras = CatalogGrouping.seasonExtras(season)
     val firstCardFocusRequester = remember { FocusRequester() }
-    LaunchedEffect(season) { if (season.episodes.isNotEmpty()) firstCardFocusRequester.requestFocus() }
+    LaunchedEffect(season) { if (episodes.isNotEmpty() || extras.isNotEmpty()) firstCardFocusRequester.requestFocus() }
 
     LazyVerticalGrid(
         columns = GridCells.Fixed(4),
@@ -193,35 +200,79 @@ private fun EpisodeGrid(
         // Room for tv-material3's focus-scale animation on edge cards — see CatalogScreen.kt.
         contentPadding = PaddingValues(12.dp),
     ) {
+        // Bonus content (featurettes/deleted scenes/etc.) nested under this
+        // show's Specials, labeled and grouped exactly like a movie's
+        // extras row on MovieDetailScreen — never a plain, undifferentiated
+        // episode card.
+        if (extras.isNotEmpty()) {
+            item(
+                key = "extras-header",
+                span = { GridItemSpan(maxLineSpan) },
+                contentType = "header",
+            ) {
+                Text("Extras", color = SwarmText, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+            }
+            itemsIndexed(
+                items = extras,
+                key = { _, extra -> extra.entry.entryKey },
+                contentType = { _, _ -> "extra" },
+            ) { index, extra ->
+                val focusModifier =
+                    if (index == 0 && episodes.isEmpty()) Modifier.focusRequester(firstCardFocusRequester) else Modifier
+                EpisodeCard(
+                    entry = extra,
+                    label = CatalogGrouping.extraTypeLabel(extra.entry.extraType),
+                    title = extra.entry.extraTitle ?: extra.entry.title,
+                    episodeArtworkUrl = episodeArtworkUrl,
+                    onPlayEpisode = onPlayEpisode,
+                    modifier = focusModifier,
+                )
+            }
+        }
         itemsIndexed(
-            items = season.episodes,
+            items = episodes,
             key = { _, episode -> episode.entry.entryKey },
             contentType = { _, _ -> "episode" },
         ) { index, episode ->
             val focusModifier = if (index == 0) Modifier.focusRequester(firstCardFocusRequester) else Modifier
-            Card(
-                onClick = { onPlayEpisode(episode) },
-                colors = CardDefaults.colors(containerColor = SwarmSurface),
-                scale = CardDefaults.scale(scale = 1f, focusedScale = 1f, pressedScale = 0.99f),
-                modifier = focusModifier.fillMaxWidth()
-                    .testTag(UatTestTags.EPISODE_ITEM_PREFIX + episode.entry.entryKey),
-            ) {
-                Column {
-                    ArtworkImage(
-                        label = episode.entry.displayTitle(),
-                        placeholderType = "Show",
-                        primaryUrl = episodeArtworkUrl(episode),
-                        modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(4.dp)),
-                    )
-                    Column(Modifier.padding(14.dp)) {
-                        Text(
-                            episode.entry.episode?.let { "Episode $it" } ?: "Episode",
-                            color = SwarmMuted,
-                            fontSize = 11.sp,
-                        )
-                        Text(episode.entry.displayTitle(), color = SwarmText, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, minLines = 2, maxLines = 2)
-                    }
-                }
+            EpisodeCard(
+                entry = episode,
+                label = episode.entry.episode?.let { "Episode $it" } ?: "Episode",
+                title = episode.entry.displayTitle(),
+                episodeArtworkUrl = episodeArtworkUrl,
+                onPlayEpisode = onPlayEpisode,
+                modifier = focusModifier,
+            )
+        }
+    }
+}
+
+@Composable
+private fun EpisodeCard(
+    entry: MergedEntry,
+    label: String,
+    title: String,
+    episodeArtworkUrl: (MergedEntry) -> String?,
+    onPlayEpisode: (MergedEntry) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Card(
+        onClick = { onPlayEpisode(entry) },
+        colors = CardDefaults.colors(containerColor = SwarmSurface),
+        scale = CardDefaults.scale(scale = 1f, focusedScale = 1f, pressedScale = 0.99f),
+        modifier = modifier.fillMaxWidth()
+            .testTag(UatTestTags.EPISODE_ITEM_PREFIX + entry.entry.entryKey),
+    ) {
+        Column {
+            ArtworkImage(
+                label = title,
+                placeholderType = "Show",
+                primaryUrl = episodeArtworkUrl(entry),
+                modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(4.dp)),
+            )
+            Column(Modifier.padding(14.dp)) {
+                Text(label, color = SwarmMuted, fontSize = 11.sp)
+                Text(title, color = SwarmText, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, minLines = 2, maxLines = 2)
             }
         }
     }

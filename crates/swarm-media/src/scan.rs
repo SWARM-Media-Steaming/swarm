@@ -524,9 +524,21 @@ async fn scan_roots_scoped_inner(
             let known = library.known_entry_by_path(&relative).await?;
             let extra_metadata = classified
                 .as_ref()
-                .filter(|entry| entry.kind == MediaKind::Movie && entry.extra_kind.is_some())
+                .filter(|entry| {
+                    entry.extra_kind.is_some()
+                        && matches!(entry.kind, MediaKind::Movie | MediaKind::Episode)
+                })
                 .map(|entry| ExtraMetadata {
-                    parent_entry_key: resolve_movie_parent(&relative, entry, &movie_parents),
+                    // Only a movie extra resolves to a specific parent
+                    // entry_key (via directory-adjacency + title/year
+                    // matching against sibling movie files); a show extra
+                    // has no synthetic "show" row to resolve against and
+                    // links to its show purely via `show_title` instead.
+                    parent_entry_key: if entry.kind == MediaKind::Movie {
+                        resolve_movie_parent(&relative, entry, &movie_parents)
+                    } else {
+                        None
+                    },
                     extra_type: entry.extra_kind.map(str::to_string),
                     title: entry.extra_title.clone(),
                     relative_path: entry.extra_relative_path.clone(),

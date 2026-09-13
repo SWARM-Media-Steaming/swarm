@@ -218,6 +218,36 @@ fn movie_extra_from_dirs(dirs: &[&str], file_name: &str, clip_stem: &str) -> Opt
     })
 }
 
+#[derive(Debug)]
+struct EpisodeExtra {
+    kind: crate::plex::PlexExtraKind,
+    title: String,
+    relative_path: String,
+    category_path: String,
+}
+
+/// Resolve a show's own season-0 bonus content to the nearest recognized
+/// extras directory, same "deepest match wins" rule as
+/// [movie_extra_from_dirs]'s `category_path`. Unlike a movie extra, there is
+/// no parent-folder title/year to resolve here — a show extra links to its
+/// show purely via the `show_title` already carried by its caller, not a
+/// synthetic parent entry_key, so this only reports the type/title/paths.
+fn episode_extra_from_dirs(dirs: &[&str], file_name: &str, clip_stem: &str) -> Option<EpisodeExtra> {
+    let extras_idx = dirs.iter().rposition(|dir| is_extras_folder(dir))?;
+    let kind = crate::plex::PlexExtraKind::from_dir_name(dirs[extras_idx])?;
+    Some(EpisodeExtra {
+        kind,
+        title: clean_title(clip_stem),
+        relative_path: dirs[extras_idx..]
+            .iter()
+            .chain(std::iter::once(&file_name))
+            .copied()
+            .collect::<Vec<_>>()
+            .join("/"),
+        category_path: dirs[extras_idx..].join("/"),
+    })
+}
+
 /// The show folder immediately below a recognized Shows/TV wrapper folder
 /// somewhere in `dirs` ([VIDEO_TYPE_WRAPPER_NAMES]), if any. Scans the whole
 /// ancestor chain rather than anchoring to index 0, same robustness as
@@ -657,15 +687,13 @@ pub fn classify(relative_path: &str) -> Option<Classified> {
             None => (0, None),
         };
         // Season-0 bonus content sitting in a recognized Plex extras folder
-        // (`Featurettes/`, `Deleted Scenes/`, …) carries that category.
-        let extra_kind = (season == 0)
-            .then(|| {
-                dirs.iter()
-                    .rev()
-                    .find_map(|d| crate::plex::PlexExtraKind::from_dir_name(d))
-            })
-            .flatten()
-            .map(|k| k.slug());
+        // (`Featurettes/`, `Deleted Scenes/`, …) carries that category, plus
+        // the same title/category/relative-path detail a movie extra gets
+        // (see [episode_extra_from_dirs]) — the show links purely via
+        // `show_title` above, so there's no parent entry_key to resolve.
+        let episode_extra = (season == 0)
+            .then(|| episode_extra_from_dirs(&dirs, file_name, &stem_clean))
+            .flatten();
         return Some(Classified {
             kind: MediaKind::Episode,
             title: clean_title(&stem_clean),
@@ -675,7 +703,10 @@ pub fn classify(relative_path: &str) -> Option<Classified> {
             year: year.or(folder_year),
             plex_guid,
             edition,
-            extra_kind,
+            extra_kind: episode_extra.as_ref().map(|e| e.kind.slug()),
+            extra_title: episode_extra.as_ref().map(|e| e.title.clone()),
+            extra_relative_path: episode_extra.as_ref().map(|e| e.relative_path.clone()),
+            extra_category_path: episode_extra.as_ref().map(|e| e.category_path.clone()),
             ..blank_classified()
         });
     }
@@ -695,11 +726,7 @@ pub fn classify(relative_path: &str) -> Option<Classified> {
     // since a real path may carry an extra leading multi-root label segment
     // ahead of the wrapper.
     if let Some(show_title) = wrapper_derived_show_name(&dirs) {
-        let extra_kind = dirs
-            .iter()
-            .rev()
-            .find_map(|d| crate::plex::PlexExtraKind::from_dir_name(d))
-            .map(|k| k.slug());
+        let episode_extra = episode_extra_from_dirs(&dirs, file_name, &stem_clean);
         return Some(Classified {
             kind: MediaKind::Episode,
             title: clean_title(&stem_clean),
@@ -708,7 +735,10 @@ pub fn classify(relative_path: &str) -> Option<Classified> {
             year,
             plex_guid,
             edition,
-            extra_kind,
+            extra_kind: episode_extra.as_ref().map(|e| e.kind.slug()),
+            extra_title: episode_extra.as_ref().map(|e| e.title.clone()),
+            extra_relative_path: episode_extra.as_ref().map(|e| e.relative_path.clone()),
+            extra_category_path: episode_extra.as_ref().map(|e| e.category_path.clone()),
             ..blank_classified()
         });
     }
@@ -2303,6 +2333,13 @@ mod tests {
         assert_eq!(entry.kind, MediaKind::Episode);
         assert_eq!(entry.show_title.as_deref(), Some("Lost"));
         assert_eq!(entry.season, Some(0));
+        assert_eq!(entry.extra_kind, Some("featurette"));
+        assert_eq!(entry.extra_title.as_deref(), Some("clip"));
+        assert_eq!(entry.extra_category_path.as_deref(), Some("Featurettes"));
+        assert_eq!(
+            entry.extra_relative_path.as_deref(),
+            Some("Featurettes/clip.mkv")
+        );
     }
 
     #[test]
@@ -2451,6 +2488,37 @@ mod tests {
         assert_eq!(entry.kind, MediaKind::Episode);
         assert_eq!(entry.season, Some(0));
         assert_eq!(entry.extra_kind, Some("deletedScene"));
+        assert_eq!(entry.extra_title.as_deref(), Some("An Unearthly Cut"));
+        assert_eq!(
+            entry.extra_category_path.as_deref(),
+            Some("Deleted Scenes")
+        );
+        assert_eq!(
+            entry.extra_relative_path.as_deref(),
+            Some("Deleted Scenes/An Unearthly Cut.mkv")
+        );
+    }
+
+    #[test]
+    fn show_bonus_content_directly_under_a_shows_wrapper_carries_extras_detail() {
+        // No `Season N` ancestor at all — the file sits directly under a
+        // recognized extras folder one level below the show itself, so this
+        // exercises the `wrapper_derived_show_name` branch rather than the
+        // season-folder branch covered above.
+        let entry = classify(
+            "Shows/Aqua Teen Hunger Force/Featurettes/Making the Show.mkv",
+        )
+        .unwrap();
+        assert_eq!(entry.kind, MediaKind::Episode);
+        assert_eq!(entry.show_title.as_deref(), Some("Aqua Teen Hunger Force"));
+        assert_eq!(entry.season, Some(0));
+        assert_eq!(entry.extra_kind, Some("featurette"));
+        assert_eq!(entry.extra_title.as_deref(), Some("Making the Show"));
+        assert_eq!(entry.extra_category_path.as_deref(), Some("Featurettes"));
+        assert_eq!(
+            entry.extra_relative_path.as_deref(),
+            Some("Featurettes/Making the Show.mkv")
+        );
     }
 
     #[test]

@@ -365,10 +365,16 @@ function canonicalShowKeys(episodes) {
 function groupEpisodes(entries) {
   const episodes = entries.filter(e => e.kind === "episode");
   const canonicalFor = canonicalShowKeys(episodes);
-  const byShow = new Map();
+  const byShow = new Map();       // Map<show, Map<season, EntrySummary[]>> — extra_type == null only
+  const extrasByShow = new Map(); // Map<show, EntrySummary[]> — extra_type != null, same "nested under the parent, not a plain episode" treatment as a movie's extras
   for (const e of episodes) {
     const rawShow = e.show_title || "Unknown Show";
     const show = canonicalFor.get(rawShow) || rawShow;
+    if (e.extra_type) {
+      if (!extrasByShow.has(show)) extrasByShow.set(show, []);
+      extrasByShow.get(show).push(e);
+      continue;
+    }
     const season = e.season ?? -1; // -1 = "Unknown Season" bucket, sorts first
     if (!byShow.has(show)) byShow.set(show, new Map());
     const seasons = byShow.get(show);
@@ -380,7 +386,19 @@ function groupEpisodes(entries) {
       episodes.sort((a, b) => (a.episode ?? Infinity) - (b.episode ?? Infinity));
     }
   }
-  return byShow; // Map<show, Map<season, EntrySummary[]>>
+  for (const extras of extrasByShow.values()) {
+    extras.sort((a, b) => `${a.extra_type}:${a.extra_title || a.title}`.localeCompare(`${b.extra_type}:${b.extra_title || b.title}`));
+  }
+  // A show whose only season-0 content is bonus material still needs a
+  // reachable "Specials" tile, or its extras would be nested nowhere —
+  // never orphan them the way a top-level leak would.
+  for (const [show, extras] of extrasByShow) {
+    if (extras.length && !byShow.get(show)?.has(0)) {
+      if (!byShow.has(show)) byShow.set(show, new Map());
+      byShow.get(show).set(0, []);
+    }
+  }
+  return { byShow, extrasByShow };
 }
 
 // ---- artwork loading --------------------------------------------------------
@@ -527,7 +545,7 @@ function renderBrowseRoot(body) {
   const entries = filteredEntries();
   const movies = entries.filter(e => e.kind === "movie" && !e.extra_type);
   const tracks = groupTracks(entries);
-  const shows = groupEpisodes(entries);
+  const { byShow: shows } = groupEpisodes(entries);
 
   const movieCards = movies.map(m => `
     <div class="media-card" data-movie="${esc(m.entry_key)}">
@@ -611,6 +629,23 @@ function extraTypeLabel(type) {
   })[type] || "Other";
 }
 
+// Shared "nested under the parent, not a plain listing" extras table —
+// used by a movie/episode's own detail page (`detailView`) and by a show's
+// Specials page (`renderSeason`) for its season-0 bonus content.
+function extrasTable(extras) {
+  if (!extras.length) return "";
+  return `<div class="asset-checklist">
+        <h2>Extras</h2>
+        <table><thead><tr><th>Type</th><th>Title</th><th>Location</th></tr></thead><tbody>
+          ${extras.map(extra => `<tr>
+            <td>${esc(extraTypeLabel(extra.extra_type))}</td>
+            <td>${esc(extra.extra_title || extra.title)}</td>
+            <td class="mono" title="${esc(extra.relative_path)}">${esc(extra.extra_relative_path || extra.relative_path)}</td>
+          </tr>`).join("")}
+        </tbody></table>
+      </div>`;
+}
+
 function detailView(entry, backCrumbs, extras = []) {
   const cast = (entry.cast || []).slice(0, 10);
   const slash = entry.relative_path.lastIndexOf("/");
@@ -638,16 +673,7 @@ function detailView(entry, backCrumbs, extras = []) {
           </p>
         </div>
       </div>
-      ${extras.length ? `<div class="asset-checklist">
-        <h2>Extras</h2>
-        <table><thead><tr><th>Type</th><th>Title</th><th>Location</th></tr></thead><tbody>
-          ${extras.map(extra => `<tr>
-            <td>${esc(extraTypeLabel(extra.extra_type))}</td>
-            <td>${esc(extra.extra_title || extra.title)}</td>
-            <td class="mono" title="${esc(extra.relative_path)}">${esc(extra.extra_relative_path || extra.relative_path)}</td>
-          </tr>`).join("")}
-        </tbody></table>
-      </div>` : ""}
+      ${extrasTable(extras)}
       <div id="assetChecklist" class="asset-checklist"><span class="muted">Checking metadata &amp; artwork…</span></div>
       <div id="detailManage"></div>
     </div>`;
@@ -947,15 +973,23 @@ async function rescrapeEpisodeGroup(entryKeys, scopeLabel, buttonId) {
 }
 
 function renderShow(body, show) {
-  const seasons = groupEpisodes(libraryEntries).get(show);
+  const { byShow, extrasByShow } = groupEpisodes(libraryEntries);
+  const seasons = byShow.get(show);
   if (!seasons) { browsePath = { kind: "root" }; return renderBrowse(); }
+  const extras = extrasByShow.get(show) || [];
   const crumbs = [{ label: "Media", onClick: () => browsePath = { kind: "root" } }, { label: show }];
-  const cards = [...seasons.entries()].sort(([a], [b]) => a - b).map(([season, episodes]) => `
+  const cards = [...seasons.entries()].sort(([a], [b]) => a - b).map(([season, episodes]) => {
+    const artSource = episodes[0] || (season === 0 ? extras[0] : undefined);
+    const count = season === 0 && extras.length
+      ? `${episodes.length} episode${episodes.length === 1 ? "" : "s"}, ${extras.length} extra${extras.length === 1 ? "" : "s"}`
+      : `${episodes.length} episode${episodes.length === 1 ? "" : "s"}`;
+    return `
     <div class="media-card" data-season="${season}">
-      ${artImg(episodes[0].entry_key, "season", "card-art")}
+      ${artSource ? artImg(artSource.entry_key, "season", "card-art") : `<div class="card-art art-placeholder"></div>`}
       <div class="card-title">${seasonLabel(season)}</div>
-      <div class="muted" style="font-size:.75rem">${episodes.length} episode${episodes.length === 1 ? "" : "s"}</div>
-    </div>`).join("");
+      <div class="muted" style="font-size:.75rem">${count}</div>
+    </div>`;
+  }).join("");
   const episodeKeys = [...seasons.values()].flat().map(episode => episode.entry_key);
   body.innerHTML = `${breadcrumb(crumbs)}
     <div class="row media-group-actions">
@@ -974,8 +1008,10 @@ function renderShow(body, show) {
 }
 
 function renderSeason(body, show, season) {
-  const episodes = groupEpisodes(libraryEntries).get(show)?.get(season);
+  const { byShow, extrasByShow } = groupEpisodes(libraryEntries);
+  const episodes = byShow.get(show)?.get(season);
   if (!episodes) { browsePath = { kind: "show", show }; return renderBrowse(); }
+  const extras = season === 0 ? (extrasByShow.get(show) || []) : [];
   const crumbs = [
     { label: "Media", onClick: () => browsePath = { kind: "root" } },
     { label: show, onClick: () => browsePath = { kind: "show", show } },
@@ -992,7 +1028,8 @@ function renderSeason(body, show, season) {
       <button id="rescrapeSeasonBtn" class="secondary"${groupRescrapeRunning ? " disabled" : ""}><i class="bi bi-arrow-repeat"></i>Re-scrape all episodes</button>
       <span class="muted">Refresh metadata and artwork for all ${episodes.length} episode${episodes.length === 1 ? "" : "s"} in this season.</span>
     </div>
-    <div class="media-grid">${cards}</div>`;
+    <div class="media-grid">${cards}</div>
+    ${extrasTable(extras)}`;
   wireBreadcrumb(body, crumbs);
   document.getElementById("rescrapeSeasonBtn")?.addEventListener("click", () => {
     rescrapeEpisodeGroup(episodes.map(episode => episode.entry_key), `${show} — ${seasonLabel(season)}`, "rescrapeSeasonBtn");

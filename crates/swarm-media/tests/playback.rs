@@ -75,6 +75,11 @@ async fn playback_negotiation_returns_a_budgeted_direct_session_with_range_suppo
         rating: None,
         community_rating: None,
         community_rating_votes: None,
+        parent_entry_key: None,
+        extra_type: None,
+        extra_title: None,
+        extra_relative_path: None,
+        extra_category_path: None,
     };
     library.upsert(&entry).await.unwrap();
     let subtitle_path = root.join("subtitles").join("example.vtt");
@@ -278,6 +283,11 @@ async fn stop_releases_the_reservation_so_a_retry_no_longer_needs_the_idle_timeo
         rating: None,
         community_rating: None,
         community_rating_votes: None,
+        parent_entry_key: None,
+        extra_type: None,
+        extra_title: None,
+        extra_relative_path: None,
+        extra_category_path: None,
     };
     library.upsert(&entry).await.unwrap();
 
@@ -414,6 +424,11 @@ async fn dropping_a_stream_body_early_still_releases_the_session() {
         rating: None,
         community_rating: None,
         community_rating_votes: None,
+        parent_entry_key: None,
+        extra_type: None,
+        extra_title: None,
+        extra_relative_path: None,
+        extra_category_path: None,
     };
     library.upsert(&entry).await.unwrap();
 
@@ -562,6 +577,11 @@ async fn direct_play_sessions_are_not_limited_by_max_sessions() {
             rating: None,
             community_rating: None,
             community_rating_votes: None,
+            parent_entry_key: None,
+            extra_type: None,
+            extra_title: None,
+            extra_relative_path: None,
+            extra_category_path: None,
         };
         library.upsert(&entry).await.unwrap();
         entry_keys.push(entry_key);
@@ -681,6 +701,11 @@ async fn external_srt_sidecar_is_offered_and_served_as_webvtt() {
         rating: None,
         community_rating: None,
         community_rating_votes: None,
+        parent_entry_key: None,
+        extra_type: None,
+        extra_title: None,
+        extra_relative_path: None,
+        extra_category_path: None,
     };
     library.upsert(&entry).await.unwrap();
     library

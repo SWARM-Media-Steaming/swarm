@@ -221,7 +221,7 @@ pub struct CatalogManifest {
     pub reset: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MediaKind {
     Movie,
@@ -262,6 +262,10 @@ pub struct CatalogEntry {
     pub fingerprint: String,
     pub kind: MediaKind,
     pub title: String,
+    /// Library-relative source path. Optional for backward-compatible cached
+    /// manifests produced by older servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relative_path: Option<String>,
     pub size: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_secs: Option<f64>,
@@ -326,6 +330,17 @@ pub struct CatalogEntry {
     /// retained now so the database integration does not discard them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skip_segments: Vec<SkipSegment>,
+    /// Parent feature id and presentation metadata for a local movie extra.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_entry_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_relative_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_category_path: Option<String>,
 }
 
 /// One TMDb credits-list entry, capped to roughly the first ten (billing
@@ -471,6 +486,7 @@ mod tests {
                 fingerprint: "704ac5a4284267953aab77855e0e32aa".into(),
                 kind: MediaKind::Movie,
                 title: "Inception".into(),
+                relative_path: Some("Movies/Inception (2010)/Inception (2010).mkv".into()),
                 size: 4_700_000_000,
                 duration_secs: Some(8880.0),
                 show_title: None,
@@ -519,6 +535,11 @@ mod tests {
                     start_ms: Some(30_000),
                     end_ms: Some(90_000),
                 }],
+                parent_entry_key: None,
+                extra_type: None,
+                extra_title: None,
+                extra_relative_path: None,
+                extra_category_path: None,
             }],
             removed: vec![],
             reset: false,

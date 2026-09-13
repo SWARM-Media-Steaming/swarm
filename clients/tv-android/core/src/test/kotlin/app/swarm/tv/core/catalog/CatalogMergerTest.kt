@@ -67,6 +67,25 @@ class CatalogMergerTest {
     }
 
     @Test
+    fun `movie extra parent id is canonicalized across merged servers`() {
+        val parentA = entry("parent-a", "fp-parent", "Movie")
+        val parentB = parentA.copy(entryKey = "parent-b", scrapedTitle = "Movie")
+        val extraA = entry("extra-a", "fp-extra", "Making Of", artworkEtag = "v1")
+            .copy(parentEntryKey = "parent-a", extraType = "featurette", extraTitle = "Making Of")
+        val extraB = extraA.copy(entryKey = "extra-b", parentEntryKey = "parent-b", artworkEtag = null)
+        val merged = CatalogMerger.merge(
+            mapOf(
+                "server-a" to CatalogManifest("a", listOf(parentA, extraA)),
+                "server-b" to CatalogManifest("b", listOf(parentB, extraB)),
+            ),
+        )
+        val parent = merged.single { it.fingerprint == "fp-parent" }
+        val extra = merged.single { it.fingerprint == "fp-extra" }
+        assertEquals(parent.entry.entryKey, extra.entry.parentEntryKey)
+        assertEquals(listOf(extra), CatalogGrouping.movieExtras(parent, merged))
+    }
+
+    @Test
     fun `merge is deterministic regardless of map iteration order`() {
         val a = entry("k1", "fp-1", "Alpha")
         val b = entry("k2", "fp-2", "Beta")

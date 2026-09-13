@@ -53,15 +53,18 @@ pub enum RootAssetType {
     Movies,
     Shows,
     Music,
+    PhotosVideos,
 }
 
 impl RootAssetType {
     pub fn parse(value: Option<&str>) -> Result<Self, String> {
         match value.map(str::trim).unwrap_or("") {
-            "" | "mixed" => Ok(RootAssetType::Mixed),
+            "" => Err("choose an asset type".to_string()),
+            "mixed" => Err("choose a specific asset type".to_string()),
             "movies" => Ok(RootAssetType::Movies),
             "shows" | "tv" => Ok(RootAssetType::Shows),
             "music" => Ok(RootAssetType::Music),
+            "photos_videos" | "photos-videos" => Ok(RootAssetType::PhotosVideos),
             other => Err(format!("unknown asset type \"{other}\"")),
         }
     }
@@ -73,6 +76,7 @@ impl RootAssetType {
             RootAssetType::Movies => "Movies",
             RootAssetType::Shows => "TV Shows",
             RootAssetType::Music => "Music",
+            RootAssetType::PhotosVideos => "Photos & videos",
         }
     }
 }
@@ -627,6 +631,14 @@ pub struct Settings {
     /// Whisper's model download) that would justify defaulting it off.
     #[serde(default = "default_auto_library_watch_enabled")]
     pub auto_library_watch_enabled: bool,
+    /// Verify unchanged files by content after the fast path. Off by
+    /// default because it intentionally performs disk reads for every file.
+    #[serde(default)]
+    pub comprehensive_check: bool,
+    /// Index individual audio files. Off by default so music roots are
+    /// handled at the artist/album level unless explicitly requested.
+    #[serde(default)]
+    pub scan_music_tracks: bool,
     /// Which H.264 encoder transcodes use: `"auto"` (hardware on macOS when
     /// available and healthy), `"hardware"` (pin VideoToolbox), or
     /// `"software"` (pin libx264). See `swarm_media::transcode::VideoEncoderMode`.
@@ -730,6 +742,8 @@ impl Default for Settings {
             mcp_port: default_mcp_port(),
             mcp_access_token: None,
             auto_library_watch_enabled: true,
+            comprehensive_check: false,
+            scan_music_tracks: false,
             video_encoder_mode: default_video_encoder_mode(),
             max_transcode_height: 0,
             hls_segment_seconds: default_hls_segment_seconds(),
@@ -802,6 +816,8 @@ mod tests {
         assert!(!loaded.transcription_skip_if_subtitles_exist);
         assert_eq!(loaded.mcp_access_token, None);
         assert!(loaded.auto_library_watch_enabled);
+        assert!(!loaded.comprehensive_check);
+        assert!(!loaded.scan_music_tracks);
         // Transcoding controls default in for a config that predates them.
         assert_eq!(loaded.video_encoder_mode, "auto");
         assert_eq!(loaded.max_transcode_height, 0);
@@ -822,6 +838,8 @@ mod tests {
         assert!(loaded.transcription_skip_if_subtitles_exist);
         assert_eq!(loaded.video_encoder_mode, "auto");
         assert_eq!(loaded.hls_segment_seconds, 4);
+        assert!(!loaded.comprehensive_check);
+        assert!(!loaded.scan_music_tracks);
     }
 
     #[test]
@@ -840,14 +858,18 @@ mod tests {
     }
 
     #[test]
-    fn root_asset_type_parses_the_ui_values_and_defaults_to_mixed() {
-        assert_eq!(RootAssetType::parse(None).unwrap(), RootAssetType::Mixed);
-        assert_eq!(RootAssetType::parse(Some("")).unwrap(), RootAssetType::Mixed);
-        assert_eq!(RootAssetType::parse(Some("mixed")).unwrap(), RootAssetType::Mixed);
+    fn root_asset_type_requires_and_parses_specific_ui_values() {
+        assert!(RootAssetType::parse(None).is_err());
+        assert!(RootAssetType::parse(Some("")).is_err());
+        assert!(RootAssetType::parse(Some("mixed")).is_err());
         assert_eq!(RootAssetType::parse(Some("movies")).unwrap(), RootAssetType::Movies);
         assert_eq!(RootAssetType::parse(Some("shows")).unwrap(), RootAssetType::Shows);
         assert_eq!(RootAssetType::parse(Some("tv")).unwrap(), RootAssetType::Shows);
         assert_eq!(RootAssetType::parse(Some("music")).unwrap(), RootAssetType::Music);
+        assert_eq!(
+            RootAssetType::parse(Some("photos_videos")).unwrap(),
+            RootAssetType::PhotosVideos
+        );
         assert!(RootAssetType::parse(Some("games")).is_err());
     }
 

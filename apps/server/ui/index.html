@@ -48,6 +48,14 @@
     <h2>Welcome to SWARM</h2>
     <p class="tagline centered">Stream Whatever, Anywhere — Remote Media</p>
     <p class="muted">Choose the folder with your music and video. SWARM will scan it and can stream from it to devices in your swarm.</p>
+    <label for="onboardRootAssetType">Asset type</label>
+    <select id="onboardRootAssetType">
+      <option value="" selected disabled>Choose asset type…</option>
+      <option value="movies">Movies</option>
+      <option value="shows">TV shows</option>
+      <option value="music">Music</option>
+      <option value="photos_videos">Photos &amp; videos</option>
+    </select>
     <div class="onboarding-root-actions">
       <button id="chooseFolderBtn"><i class="bi bi-folder2-open"></i>Choose media folder…</button>
       <button id="onboardNetworkRootBtn" class="secondary"><i class="bi bi-hdd-network"></i>Connect SMB…</button>
@@ -58,7 +66,8 @@
 <div id="dashView" class="d-none">
   <div class="tabnav">
     <button id="tabBtn-media" class="tab-active"><i class="bi bi-collection-play"></i>Media</button>
-    <button id="tabBtn-details"><i class="bi bi-speedometer2"></i>Details</button>
+    <button id="tabBtn-metrics"><i class="bi bi-speedometer2"></i>Metrics</button>
+    <button id="tabBtn-settings"><i class="bi bi-gear-fill"></i>Settings</button>
     <button id="tabBtn-swarm"><i class="bi bi-diagram-3"></i>Swarm</button>
     <button id="tabBtn-notifications"><i class="bi bi-bell-fill"></i>Notifications<span id="notificationBadge" class="badge-count d-none">0</span></button>
     <button id="tabBtn-ai"><i class="bi bi-stars"></i>AI</button>
@@ -76,7 +85,7 @@
     <button id="mediaRootWarningDetailsBtn" class="secondary"><i class="bi bi-folder2-open"></i>View media roots</button>
   </div>
 
-  <div id="tabPanel-details" class="d-none">
+  <div id="tabPanel-metrics" class="d-none">
     <div class="card">
       <div class="card-head">
         <h2 class="info-trigger" data-info="artwork-cache" tabindex="0" role="button"><i class="bi bi-images heading-icon"></i>Artwork cache <i class="bi bi-info-circle info-affordance"></i></h2>
@@ -164,7 +173,9 @@
       </div>
       <p class="muted compact-help">Files the client can already play are copied without re-encoding; these settings apply only when a transcode is unavoidable.</p>
     </div>
+  </div>
 
+  <div id="tabPanel-settings" class="d-none">
     <div class="card">
       <div class="card-head">
         <h2 class="info-trigger" data-info="local-subtitles" tabindex="0" role="button"><i class="bi bi-badge-cc-fill heading-icon"></i>Local subtitles <i class="bi bi-info-circle info-affordance"></i></h2>
@@ -184,6 +195,10 @@
       </div>
       <label class="checkbox-label"><input type="checkbox" id="autoLibraryWatchEnabledCheck"> Automatically detect new/changed/removed files and scrape their metadata</label>
       <p class="muted compact-help">Checks every 15 minutes. Movies/shows scrape from TMDb only if a key is saved below; music always scrapes from MusicBrainz.</p>
+      <label class="checkbox-label"><input type="checkbox" id="comprehensiveCheck"> Comprehensive Check</label>
+      <p class="muted compact-help">After the fast path/size/date comparison, verify existing files by fingerprint one at a time. Disabled by default to minimize disk I/O.</p>
+      <label class="checkbox-label"><input type="checkbox" id="scanMusicTracksCheck"> Scan individual music tracks</label>
+      <p class="muted compact-help">Disabled by default. Artist and album metadata/artwork are still grouped and scraped once per album when tracks are indexed.</p>
       <div id="mediaRootsList">Loading…</div>
       <div class="media-roots-add">
         <button id="openAddRootBtn"><i class="bi bi-folder-plus"></i>Add media root…</button>
@@ -321,7 +336,7 @@
     <div class="card">
       <p class="eyebrow">PROVIDERS</p>
       <h2><i class="bi bi-stars heading-icon"></i>Enabled AI tools</h2>
-      <p class="muted">Turn on the AI tools SWARM may call for the advanced features below. SWARM uses each tool's own command-line app and the sign-in already on this machine — there is no API key to enter and nothing to save. Nothing here is required for MCP (further down this tab), which works the other way around: an AI tool connecting <em>to</em> SWARM.</p>
+      <p class="muted">Turn on the AI tools SWARM may call for the advanced features below. SWARM uses each tool's own command-line app and the sign-in already on this machine — there is no API key to enter and nothing to save. Metered tools are used only when at least 10% of their available usage remains. Nothing here is required for MCP (further down this tab), which works the other way around: an AI tool connecting <em>to</em> SWARM.</p>
       <div id="aiProvidersList"></div>
     </div>
     <div class="card">
@@ -479,7 +494,7 @@
     <details class="about-more" id="aboutMediaLayout">
       <summary><i class="bi bi-chevron-right"></i>How to organise your media folders</summary>
       <div class="about-more-body">
-        <p>SWARM scans one or more <strong>media roots</strong> — folders you point it at from the Details tab. When you add a root you also pick its <strong>asset type</strong> (Movies, TV shows, Music, or Mixed) so SWARM knows what to expect there. A root can't overlap another root, and you can run with more than one.</p>
+        <p>SWARM scans one or more <strong>media roots</strong> — folders you point it at from the Settings tab. When you add a root you also pick its required <strong>asset type</strong> (Movies, TV shows, Music, or Photos &amp; videos) so SWARM knows what to expect there. A root can't overlap another root, and you can run with more than one.</p>
         <p>Inside a root, follow the same layout Plex, Jellyfin, and Kodi use:</p>
         <ul>
           <li><strong>Movies</strong> — <code>Movie Name (Year)/Movie Name (Year).mkv</code>. Extras go in <code>Featurettes/</code>, <code>Trailers/</code>, <code>Deleted Scenes/</code>, etc. beside the movie.</li>
@@ -487,7 +502,7 @@
           <li><strong>Music</strong> — <code>Artist/Album/01 Track Title.flac</code>. Disc folders (<code>CD1/</code>) are absorbed automatically.</li>
           <li><strong>Subtitles</strong> — a <code>.srt</code>/<code>.vtt</code> next to the video (optionally in a <code>Subs/</code> folder), named after it, e.g. <code>Movie Name (Year).en.srt</code>.</li>
         </ul>
-        <p>A "Mixed" root can contain top-level <code>Movies/</code>, <code>TV/</code>, and <code>Music/</code> folders and SWARM will sort them out. The <span class="modal-inline-link" data-info="media-roots">Media roots</span> info button on the Details tab repeats this with more detail.</p>
+        <p>Older installations may retain a "Legacy mixed" root. New roots require one specific asset type. The <span class="modal-inline-link" data-info="media-roots">Media roots</span> info button on the Settings tab repeats this with more detail.</p>
       </div>
     </details>
 
@@ -536,10 +551,11 @@
       </div>
       <label for="addRootAssetType">Asset type <span class="req">required</span></label>
       <select id="addRootAssetType">
-        <option value="mixed">Mixed — movies, TV, and music together</option>
+        <option value="" selected disabled>Choose asset type…</option>
         <option value="movies">Movies only</option>
         <option value="shows">TV shows only</option>
         <option value="music">Music only</option>
+        <option value="photos_videos">Photos &amp; videos</option>
       </select>
     </div>
     <div class="add-root-modal-actions">
@@ -566,6 +582,14 @@
         <label for="networkRootUsername">SMB username (optional)</label>
         <input id="networkRootUsername" placeholder="Your NAS username" autocomplete="username">
       </div>
+      <label for="networkRootAssetType">Asset type</label>
+      <select id="networkRootAssetType">
+        <option value="" selected disabled>Choose asset type…</option>
+        <option value="movies">Movies</option>
+        <option value="shows">TV shows</option>
+        <option value="music">Music</option>
+        <option value="photos_videos">Photos &amp; videos</option>
+      </select>
     </div>
     <p id="networkRootProtocolNote" class="muted compact-help">macOS will ask for the SMB password and can save it in Keychain. SWARM never sees or stores it.</p>
     <div class="network-root-modal-actions">

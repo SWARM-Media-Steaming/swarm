@@ -6,14 +6,17 @@
 //! whatever JSON is embedded in it. Nothing here ever writes to disk or the
 //! library itself — callers own that, after a human approves.
 //!
-//! `model` is a plain user-editable string, not a closed enum: providers
-//! ship new models faster than this app can track them, and the settings
-//! UI lets a user type any model name their account has access to. The
-//! defaults in `settings::default_ai_providers` are just reasonable
-//! starting points.
+//! Provider model names remain persisted for backward compatibility, but
+//! the UI intentionally exposes only each installed CLI and its existing
+//! machine sign-in. AI calls are fail-closed unless the CLI reports at least
+//! ten percent usage remaining.
 
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::time::Duration;
+
+pub const MINIMUM_USAGE_REMAINING_PERCENT: f64 = 10.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AiProviderKind {
@@ -45,14 +48,6 @@ impl AiProviderKind {
             AiProviderKind::Claude => "Claude",
             AiProviderKind::Codex => "Codex",
             AiProviderKind::Grok => "Grok",
-        }
-    }
-
-    fn default_base_url(self) -> &'static str {
-        match self {
-            AiProviderKind::Claude => "https://api.anthropic.com",
-            AiProviderKind::Codex => "https://api.openai.com",
-            AiProviderKind::Grok => "https://api.x.ai",
         }
     }
 
@@ -117,6 +112,9 @@ pub struct AiToolInfo {
     pub path: String,
     pub version: String,
     pub signed_in: bool,
+    pub usage_remaining_percent: Option<f64>,
+    pub usage_available: bool,
+    pub usage_status: String,
     pub status: String,
     pub docs_url: String,
 }
@@ -224,6 +222,115 @@ fn cli_signed_in(kind: AiProviderKind, bin: &Path) -> bool {
     }
 }
 
+fn percent_used_after_prefix(line: &str, prefix: &str) -> Option<f64> {
+    let value = line.strip_prefix(prefix)?.split("% used").next()?.trim();
+    value.parse::<f64>().ok()
+}
+
+fn claude_usage_remaining(bin: &Path) -> Option<f64> {
+    let (ok, output) = command_output(
+        bin,
+        &["-p", "/usage", "--output-format", "json", "--tools", "", "--no-session-persistence"],
+    );
+    if !ok {
+        return None;
+    }
+    let usage = serde_json::from_str::<serde_json::Value>(&output)
+        .ok()?
+        .get("result")?
+        .as_str()?
+        .to_string();
+    let mut remaining = Vec::new();
+    for line in usage.lines() {
+        if let Some(used) = percent_used_after_prefix(line, "Current session:") {
+            remaining.push(100.0 - used);
+        } else if line.starts_with("Current week") {
+            let used = line.split(':').nth(1)?.split("% used").next()?.trim().parse::<f64>().ok()?;
+            remaining.push(100.0 - used);
+        }
+    }
+    remaining.into_iter().reduce(f64::min)
+}
+
+fn receive_codex_response(
+    receiver: &std::sync::mpsc::Receiver<serde_json::Value>,
+    id: u64,
+) -> Option<serde_json::Value> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let timeout = deadline.checked_duration_since(std::time::Instant::now())?;
+        let message = receiver.recv_timeout(timeout).ok()?;
+        if message.get("id").and_then(serde_json::Value::as_u64) == Some(id) {
+            return Some(message);
+        }
+    }
+}
+
+fn codex_remaining_from_limits(limits: &serde_json::Value) -> Option<f64> {
+    if limits.get("rateLimitReachedType").is_some_and(|value| !value.is_null())
+        || limits.get("spendControlReached").and_then(serde_json::Value::as_bool) == Some(true)
+    {
+        return Some(0.0);
+    }
+    ["primary", "secondary"]
+        .into_iter()
+        .filter_map(|key| limits.get(key)?.get("usedPercent")?.as_f64().map(|used| 100.0 - used))
+        .reduce(f64::min)
+}
+
+fn codex_usage_remaining(bin: &Path) -> Option<f64> {
+    let mut child = std::process::Command::new(bin)
+        .args(["app-server", "--listen", "stdio://"])
+        .env("PATH", enhanced_path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let stdout = child.stdout.take()?;
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if let Ok(message) = serde_json::from_str(&line) {
+                let _ = sender.send(message);
+            }
+        }
+    });
+    let result = (|| {
+        let stdin = child.stdin.as_mut()?;
+        writeln!(stdin, "{}", serde_json::json!({
+            "method": "initialize", "id": 1,
+            "params": {"clientInfo": {"name": "swarm_media_server", "title": "SWARM Media Server", "version": "1.0.0"}}
+        })).ok()?;
+        stdin.flush().ok()?;
+        let initialized = receive_codex_response(&receiver, 1)?;
+        if initialized.get("error").is_some() {
+            return None;
+        }
+        writeln!(stdin, "{}", serde_json::json!({"method": "initialized", "params": {}})).ok()?;
+        writeln!(stdin, "{}", serde_json::json!({"method": "account/rateLimits/read", "id": 2, "params": {}})).ok()?;
+        stdin.flush().ok()?;
+        let response = receive_codex_response(&receiver, 2)?;
+        let limits = response.get("result")?.get("rateLimits")?;
+        codex_remaining_from_limits(limits)
+    })();
+    let _ = child.kill();
+    let _ = child.wait();
+    result
+}
+
+fn cli_usage_remaining(kind: AiProviderKind, bin: &Path) -> Option<f64> {
+    match kind {
+        AiProviderKind::Claude => claude_usage_remaining(bin),
+        AiProviderKind::Codex => codex_usage_remaining(bin),
+        AiProviderKind::Grok => Some(100.0),
+    }
+}
+
+fn usage_is_available(remaining: Option<f64>) -> bool {
+    remaining.is_some_and(|value| value >= MINIMUM_USAGE_REMAINING_PERCENT)
+}
+
 pub fn detect_provider(kind: AiProviderKind) -> AiToolInfo {
     let bin = find_executable(kind.cli_name());
     let installed = bin.is_some();
@@ -232,6 +339,17 @@ pub fn detect_provider(kind: AiProviderKind) -> AiToolInfo {
         .map(|path| command_output(path, &["--version"]).1.lines().next().unwrap_or_default().trim().to_string())
         .unwrap_or_default();
     let signed_in = bin.as_deref().map(|path| cli_signed_in(kind, path)).unwrap_or(false);
+    let usage_remaining_percent = if signed_in {
+        bin.as_deref().and_then(|path| cli_usage_remaining(kind, path))
+    } else {
+        None
+    };
+    let usage_available = usage_is_available(usage_remaining_percent);
+    let usage_status = match usage_remaining_percent {
+        Some(remaining) => format!("{remaining:.0}% usage remaining"),
+        None if signed_in => "Usage unavailable".to_string(),
+        None => String::new(),
+    };
     let status = if !installed {
         "Not installed".to_string()
     } else if signed_in {
@@ -247,6 +365,9 @@ pub fn detect_provider(kind: AiProviderKind) -> AiToolInfo {
         path: bin.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
         version,
         signed_in,
+        usage_remaining_percent,
+        usage_available,
+        usage_status,
         status,
         docs_url: kind.docs_url().to_string(),
     }
@@ -268,6 +389,7 @@ pub enum AiError {
 
 enum Transport {
     /// Direct HTTP to the provider's API using a saved key.
+    #[cfg(test)]
     Http { api_key: String, base_url: String, http: reqwest::Client },
     /// Shell out to the provider's locally-installed, already-signed-in CLI
     /// (issue #252) — no API key needed.
@@ -281,10 +403,7 @@ pub struct AiClient {
 }
 
 impl AiClient {
-    pub fn new(kind: AiProviderKind, api_key: String, model: String) -> Self {
-        Self::with_base_url(kind, api_key, model, kind.default_base_url().to_string())
-    }
-
+    #[cfg(test)]
     pub fn with_base_url(kind: AiProviderKind, api_key: String, model: String, base_url: String) -> Self {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(60))
@@ -305,6 +424,7 @@ impl AiClient {
     pub async fn complete(&self, system: &str, user: &str) -> Result<String, AiError> {
         match &self.transport {
             Transport::Cli { bin } => self.complete_cli(bin, system, user).await,
+            #[cfg(test)]
             Transport::Http { .. } => match self.kind {
                 AiProviderKind::Claude => self.complete_anthropic(system, user).await,
                 AiProviderKind::Codex | AiProviderKind::Grok => {
@@ -350,6 +470,7 @@ impl AiClient {
         Ok(text)
     }
 
+    #[cfg(test)]
     fn api_key(&self) -> &str {
         match &self.transport {
             Transport::Http { api_key, .. } => api_key,
@@ -357,6 +478,7 @@ impl AiClient {
         }
     }
 
+    #[cfg(test)]
     fn base_url(&self) -> &str {
         match &self.transport {
             Transport::Http { base_url, .. } => base_url,
@@ -364,6 +486,7 @@ impl AiClient {
         }
     }
 
+    #[cfg(test)]
     fn http(&self) -> &reqwest::Client {
         match &self.transport {
             Transport::Http { http, .. } => http,
@@ -371,6 +494,7 @@ impl AiClient {
         }
     }
 
+    #[cfg(test)]
     async fn complete_anthropic(&self, system: &str, user: &str) -> Result<String, AiError> {
         let url = format!("{}/v1/messages", self.base_url());
         let body = serde_json::json!({
@@ -416,6 +540,7 @@ impl AiClient {
     /// OpenAI's and xAI's chat-completions endpoints are wire-compatible
     /// (same request/response shape, both accept a bearer token) — one
     /// implementation covers Codex and Grok.
+    #[cfg(test)]
     async fn complete_openai_compatible(&self, system: &str, user: &str) -> Result<String, AiError> {
         let url = format!("{}/v1/chat/completions", self.base_url());
         let body = serde_json::json!({
@@ -468,6 +593,7 @@ impl AiClient {
 /// Anthropic's and OpenAI-compatible APIs' error shape); falls back to the
 /// raw body so a genuinely different error shape is still visible to the
 /// user rather than swallowed.
+#[cfg(test)]
 fn api_error_message(body: &str) -> String {
     serde_json::from_str::<serde_json::Value>(body)
         .ok()
@@ -588,5 +714,35 @@ mod tests {
     #[test]
     fn returns_none_for_text_with_no_json_object() {
         assert!(parse_json_object::<serde_json::Value>("no json here").is_none());
+    }
+
+    #[test]
+    fn parses_claude_usage_percentage_lines() {
+        assert_eq!(percent_used_after_prefix("Current session: 91.5% used", "Current session:"), Some(91.5));
+        assert_eq!(percent_used_after_prefix("Current week: 20% used", "Current session:"), None);
+    }
+
+    #[test]
+    fn codex_usage_uses_the_most_constrained_window() {
+        let limits = json!({
+            "primary": {"usedPercent": 82.0},
+            "secondary": {"usedPercent": 95.0},
+            "rateLimitReachedType": null,
+            "spendControlReached": false
+        });
+        assert_eq!(codex_remaining_from_limits(&limits), Some(5.0));
+    }
+
+    #[test]
+    fn codex_usage_reports_zero_when_a_limit_is_reached() {
+        let limits = json!({"primary": {"usedPercent": 10.0}, "rateLimitReachedType": "primary"});
+        assert_eq!(codex_remaining_from_limits(&limits), Some(0.0));
+    }
+
+    #[test]
+    fn ai_usage_gate_is_fail_closed_at_ten_percent() {
+        assert!(!usage_is_available(None));
+        assert!(!usage_is_available(Some(9.9)));
+        assert!(usage_is_available(Some(10.0)));
     }
 }

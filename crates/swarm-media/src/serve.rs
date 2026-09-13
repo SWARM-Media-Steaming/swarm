@@ -1574,6 +1574,12 @@ mod catalog_delta_tests {
             community_rating_votes: None,
             like_count: 0,
             skip_segments: Vec::new(),
+            relative_path: None,
+            parent_entry_key: None,
+            extra_type: None,
+            extra_title: None,
+            extra_relative_path: None,
+            extra_category_path: None,
         }
     }
 

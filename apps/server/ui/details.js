@@ -1,7 +1,12 @@
-// ---- Details tab: bandwidth/transcoding/cache panels + media-root config ---
+// ---- Metrics tab: bandwidth/transcoding/cache panels --------------------
+// ---- Settings tab: media-root config + keys + subtitles + updates ------
 
-async function refreshDetails() {
-  await Promise.all([refreshMediaRoots(), refreshTmdbKeyField(), refreshOpenSubtitlesKeyField(), refreshTranscriptionSetting(), refreshTranscodingControls(), refreshBandwidth(), refreshTranscoding(), refreshArtworkCache(), refreshSoftwareUpdate()]);
+async function refreshMetrics() {
+  await Promise.all([refreshTranscodingControls(), refreshBandwidth(), refreshTranscoding(), refreshArtworkCache()]);
+}
+
+async function refreshSettings() {
+  await Promise.all([refreshMediaRoots(), refreshTmdbKeyField(), refreshOpenSubtitlesKeyField(), refreshTranscriptionSetting(), refreshSoftwareUpdate()]);
 }
 
 let softwareUpdatePending = null;
@@ -92,6 +97,8 @@ async function refreshTmdbKeyField() {
   document.getElementById("uploadBudgetEnabledCheck").checked = settings.streaming_upload_budget_enabled;
   document.getElementById("artworkDiskCacheEnabledCheck").checked = settings.artwork_disk_cache_enabled;
   document.getElementById("autoLibraryWatchEnabledCheck").checked = settings.auto_library_watch_enabled;
+  document.getElementById("comprehensiveCheck").checked = settings.comprehensive_check;
+  document.getElementById("scanMusicTracksCheck").checked = settings.scan_music_tracks;
   const status = document.getElementById("tmdbKeyStatus");
   status.textContent = settings.has_tmdb_key ? "A key is saved. Scraping is enabled." : "No key saved yet — scraping is disabled until one is added.";
   status.classList.toggle("error", !settings.has_tmdb_key);
@@ -208,6 +215,28 @@ document.getElementById("autoLibraryWatchEnabledCheck").addEventListener("change
   try {
     await invoke("set_auto_library_watch_enabled", { enabled });
     showToast(enabled ? "Automatic library detection enabled." : "Automatic library detection disabled.", "success");
+  } catch (err) {
+    event.currentTarget.checked = !enabled;
+    showToast(String(err), "error");
+  }
+});
+
+document.getElementById("comprehensiveCheck").addEventListener("change", async (event) => {
+  const enabled = event.currentTarget.checked;
+  try {
+    await invoke("set_comprehensive_check", { enabled });
+    showToast(enabled ? "Comprehensive Check enabled." : "Fast filesystem checks enabled.", "success");
+  } catch (err) {
+    event.currentTarget.checked = !enabled;
+    showToast(String(err), "error");
+  }
+});
+
+document.getElementById("scanMusicTracksCheck").addEventListener("change", async (event) => {
+  const enabled = event.currentTarget.checked;
+  try {
+    await invoke("set_scan_music_tracks", { enabled });
+    showToast(enabled ? "Music track scanning enabled." : "Music track scanning disabled.", "success");
   } catch (err) {
     event.currentTarget.checked = !enabled;
     showToast(String(err), "error");
@@ -505,10 +534,10 @@ window.addEventListener("resize", () => {
 });
 
 // Every 5 seconds — matching the server's sample cadence — while the
-// Details tab is the one on screen; refreshDetails() covers the moment the
+// Metrics tab is the one on screen; refreshMetrics() covers the moment the
 // tab is first opened so there's no up-to-5s wait for the first paint.
 setInterval(() => {
-  const panel = document.getElementById("tabPanel-details");
+  const panel = document.getElementById("tabPanel-metrics");
   if (panel && !panel.classList.contains("d-none")) {
     refreshBandwidth();
     refreshTranscoding();
@@ -901,7 +930,7 @@ async function refreshMediaRoots() {
       const permissionHint = permissionDenied
         ? `<div class="muted compact-help">macOS is blocking reads here. Grant "SWARM Server" access under Privacy &amp; Security &rarr; Files and Folders (or Full Disk Access), then Rescan — macOS remembers it.</div>`
         : "";
-      const assetLabels = { mixed: "Mixed", movies: "Movies", shows: "TV shows", music: "Music" };
+      const assetLabels = { mixed: "Legacy mixed", movies: "Movies", shows: "TV shows", music: "Music", photos_videos: "Photos & videos" };
       const assetType = assetLabels[r.asset_type] || "Mixed";
       return `
       <div class="media-root-row">
@@ -918,6 +947,8 @@ async function refreshMediaRoots() {
     }).join("");
     list.querySelectorAll("[data-remove-root]").forEach(btn => {
       btn.addEventListener("click", async () => {
+        const progressToast = showToast("Removing media root and updating the library…", "progress", { duration: 0 });
+        btn.disabled = true;
         try {
           const result = await invoke("remove_media_root", { label: btn.dataset.removeRoot });
           if (!result.media_roots || result.media_roots.length === 0) {
@@ -932,6 +963,9 @@ async function refreshMediaRoots() {
           describeRootChange(result);
         } catch (err) {
           showToast(String(err), "error");
+          btn.disabled = false;
+        } finally {
+          dismissToast(progressToast);
         }
       });
     });
@@ -974,6 +1008,10 @@ async function refreshMediaRoots() {
 // nothing if it's still first-run onboarding (there's no core yet to apply
 // it to; the choice is just saved for when one starts).
 function describeRootChange(result) {
+  if (result.apply_error) {
+    showToast(`The media-root change was saved, but the live library update failed: ${result.apply_error}`, "warning", { duration: 9000 });
+    return;
+  }
   if (!result.rescan) return;
   const { added, updated, removed, unchanged } = result.rescan;
   showToast(`Applied — scanned now: +${added} added, ${updated} updated, ${removed} removed, ${unchanged} unchanged.`, "success");
@@ -991,7 +1029,7 @@ function openAddRootModal() {
   addRootPickedPath = null;
   document.getElementById("addRootChosenPath").textContent = "No folder chosen yet";
   document.getElementById("addRootChosenPath").classList.add("muted");
-  document.getElementById("addRootAssetType").value = "mixed";
+  document.getElementById("addRootAssetType").value = "";
   document.getElementById("addRootConfirmBtn").disabled = true;
   addRootModal.classList.remove("d-none");
   document.getElementById("addRootChooseBtn").focus();
@@ -1020,8 +1058,13 @@ document.getElementById("addRootChooseBtn").addEventListener("click", async () =
 
 document.getElementById("addRootConfirmBtn").addEventListener("click", async event => {
   if (!addRootPickedPath) return;
+  if (!document.getElementById("addRootAssetType").value) {
+    showToast("Choose an asset type first.", "warning");
+    return;
+  }
   const button = event.currentTarget;
   button.disabled = true;
+  const progressToast = showToast("Adding media root and scanning its contents…", "progress", { duration: 0 });
   try {
     const result = await invoke("add_media_root", {
       label: "",
@@ -1034,6 +1077,8 @@ document.getElementById("addRootConfirmBtn").addEventListener("click", async eve
   } catch (err) {
     showToast(String(err), "error");
     button.disabled = false;
+  } finally {
+    dismissToast(progressToast);
   }
 });
 
@@ -1062,14 +1107,16 @@ document.getElementById("networkRootConnectBtn").addEventListener("click", async
   const button = event.currentTarget;
   const wasOnboarding = !document.getElementById("onboardFolderView").classList.contains("d-none");
   button.disabled = true;
+  const progressToast = showToast("Connecting the SMB share and scanning its contents…", "progress", { duration: 0 });
   try {
     const result = await invoke("connect_smb_root", {
       label: document.getElementById("networkRootLabel").value,
       server: document.getElementById("networkRootServer").value,
       share: document.getElementById("networkRootShare").value,
       username: document.getElementById("networkRootUsername").value || null,
+      assetType: document.getElementById("networkRootAssetType").value || null,
     });
-    for (const id of ["networkRootLabel", "networkRootServer", "networkRootShare", "networkRootUsername"]) {
+    for (const id of ["networkRootLabel", "networkRootServer", "networkRootShare", "networkRootUsername", "networkRootAssetType"]) {
       document.getElementById(id).value = "";
     }
     closeNetworkRootModal();
@@ -1084,5 +1131,6 @@ document.getElementById("networkRootConnectBtn").addEventListener("click", async
     showToast(String(err), "error", { duration: 9000 });
   } finally {
     button.disabled = false;
+    dismissToast(progressToast);
   }
 });

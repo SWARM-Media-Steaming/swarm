@@ -1654,6 +1654,11 @@ mod tests {
             rating: None,
             community_rating: None,
             community_rating_votes: None,
+            parent_entry_key: None,
+            extra_type: None,
+            extra_title: None,
+            extra_relative_path: None,
+            extra_category_path: None,
         }
     }
 

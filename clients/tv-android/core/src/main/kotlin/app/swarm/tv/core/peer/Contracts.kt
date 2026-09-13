@@ -89,6 +89,7 @@ data class CatalogEntry(
     val kind: MediaKind,
     val title: String,
     val size: Long,
+    val relativePath: String? = null,
     val durationSecs: Double? = null,
     val showTitle: String? = null,
     val season: Int? = null,
@@ -117,6 +118,12 @@ data class CatalogEntry(
     val likeCount: Int = 0,
     /** IntroDB markers; retained for every supported kind even though today's player consumes intros. */
     val skipSegments: List<SkipSegment> = emptyList(),
+    /** Local movie-extra association and presentation metadata. */
+    val parentEntryKey: String? = null,
+    val extraType: String? = null,
+    val extraTitle: String? = null,
+    val extraRelativePath: String? = null,
+    val extraCategoryPath: String? = null,
 )
 
 @Serializable

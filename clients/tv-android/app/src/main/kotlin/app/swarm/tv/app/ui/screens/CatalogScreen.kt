@@ -477,7 +477,7 @@ internal fun CatalogScreen(
                     // browse order to actually reflect quality, not just
                     // alphabetical/insertion order.
                     val movies = remember(filtered) {
-                        filtered.filter { it.entry.kind == MediaKind.MOVIE }
+                        CatalogGrouping.movies(filtered)
                             .sortedWith(compareByDescending<MergedEntry> { it.ratingScore() }.thenBy { it.entry.displayTitle().lowercase() })
                     }
                     val shows = remember(filtered) {
@@ -516,7 +516,7 @@ internal fun CatalogScreen(
                                 entry to saved
                             }
                             val movieItems = inProgress
-                                .filter { it.first.entry.kind == MediaKind.MOVIE }
+                                .filter { it.first.entry.kind == MediaKind.MOVIE && it.first.entry.extraType == null }
                                 .map { (entry, saved) ->
                                     QuickAccessItem(
                                         key = "continue-movie-${entry.entry.fingerprint}",
@@ -563,6 +563,7 @@ internal fun CatalogScreen(
                             val movieItems = entries
                                 .filter { entry ->
                                     entry.entry.kind == MediaKind.MOVIE &&
+                                        entry.entry.extraType == null &&
                                         WatchlistKeys.movie(entry) in watchlistKeys &&
                                         watchStates[entry.entry.fingerprint]?.watched != true
                                 }
@@ -900,7 +901,7 @@ internal fun shouldLeaveFilterRailOnBack(expanded: Boolean, hasFocus: Boolean): 
 
 private fun kindMatches(entry: MergedEntry, filter: KindFilter): Boolean = when (filter) {
     KindFilter.ALL -> true
-    KindFilter.MOVIES -> entry.entry.kind == MediaKind.MOVIE
+    KindFilter.MOVIES -> entry.entry.kind == MediaKind.MOVIE && entry.entry.extraType == null
     KindFilter.SHOWS -> entry.entry.kind == MediaKind.EPISODE
     KindFilter.MUSIC -> entry.entry.kind == MediaKind.TRACK
 }

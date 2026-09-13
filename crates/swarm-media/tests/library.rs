@@ -7,9 +7,10 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use swarm_core::entry_key::entry_key;
 use swarm_core::peer::{AudioStreamInfo, MediaKind, SkipSegment, SkipSegmentKind, TrackLyrics};
-use swarm_media::roots::{MediaRoot, RootResolver, SharedRootResolver};
+use swarm_media::roots::{MediaRoot, MediaRootAssetType, RootResolver, SharedRootResolver};
 use swarm_media::scan::{
-    scan_root, scan_roots, scan_roots_cancellable, scan_roots_scoped, ScanError,
+    scan_root, scan_roots, scan_roots_cancellable, scan_roots_scoped,
+    scan_roots_with_options, ScanError, ScanOptions,
 };
 use swarm_media::store::{ArtworkKind, EntryRecord, Library, MissingDisposition, SubtitleRecord};
 
@@ -47,6 +48,7 @@ async fn cancelled_scan_stops_before_catalog_reconciliation() {
     let roots = vec![MediaRoot {
         label: "local".into(),
         path: fx.root.clone(),
+        asset_type: Default::default(),
     }];
 
     let error = scan_roots_cancellable(&fx.library, &roots, None, cancel)
@@ -91,6 +93,11 @@ async fn transcription_queue_resumes_segments_and_cascades_with_media() {
         rating: None,
         community_rating: None,
         community_rating_votes: None,
+        parent_entry_key: None,
+        extra_type: None,
+        extra_title: None,
+        extra_relative_path: None,
+        extra_category_path: None,
     };
     fx.library.upsert(&entry).await.unwrap();
     assert_eq!(
@@ -207,6 +214,11 @@ fn movie_entry(entry_key: &str, relative_path: &str, fingerprint: &str) -> Entry
         rating: None,
         community_rating: None,
         community_rating_votes: None,
+        parent_entry_key: None,
+        extra_type: None,
+        extra_title: None,
+        extra_relative_path: None,
+        extra_category_path: None,
     }
 }
 
@@ -520,6 +532,127 @@ async fn scan_add_modify_rename_delete() {
     assert_eq!(changes.len(), 1);
     assert_eq!(changes[0].operation, "delete");
     assert_eq!(changes[0].entry_key, track.entry_key);
+}
+
+#[tokio::test]
+async fn modified_time_change_with_same_size_triggers_update() {
+    let fx = fixture("mtime-delta").await;
+    write(&fx.root, "movies/example.mkv", b"same-size");
+    scan_root(&fx.library, &fx.root).await.unwrap();
+    let path = fx.root.join("movies/example.mkv");
+    let old = fx.library.list().await.unwrap().remove(0);
+    filetime::set_file_mtime(
+        &path,
+        filetime::FileTime::from_unix_time(old.modified_time + 5, 0),
+    )
+    .unwrap();
+
+    let report = scan_root(&fx.library, &fx.root).await.unwrap();
+    assert_eq!(report.updated, 1);
+    assert_eq!(report.unchanged, 0);
+}
+
+#[tokio::test]
+async fn comprehensive_check_detects_content_hidden_by_size_and_timestamp() {
+    let fx = fixture("comprehensive-content-delta").await;
+    let relative = "movies/example.mkv";
+    write(&fx.root, relative, b"contents-a");
+    scan_root(&fx.library, &fx.root).await.unwrap();
+    let original = fx.library.list().await.unwrap().remove(0);
+    let path = fx.root.join(relative);
+
+    write(&fx.root, relative, b"contents-b");
+    filetime::set_file_mtime(
+        &path,
+        filetime::FileTime::from_unix_time(original.modified_time, 0),
+    )
+    .unwrap();
+
+    let roots = [MediaRoot {
+        label: "local".into(),
+        path: fx.root.clone(),
+        asset_type: MediaRootAssetType::Movies,
+    }];
+    let fast = scan_roots_with_options(
+        &fx.library,
+        &roots,
+        None,
+        ScanOptions {
+            comprehensive_check: false,
+            scan_music_tracks: false,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!((fast.updated, fast.unchanged), (0, 1));
+    assert_eq!(fx.library.list().await.unwrap()[0].fingerprint, original.fingerprint);
+
+    let comprehensive = scan_roots_with_options(
+        &fx.library,
+        &roots,
+        None,
+        ScanOptions {
+            comprehensive_check: true,
+            scan_music_tracks: false,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!((comprehensive.updated, comprehensive.unchanged), (1, 0));
+    assert_ne!(fx.library.list().await.unwrap()[0].fingerprint, original.fingerprint);
+}
+
+#[tokio::test]
+async fn typed_roots_filter_media_and_music_tracks_are_opt_in() {
+    let fx = fixture("typed-root-filter").await;
+    write(&fx.root, "movie.mkv", b"video");
+    write(&fx.root, "Artist/Album/01 Song.flac", b"audio");
+    let roots = [MediaRoot {
+        label: "local".into(),
+        path: fx.root.clone(),
+        asset_type: MediaRootAssetType::Music,
+    }];
+
+    let skipped = scan_roots_with_options(
+        &fx.library,
+        &roots,
+        None,
+        ScanOptions {
+            comprehensive_check: false,
+            scan_music_tracks: false,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(skipped.added, 0);
+
+    let scanned = scan_roots_with_options(
+        &fx.library,
+        &roots,
+        None,
+        ScanOptions {
+            comprehensive_check: false,
+            scan_music_tracks: true,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(scanned.added, 1);
+    assert_eq!(fx.library.list().await.unwrap()[0].kind, MediaKind::Track);
+
+    let disabled = scan_roots_with_options(
+        &fx.library,
+        &roots,
+        None,
+        ScanOptions {
+            comprehensive_check: false,
+            scan_music_tracks: false,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(disabled.removed, 1);
+    assert!(fx.library.list().await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -899,10 +1032,12 @@ async fn two_roots_with_the_same_relative_path_get_distinct_entry_keys() {
         MediaRoot {
             label: "local".to_string(),
             path: root_a.clone(),
+            asset_type: Default::default(),
         },
         MediaRoot {
             label: "nas".to_string(),
             path: root_b.clone(),
+            asset_type: Default::default(),
         },
     ];
     let report = scan_roots(&library, &roots, None).await.unwrap();
@@ -936,10 +1071,12 @@ async fn scoped_rescan_reconciles_only_the_selected_multi_root() {
         MediaRoot {
             label: "local".into(),
             path: local.clone(),
+            asset_type: Default::default(),
         },
         MediaRoot {
             label: "nas".into(),
             path: nas.clone(),
+            asset_type: Default::default(),
         },
     ];
     scan_roots(&library, &roots, None).await.unwrap();
@@ -993,10 +1130,12 @@ async fn overlapping_roots_are_scanned_once_regardless_of_configuration_order() 
         let outer = MediaRoot {
             label: "tv".into(),
             path: tv.clone(),
+            asset_type: Default::default(),
         };
         let inner = MediaRoot {
             label: "office".into(),
             path: office.clone(),
+            asset_type: Default::default(),
         };
         let roots = if outer_first {
             vec![outer, inner]
@@ -1055,10 +1194,12 @@ async fn overlapping_root_self_heals_a_pre_existing_duplicate_on_rescan() {
         MediaRoot {
             label: "office".into(),
             path: office.clone(),
+            asset_type: Default::default(),
         },
         MediaRoot {
             label: "tv".into(),
             path: tv.clone(),
+            asset_type: Default::default(),
         },
     ];
     scan_roots(&library, &roots, None).await.unwrap();
@@ -1467,6 +1608,7 @@ async fn set_manual_kind_survives_a_rescan_after_the_file_changes_on_disk() {
     let roots = vec![MediaRoot {
         label: "local".into(),
         path: fx.root.clone(),
+        asset_type: Default::default(),
     }];
     let report = scan_roots(&fx.library, &roots, None).await.unwrap();
     assert_eq!(report.updated, 1);
@@ -1578,6 +1720,11 @@ async fn reclassify_all_repairs_stale_bonus_content_and_leaves_correct_entries_u
         rating: None,
         community_rating: None,
         community_rating_votes: None,
+        parent_entry_key: None,
+        extra_type: None,
+        extra_title: None,
+        extra_relative_path: None,
+        extra_category_path: None,
     };
     fx.library.upsert(&wrong_entry).await.unwrap();
     // upsert() deliberately never writes scrape/artwork columns (a rescan
@@ -1635,6 +1782,11 @@ async fn reclassify_all_repairs_stale_bonus_content_and_leaves_correct_entries_u
         rating: None,
         community_rating: None,
         community_rating_votes: None,
+        parent_entry_key: None,
+        extra_type: None,
+        extra_title: None,
+        extra_relative_path: None,
+        extra_category_path: None,
     };
     fx.library.upsert(&correct_entry).await.unwrap();
     fx.library
@@ -1740,6 +1892,11 @@ async fn reclassify_all_repairs_a_track_whose_only_wrong_fields_are_artist_and_a
         rating: None,
         community_rating: None,
         community_rating_votes: None,
+        parent_entry_key: None,
+        extra_type: None,
+        extra_title: None,
+        extra_relative_path: None,
+        extra_category_path: None,
     };
     fx.library.upsert(&wrong_entry).await.unwrap();
     fx.library

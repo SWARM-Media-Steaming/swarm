@@ -70,6 +70,13 @@ data class SeasonGroup(val season: Int?, val episodes: List<MergedEntry>)
 data class ShowGroup(val show: String, val seasons: List<SeasonGroup>)
 
 object CatalogGrouping {
+    fun movies(entries: List<MergedEntry>): List<MergedEntry> =
+        entries.filter { it.entry.kind == MediaKind.MOVIE && it.entry.extraType == null }
+
+    fun movieExtras(movie: MergedEntry, entries: List<MergedEntry>): List<MergedEntry> =
+        entries.filter { it.entry.extraType != null && it.entry.parentEntryKey == movie.entry.entryKey }
+            .sortedWith(compareBy({ it.entry.extraType }, { it.entry.extraTitle?.lowercase() }))
+
     fun groupTracksByArtistAlbum(entries: List<MergedEntry>): List<ArtistGroup> {
         val byArtist = entries.filter { it.entry.kind == MediaKind.TRACK }.groupBy { artistNameOf(it) }
         return byArtist.entries

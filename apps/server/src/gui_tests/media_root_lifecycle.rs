@@ -38,7 +38,27 @@ async fn add_media_root_persists_and_is_listed() {
 }
 
 #[tokio::test]
-async fn add_media_root_derives_a_label_when_none_is_given() {
+async fn add_media_root_requires_an_asset_type() {
+    let test_app = test_app();
+    let app = test_app.handle();
+    let root_dir = empty_media_root_dir();
+
+    let error = add_media_root(
+        app.clone(),
+        app.state(),
+        String::new(),
+        root_dir.path().to_string_lossy().to_string(),
+        None,
+    )
+    .await
+    .expect_err("new roots must declare their asset type");
+
+    assert!(error.contains("asset type"));
+    assert!(list_media_roots(app).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn add_media_root_derives_a_label_with_required_asset_type() {
     let test_app = test_app();
     let app = test_app.handle();
     let root_dir = empty_media_root_dir();
@@ -50,7 +70,7 @@ async fn add_media_root_derives_a_label_when_none_is_given() {
         app.state(),
         String::new(),
         named.to_string_lossy().to_string(),
-        None,
+        Some("photos_videos".to_string()),
     )
     .await
     .expect("add_media_root should derive a label from the folder name");
@@ -59,7 +79,7 @@ async fn add_media_root_derives_a_label_when_none_is_given() {
     assert_eq!(result.media_roots[0].label, "Family-Movies");
     assert_eq!(
         result.media_roots[0].asset_type,
-        crate::settings::RootAssetType::Mixed
+        crate::settings::RootAssetType::PhotosVideos
     );
 }
 
@@ -75,7 +95,7 @@ async fn add_media_root_rejects_duplicate_label() {
         app.state(),
         "Movies".to_string(),
         first_dir.path().to_string_lossy().to_string(),
-        None,
+        Some("movies".to_string()),
     )
     .await
     .expect("first add should succeed");
@@ -85,7 +105,7 @@ async fn add_media_root_rejects_duplicate_label() {
         app.state(),
         "Movies".to_string(),
         second_dir.path().to_string_lossy().to_string(),
-        None,
+        Some("shows".to_string()),
     )
     .await
     .expect_err("a second root with the same label must be rejected");
@@ -106,7 +126,7 @@ async fn add_media_root_rejects_the_same_folder_twice() {
         app.state(),
         "Movies".to_string(),
         root_dir.path().to_string_lossy().to_string(),
-        None,
+        Some("movies".to_string()),
     )
     .await
     .expect("first add should succeed");
@@ -116,7 +136,7 @@ async fn add_media_root_rejects_the_same_folder_twice() {
         app.state(),
         "Shows".to_string(),
         root_dir.path().to_string_lossy().to_string(),
-        None,
+        Some("shows".to_string()),
     )
     .await
     .expect_err("issue #252: the same folder must not be added as a second root");
@@ -142,7 +162,7 @@ async fn remove_media_root_allows_removing_the_last_root() {
         app.state(),
         "Movies".to_string(),
         root_dir.path().to_string_lossy().to_string(),
-        None,
+        Some("movies".to_string()),
     )
     .await
     .expect("add should succeed");
@@ -174,7 +194,7 @@ async fn remove_media_root_deletes_a_non_last_root() {
         app.state(),
         "Movies".to_string(),
         first_dir.path().to_string_lossy().to_string(),
-        None,
+        Some("movies".to_string()),
     )
     .await
     .expect("first add should succeed");
@@ -183,7 +203,7 @@ async fn remove_media_root_deletes_a_non_last_root() {
         app.state(),
         "Shows".to_string(),
         second_dir.path().to_string_lossy().to_string(),
-        None,
+        Some("shows".to_string()),
     )
     .await
     .expect("second add should succeed");

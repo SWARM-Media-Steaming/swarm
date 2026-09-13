@@ -14,5 +14,7 @@
         <Label id="title" translation="[440, 100]" width="1200" color="0xECF6FFFF" />
         <Label id="metaLine" translation="[440, 160]" width="1200" color="0x9FB0C9FF" />
         <Group id="buttons" translation="[440, 210]" />
+        <Label id="extrasHeading" translation="[440, 290]" width="1200" text="Extras" visible="false" color="0xECF6FFFF" />
+        <Label id="extrasList" translation="[440, 335]" width="1200" height="500" numLines="10" wrap="true" visible="false" color="0x9FB0C9FF" />
     </children>
 </component>

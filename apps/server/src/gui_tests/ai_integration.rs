@@ -160,7 +160,7 @@ async fn ai_reorganize_scan_proposes_a_plan_for_a_messy_filename_with_no_ai_need
     assert_eq!(plan.items.len(), 1);
     assert_eq!(
         plan.items[0].to,
-        "Movies/10 Cloverfield Lane (2016)/10 Cloverfield Lane (2016).mkv"
+        "10 Cloverfield Lane (2016)/10 Cloverfield Lane (2016).mkv"
     );
     assert!(plan.items[0].conflict.is_none());
     assert_eq!(plan.ai_assisted_count, 0, "classify() already understood this name, no AI needed");
@@ -183,10 +183,25 @@ async fn approve_ai_reorg_plan_moves_the_file_and_never_deletes_anything() {
         .await
         .expect("ai_reorganize_scan should succeed");
 
-    let applied = approve_ai_reorg_plan(app.clone(), app.state(), plan.id)
+    let applying = approve_ai_reorg_plan(app.clone(), app.state(), plan.id)
         .await
         .expect("approve_ai_reorg_plan should succeed");
-    assert_eq!(applied.status, "applied");
+    assert_eq!(applying.status, "applying");
+    assert!(applying.apply_summary.is_none());
+
+    let applied = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let plans = list_ai_reorg_plans(app.state())
+                .await
+                .expect("list_ai_reorg_plans should succeed");
+            if plans[0].status == "applied" {
+                break plans.into_iter().next().expect("stored plan");
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("background reorganization should finish");
     let summary = applied.apply_summary.expect("an applied plan should carry a summary");
     assert_eq!(summary.applied, 1);
     assert_eq!(summary.skipped, 0);
@@ -197,7 +212,7 @@ async fn approve_ai_reorg_plan_moves_the_file_and_never_deletes_anything() {
     );
     assert!(root_dir
         .path()
-        .join("Movies/Heat (1995)/Heat (1995).mkv")
+        .join("Heat (1995)/Heat (1995).mkv")
         .exists());
 
     // Approving again must be rejected — this is a one-shot action, not an

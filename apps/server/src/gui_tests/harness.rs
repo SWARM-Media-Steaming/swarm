@@ -103,7 +103,7 @@ pub async fn test_app_with_media_root() -> (TestApp, tempfile::TempDir) {
         app.state(),
         "Movies".to_string(),
         root_dir.path().to_string_lossy().to_string(),
-        None,
+        Some("movies".to_string()),
     )
     .await
     .expect("add_media_root should succeed in test_app_with_media_root");

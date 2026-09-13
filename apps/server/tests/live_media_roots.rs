@@ -60,7 +60,9 @@ async fn update_media_roots_takes_effect_live_for_both_scanning_and_serving() {
         media_roots: vec![MediaRoot {
             label: "local".into(),
             path: root_a.clone(),
+            asset_type: Default::default(),
         }],
+        scan_options: Default::default(),
         data_dir: base.join("server-data"),
         bind: "127.0.0.1:0".parse().unwrap(),
         http_media_bind: "127.0.0.1:0".parse().unwrap(),
@@ -113,6 +115,7 @@ async fn update_media_roots_takes_effect_live_for_both_scanning_and_serving() {
         .update_media_roots(vec![MediaRoot {
             label: "local".into(),
             path: root_b.clone(),
+            asset_type: Default::default(),
         }])
         .await
         .unwrap();

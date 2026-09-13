@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use swarm_core::peer::MediaKind;
-use swarm_media::roots::MediaRoot;
+use swarm_media::roots::{MediaRoot, MediaRootAssetType};
 use swarm_media::scan::ScanProgressEvent;
 use swarm_media::scrape::{BulkScrapeReport, ScrapeConfig, ScrapeIssue, ScrapeProgressEvent};
 use swarm_server::{
@@ -218,6 +218,10 @@ impl AppState {
                     });
                 let config = ServerConfig {
                     media_roots: to_media_roots(&settings.media_roots),
+                    scan_options: swarm_media::scan::ScanOptions {
+                        comprehensive_check: settings.comprehensive_check,
+                        scan_music_tracks: settings.scan_music_tracks,
+                    },
                     data_dir: dir,
                     // This remains an environment override for development and
                     // managed deployments; ordinary desktop users never need it.
@@ -860,6 +864,13 @@ fn to_media_roots(settings: &[MediaRootSetting]) -> Vec<MediaRoot> {
         .map(|r| MediaRoot {
             label: r.label.clone(),
             path: PathBuf::from(&r.path),
+            asset_type: match r.asset_type {
+                RootAssetType::Mixed => MediaRootAssetType::Mixed,
+                RootAssetType::Movies => MediaRootAssetType::Movies,
+                RootAssetType::Shows => MediaRootAssetType::Shows,
+                RootAssetType::Music => MediaRootAssetType::Music,
+                RootAssetType::PhotosVideos => MediaRootAssetType::PhotosVideos,
+            },
         })
         .collect()
 }
@@ -878,6 +889,8 @@ struct SettingsView {
     mcp_port: u16,
     mcp_access_token: Option<String>,
     auto_library_watch_enabled: bool,
+    comprehensive_check: bool,
+    scan_music_tracks: bool,
     video_encoder_mode: String,
     max_transcode_height: u32,
     hls_segment_seconds: u32,
@@ -928,6 +941,8 @@ async fn get_settings<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<Set
         mcp_port: settings.mcp_port,
         mcp_access_token: settings.mcp_access_token,
         auto_library_watch_enabled: settings.auto_library_watch_enabled,
+        comprehensive_check: settings.comprehensive_check,
+        scan_music_tracks: settings.scan_music_tracks,
         video_encoder_mode: settings.video_encoder_mode,
         max_transcode_height: settings.max_transcode_height,
         hls_segment_seconds: settings.hls_segment_seconds,
@@ -1004,6 +1019,38 @@ async fn set_auto_library_watch_enabled<R: tauri::Runtime>(
     let mut settings = settings::load(&dir);
     settings.auto_library_watch_enabled = enabled;
     settings::save(&dir, &settings).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn set_comprehensive_check<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    enabled: bool,
+) -> Result<(), String> {
+    let dir = app_data_dir(&app)?;
+    let mut settings = settings::load(&dir);
+    settings.comprehensive_check = enabled;
+    settings::save(&dir, &settings).map_err(|error| error.to_string())?;
+    if let Some(core) = state.core.get() {
+        core.set_comprehensive_check(enabled);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_scan_music_tracks<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    enabled: bool,
+) -> Result<(), String> {
+    let dir = app_data_dir(&app)?;
+    let mut settings = settings::load(&dir);
+    settings.scan_music_tracks = enabled;
+    settings::save(&dir, &settings).map_err(|error| error.to_string())?;
+    if let Some(core) = state.core.get() {
+        core.set_scan_music_tracks(enabled);
+    }
+    Ok(())
 }
 
 // ----- Software update ---------------------------------------------------
@@ -1145,7 +1192,11 @@ async fn pick_folder<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Opt
 /// *first* media root, labeled `"local"` — the first-run onboarding path.
 /// Does not affect an already-running core — see the module docs.
 #[tauri::command]
-async fn choose_media_folder<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<Option<String>, String> {
+async fn choose_media_folder<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    asset_type: Option<String>,
+) -> Result<Option<String>, String> {
+    let asset_type = RootAssetType::parse(asset_type.as_deref())?;
     let Some(path) = pick_folder(&app).await? else {
         return Ok(None);
     };
@@ -1155,7 +1206,7 @@ async fn choose_media_folder<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Res
         label: "local".to_string(),
         path: path.clone(),
         reconnect_url: settings::discover_reconnect_url(&path),
-        asset_type: RootAssetType::Mixed,
+        asset_type,
     }];
     settings::save(&dir, &settings).map_err(|e| e.to_string())?;
     Ok(Some(path))
@@ -1163,7 +1214,7 @@ async fn choose_media_folder<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Res
 
 /// Same native folder picker as [`choose_media_folder`], but only returns
 /// the chosen path — no persistence. Used by the "add another root" flow
-/// (Details tab), which needs the user to also supply a label before
+/// (Settings tab), which needs the user to also supply a label before
 /// `add_media_root` actually saves anything.
 #[tauri::command]
 async fn pick_folder_path<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<Option<String>, String> {
@@ -1204,6 +1255,10 @@ struct MediaRootsResult {
     /// Present when a core was already running and the change was applied
     /// live; absent during first-run onboarding, before any core exists.
     rescan: Option<RescanResult>,
+    /// A settings change is durable even when applying it to the running
+    /// scanner fails. Returning that failure separately keeps the UI in sync
+    /// with settings while still warning the user that a rescan is needed.
+    apply_error: Option<String>,
 }
 
 /// A filesystem-safe, unique label derived from a folder's own name — used
@@ -1273,10 +1328,14 @@ async fn add_media_root<R: tauri::Runtime>(
         asset_type,
     });
     settings::save(&dir, &settings).map_err(|e| e.to_string())?;
-    let rescan = state.apply_live_roots(&settings.media_roots).await?;
+    let (rescan, apply_error) = match state.apply_live_roots(&settings.media_roots).await {
+        Ok(rescan) => (rescan, None),
+        Err(error) => (None, Some(error)),
+    };
     Ok(MediaRootsResult {
         media_roots: settings.media_roots,
         rescan,
+        apply_error,
     })
 }
 
@@ -1328,10 +1387,14 @@ async fn connect_smb_root<R: tauri::Runtime>(
         asset_type,
     });
     settings::save(&dir, &persisted).map_err(|error| error.to_string())?;
-    let rescan = state.apply_live_roots(&persisted.media_roots).await?;
+    let (rescan, apply_error) = match state.apply_live_roots(&persisted.media_roots).await {
+        Ok(rescan) => (rescan, None),
+        Err(error) => (None, Some(error)),
+    };
     Ok(MediaRootsResult {
         media_roots: persisted.media_roots,
         rescan,
+        apply_error,
     })
 }
 
@@ -1387,6 +1450,7 @@ async fn repair_smb_root<R: tauri::Runtime>(
     Ok(MediaRootsResult {
         media_roots: persisted.media_roots,
         rescan,
+        apply_error: None,
     })
 }
 
@@ -1409,14 +1473,18 @@ async fn remove_media_root<R: tauri::Runtime>(
         return Err(format!("no media root labeled \"{label}\" exists"));
     }
     settings::save(&dir, &settings).map_err(|e| e.to_string())?;
-    let rescan = if settings.media_roots.is_empty() {
-        None
+    let (rescan, apply_error) = if settings.media_roots.is_empty() {
+        (None, None)
     } else {
-        state.apply_live_roots(&settings.media_roots).await?
+        match state.apply_live_roots(&settings.media_roots).await {
+            Ok(rescan) => (rescan, None),
+            Err(error) => (None, Some(error)),
+        }
     };
     Ok(MediaRootsResult {
         media_roots: settings.media_roots,
         rescan,
+        apply_error,
     })
 }
 
@@ -1716,22 +1784,29 @@ async fn test_ai_provider(id: String) -> Result<String, String> {
     ))
 }
 
-/// Finds the first enabled provider (settings order: Claude, Codex, Grok)
-/// and builds a client for it — its installed CLI when there's no saved API
-/// key (the issue #252 default), or the direct HTTP API when a key is
-/// present. The advanced AI features don't let a user pick per call, since
-/// there is normally only one enabled anyway.
-fn ai_client_from_settings(settings: &Settings) -> Result<ai::AiClient, String> {
-    let provider = settings
-        .ai_providers
-        .iter()
-        .find(|p| p.enabled)
-        .ok_or_else(|| "Enable an AI provider in the AI tab first.".to_string())?;
-    let kind = ai::AiProviderKind::from_id(&provider.id)
-        .ok_or_else(|| format!("unknown AI provider \"{}\"", provider.id))?;
-    match provider.api_key.clone().filter(|key| !key.is_empty()) {
-        Some(key) => Ok(ai::AiClient::new(kind, key, provider.model.clone())),
-        None => ai::AiClient::cli(kind, provider.model.clone()),
+/// Finds the first enabled CLI that is signed in and has at least 10% usage
+/// remaining. Usage must be positively detected: an unavailable quota check
+/// never permits an AI-assisted call.
+async fn ai_client_from_settings(settings: &Settings) -> Result<ai::AiClient, String> {
+    let mut enabled = false;
+    for provider in settings.ai_providers.iter().filter(|provider| provider.enabled) {
+        enabled = true;
+        let kind = ai::AiProviderKind::from_id(&provider.id)
+            .ok_or_else(|| format!("unknown AI provider \"{}\"", provider.id))?;
+        let info = tokio::task::spawn_blocking(move || ai::detect_provider(kind))
+            .await
+            .map_err(|error| error.to_string())?;
+        if info.installed && info.signed_in && info.usage_available {
+            return ai::AiClient::cli(kind, provider.model.clone());
+        }
+    }
+    if !enabled {
+        Err("Enable an AI tool in the AI tab first.".to_string())
+    } else {
+        Err(format!(
+            "No enabled AI tool is signed in with at least {:.0}% usage remaining.",
+            ai::MINIMUM_USAGE_REMAINING_PERCENT
+        ))
     }
 }
 
@@ -1908,6 +1983,17 @@ struct ReorgPlanView {
     apply_summary: Option<ApplySummaryView>,
 }
 
+const AI_REORGANIZE_FINISHED_EVENT: &str = "ai-reorganize-finished";
+
+#[derive(Clone, serde::Serialize)]
+struct ReorgFinishedEvent {
+    id: u64,
+    root_label: String,
+    applied: u32,
+    skipped: u32,
+    errors: Vec<String>,
+}
+
 fn reorg_plan_view(
     id: u64,
     plan: &reorganize::ReorgPlan,
@@ -1957,7 +2043,7 @@ async fn ai_reorganize_scan<R: tauri::Runtime>(
         return Err("Enable \"AI reorganize\" on the AI tab first.".to_string());
     }
     let root_path = resolve_media_root(&settings, &root_label)?;
-    let ai_client = ai_client_from_settings(&settings).ok();
+    let ai_client = ai_client_from_settings(&settings).await.ok();
     let plan = reorganize::scan_root(&root_label, &root_path, ai_client.as_ref())
         .await
         .map_err(|e| e.to_string())?;
@@ -1998,47 +2084,70 @@ async fn approve_ai_reorg_plan<R: tauri::Runtime>(
     state: tauri::State<'_, AppState>,
     id: u64,
 ) -> Result<ReorgPlanView, String> {
-    let (root_path, items) = {
-        let plans = state.reorg_plans.lock().await;
-        let stored = plans.get(&id).ok_or_else(|| "reorganize plan not found".to_string())?;
+    let core = state.core(&app).await?;
+    let (root_path, items, view) = {
+        let mut plans = state.reorg_plans.lock().await;
+        let stored = plans.get_mut(&id).ok_or_else(|| "reorganize plan not found".to_string())?;
         if stored.status != "proposed" {
             return Err(format!("this plan is already {}", stored.status));
         }
-        (stored.root_path.clone(), stored.plan.items.clone())
-    };
-    let outcome = tokio::task::spawn_blocking(move || reorganize::apply_plan(&root_path, &items))
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let view = {
-        let mut plans = state.reorg_plans.lock().await;
-        let stored = plans.get_mut(&id).ok_or_else(|| "reorganize plan not found".to_string())?;
-        stored.status = "applied";
-        stored.apply_outcome = Some(outcome);
-        reorg_plan_view(id, &stored.plan, stored.status, stored.apply_outcome.as_ref())
+        stored.status = "applying";
+        (
+            stored.root_path.clone(),
+            stored.plan.items.clone(),
+            reorg_plan_view(id, &stored.plan, stored.status, None),
+        )
     };
 
-    let core = state.core(&app).await?;
-    let summary = view.apply_summary.as_ref();
-    let level = if summary.is_some_and(|s| !s.errors.is_empty()) {
-        "warning"
-    } else {
-        "success"
-    };
-    let message = format!(
-        "Reorganized \"{}\": {} file(s) moved, {} skipped.",
-        view.root_label,
-        summary.map(|s| s.applied).unwrap_or(0),
-        summary.map(|s| s.skipped).unwrap_or(0),
-    );
-    if let Err(error) = core
-        .library
-        .record_server_notification(level, "AI reorganize finished", &message)
-        .await
-    {
-        tracing::warn!(%error, "could not save reorganize notification");
-    }
-    let _ = core.rescan(None).await;
+    let task_app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let mut outcome = match tokio::task::spawn_blocking(move || reorganize::apply_plan(&root_path, &items)).await {
+            Ok(outcome) => outcome,
+            Err(error) => reorganize::ApplyOutcome {
+                applied: 0,
+                skipped: 0,
+                errors: vec![format!("reorganization worker failed: {error}")],
+            },
+        };
+
+        if let Err(error) = core.rescan(None).await {
+            outcome.errors.push(format!("library rescan failed: {error}"));
+        }
+
+        let event = {
+            let state = task_app.state::<AppState>();
+            let mut plans = state.reorg_plans.lock().await;
+            let Some(stored) = plans.get_mut(&id) else {
+                tracing::warn!(id, "reorganize plan disappeared while applying");
+                return;
+            };
+            stored.status = "applied";
+            stored.apply_outcome = Some(outcome);
+            let summary = stored.apply_outcome.as_ref().expect("outcome was just stored");
+            ReorgFinishedEvent {
+                id,
+                root_label: stored.plan.root_label.clone(),
+                applied: summary.applied,
+                skipped: summary.skipped,
+                errors: summary.errors.clone(),
+            }
+        };
+
+        let level = if event.errors.is_empty() { "success" } else { "warning" };
+        let message = format!(
+            "Reorganized \"{}\": {} file(s) moved, {} skipped.",
+            event.root_label, event.applied, event.skipped,
+        );
+        if let Err(error) = core
+            .library
+            .record_server_notification(level, "AI reorganize finished", &message)
+            .await
+        {
+            tracing::warn!(%error, "could not save reorganize notification");
+        }
+        let _ = task_app.emit(AI_REORGANIZE_FINISHED_EVENT, event);
+    });
+
     Ok(view)
 }
 
@@ -2080,6 +2189,11 @@ struct EntrySummary {
     community_rating: Option<f64>,
     community_rating_votes: Option<u64>,
     like_count: u32,
+    parent_entry_key: Option<String>,
+    extra_type: Option<String>,
+    extra_title: Option<String>,
+    extra_relative_path: Option<String>,
+    extra_category_path: Option<String>,
 }
 
 #[tauri::command]
@@ -2120,6 +2234,11 @@ async fn list_entries<R: tauri::Runtime>(
             rating: entry.rating,
             community_rating: entry.community_rating,
             community_rating_votes: entry.community_rating_votes,
+            parent_entry_key: entry.parent_entry_key,
+            extra_type: entry.extra_type,
+            extra_title: entry.extra_title,
+            extra_relative_path: entry.extra_relative_path,
+            extra_category_path: entry.extra_category_path,
         })
         .collect())
 }
@@ -2557,11 +2676,11 @@ async fn ai_scrape_assist<R: tauri::Runtime>(
     if !settings.ai_scan_assist_enabled {
         return Err("Enable \"AI scan & scrape assist\" on the AI tab first.".to_string());
     }
-    let client = ai_client_from_settings(&settings)?;
+    let client = ai_client_from_settings(&settings).await?;
     let tmdb_api_key = settings
         .tmdb_api_key
         .clone()
-        .ok_or_else(|| "Add a TMDb API key on the Details tab before using scan assist.".to_string())?;
+        .ok_or_else(|| "Add a TMDb API key on the Settings tab before using scan assist.".to_string())?;
 
     let core = state.core(&app).await?;
     let entry = core
@@ -3354,6 +3473,8 @@ fn main() {
             set_streaming_upload_budget_enabled,
             set_artwork_disk_cache_enabled,
             set_auto_library_watch_enabled,
+            set_comprehensive_check,
+            set_scan_music_tracks,
             set_auto_update,
             check_for_update,
             install_update,

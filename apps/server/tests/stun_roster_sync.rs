@@ -195,7 +195,9 @@ async fn spawn_media_server(tag: &str) -> Arc<ServerCore> {
         media_roots: vec![MediaRoot {
             label: "local".to_string(),
             path: media_root,
+            asset_type: Default::default(),
         }],
+        scan_options: Default::default(),
         data_dir: base.join("data"),
         bind: "127.0.0.1:0".parse().unwrap(),
         http_media_bind: "127.0.0.1:0".parse().unwrap(),
@@ -350,7 +352,9 @@ async fn restart_restores_the_stun_link_and_allowed_peers() {
         media_roots: vec![MediaRoot {
             label: "local".to_string(),
             path: media_root.clone(),
+            asset_type: Default::default(),
         }],
+        scan_options: Default::default(),
         data_dir: base.join("data"),
         bind: "127.0.0.1:0".parse().unwrap(),
         http_media_bind: "127.0.0.1:0".parse().unwrap(),
@@ -406,7 +410,9 @@ async fn configured_managed_swarm_migrates_an_existing_manual_link_before_tv_app
         media_roots: vec![MediaRoot {
             label: "local".to_string(),
             path: media_root,
+            asset_type: Default::default(),
         }],
+        scan_options: Default::default(),
         data_dir: base.join("data"),
         bind: "127.0.0.1:0".parse().unwrap(),
         http_media_bind: "127.0.0.1:0".parse().unwrap(),
@@ -482,7 +488,9 @@ async fn managed_swarm_adopts_a_new_endpoint_after_owner_claim_validation() {
         media_roots: vec![MediaRoot {
             label: "local".to_string(),
             path: media_root,
+            asset_type: Default::default(),
         }],
+        scan_options: Default::default(),
         data_dir: base.join("data"),
         bind: "127.0.0.1:0".parse().unwrap(),
         http_media_bind: "127.0.0.1:0".parse().unwrap(),

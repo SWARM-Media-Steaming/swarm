@@ -184,7 +184,9 @@ async fn spawn_media_server(tag: &str) -> Arc<ServerCore> {
         media_roots: vec![MediaRoot {
             label: "local".to_string(),
             path: media_root,
+            asset_type: Default::default(),
         }],
+        scan_options: Default::default(),
         data_dir: base.join("data"),
         bind: "127.0.0.1:0".parse().unwrap(),
         http_media_bind: "127.0.0.1:0".parse().unwrap(),

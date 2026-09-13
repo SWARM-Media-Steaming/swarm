@@ -20,7 +20,7 @@ function esc(v) {
 // (yellow), "error" (red, the default duration is longer since it's more
 // likely worth reading in full before it disappears). Errors are never
 // silently swallowed — every catch block in this app should route here.
-const TOAST_ICONS = { success: "bi-check-circle-fill", warning: "bi-exclamation-triangle-fill", error: "bi-x-circle-fill" };
+const TOAST_ICONS = { success: "bi-check-circle-fill", warning: "bi-exclamation-triangle-fill", error: "bi-x-circle-fill", progress: "bi-arrow-repeat" };
 
 function showToast(message, type = "success", opts = {}) {
   const stack = document.getElementById("toastStack");
@@ -43,6 +43,10 @@ function showToast(message, type = "success", opts = {}) {
   return toast;
 }
 
+function dismissToast(toast) {
+  if (toast && toast.isConnected) toast.remove();
+}
+
 function stat(label, value, mono, infoId) {
   const clickable = infoId ? ` data-info="${infoId}" tabindex="0" role="button" class="stat stat-clickable"` : ` class="stat"`;
   const icon = infoId ? ` <i class="bi bi-info-circle info-affordance"></i>` : "";
@@ -53,12 +57,12 @@ function stat(label, value, mono, infoId) {
 // One shared "what am I looking at" popup for the whole app, opened by
 // clicking (or Enter/Space-ing, for keyboard users) any element carrying
 // data-info="<topicId>" — About tab's flow steps/feature tiles/badges,
-// Details tab's stat tiles and card headers, AI tab's MCP heading and tool
+// Metrics tab's stat tiles and card headers, AI tab's MCP heading and tool
 // list. A single registry + single modal surface, same reasoning
 // showToast() is one shared surface instead of bespoke status text per
 // call site. Delegation (one listener on document), not a listener per
 // element, since triggers live in both static markup (About, AI) and
-// markup rebuilt on every refresh (Details' stat grid) — nothing needs to
+// markup rebuilt on every refresh (Metrics' stat grid) — nothing needs to
 // remember to re-wire anything after a re-render.
 const INFO_TOPICS = {
   entries: {
@@ -97,13 +101,13 @@ const INFO_TOPICS = {
   "media-roots": {
     icon: "bi-folder2-open", title: "Media roots",
     body:
-      "The folders SWARM scans for movies, shows, and music — add a local folder or an SMB share from a NAS, and pick an asset type (Movies, TV shows, Music, or Mixed) so SWARM knows what to expect there. You can run more than one root, but two roots can't point at the same or an overlapping location.\n\n" +
+      "The folders SWARM scans — add a local folder or an SMB share from a NAS, and pick an asset type (Movies, TV shows, Music, or Photos & videos) so SWARM knows what to expect there. You can run more than one root, but two roots can't point at the same or an overlapping location.\n\n" +
       "Organise each root the way Plex, Jellyfin, and Kodi do:\n" +
       "• Movies — \"Movie Name (Year)/Movie Name (Year).mkv\", with Featurettes/Trailers/Deleted Scenes folders beside it for extras.\n" +
       "• TV — \"Show Name (Year)/Season 01/Show Name - S01E02.mkv\"; \"S01E02-E03\" multi-episode files and a Specials season are recognised.\n" +
       "• Music — \"Artist/Album/01 Track Title.flac\"; CD1/CD2 disc folders are absorbed automatically.\n" +
       "• Subtitles — a .srt or .vtt next to the video (or in a Subs/ folder), named after it, e.g. \"Movie Name (Year).en.srt\".\n\n" +
-      "A Mixed root may hold top-level Movies/, TV/, and Music/ folders and SWARM sorts them out. The About tab repeats this under \"How to organise your media folders\".",
+      "Older installations may show a Legacy mixed root; new roots always require one specific asset type. The About tab repeats this under \"How to organise your media folders\".",
   },
   "tmdb-scraping": {
     icon: "bi-cloud-download", title: "TMDb scraping",
@@ -286,14 +290,15 @@ function show(id) {
 
 // "about" has no refresh*() dispatch below — its tab content is static
 // (no invoke() calls, nothing that goes stale), unlike every other tab here.
-const TABS = ["media", "details", "swarm", "notifications", "ai", "about"];
+const TABS = ["media", "metrics", "settings", "swarm", "notifications", "ai", "about"];
 
 function showTab(name) {
   for (const tab of TABS) {
     document.getElementById(`tabPanel-${tab}`).classList.toggle("d-none", tab !== name);
     document.getElementById(`tabBtn-${tab}`).classList.toggle("tab-active", tab === name);
   }
-  if (name === "details") refreshDetails();
+  if (name === "metrics") refreshMetrics();
+  if (name === "settings") refreshSettings();
   if (name === "swarm") refreshSwarm();
   if (name === "notifications") refreshNotifications();
   if (name === "media") refreshMedia();
@@ -345,7 +350,7 @@ async function refreshMediaRootHealth() {
 }
 
 document.getElementById("mediaRootWarningDetailsBtn").addEventListener("click", () => {
-  showTab("details");
+  showTab("settings");
 });
 
 // The Full Disk Access pane covers network volumes, removable drives, and the
@@ -368,13 +373,22 @@ for (const tab of TABS) {
 // ---- onboarding: media folder ---------------------------------------------
 
 document.getElementById("chooseFolderBtn").addEventListener("click", async () => {
+  let progressToast;
   try {
-    const path = await invoke("choose_media_folder");
+    const assetType = document.getElementById("onboardRootAssetType").value;
+    if (!assetType) {
+      showToast("Choose an asset type first.", "warning");
+      return;
+    }
+    const path = await invoke("choose_media_folder", { assetType });
     if (path) {
+      progressToast = showToast("Starting the media server and scanning your folder…", "progress", { duration: 0 });
       await enterDashboard();
     }
   } catch (err) {
     showToast(String(err), "error");
+  } finally {
+    dismissToast(progressToast);
   }
 });
 
@@ -425,7 +439,7 @@ async function boot() {
 // round trip happens to resolve before the browser has fetched/parsed/run
 // the remaining three script tags, boot()'s continuation calls a function
 // that doesn't exist yet — first hit as `refreshErrorBadge` undefined, then
-// again as `refreshDetails` undefined, both eventually caught by this same
+// again as `refreshMetrics` undefined, both eventually caught by this same
 // try/catch and misread as "settings didn't persist" (the catch's own
 // fallback is to show onboarding) rather than what actually happened.
 // DOMContentLoaded fixes the whole class at once, not just whichever

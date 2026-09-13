@@ -36,6 +36,7 @@
 //! safer default than requiring an opt-out flag, given the scale of a
 //! real library). Nothing on disk changes until `--apply` is passed.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use swarm_media::classify;
 use swarm_media::subtitles::{parse_subtitle_name, subtitle_extension};
@@ -50,8 +51,14 @@ fn is_video_path(relative: &str) -> bool {
     classify::media_extension(relative).is_some_and(|(_, is_audio)| !is_audio)
 }
 
-fn dir_contains_a_video(dir: &Path) -> bool {
-    fn walk(dir: &Path) -> bool {
+/// Whether `dir` still has a video anywhere under it, treating every path
+/// in `moved_away` as already gone even if phase 1 hasn't actually applied
+/// its plan yet — without this, a dry-run preview of phase 2 would see
+/// every original release folder as still having its video (since nothing
+/// has moved on disk) and never propose quarantining any of them, wildly
+/// under-representing what `--apply` will actually do.
+fn dir_contains_a_video(dir: &Path, moved_away: &HashSet<PathBuf>) -> bool {
+    fn walk(dir: &Path, moved_away: &HashSet<PathBuf>) -> bool {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return false;
         };
@@ -61,10 +68,10 @@ fn dir_contains_a_video(dir: &Path) -> bool {
                 continue;
             };
             if file_type.is_dir() {
-                if walk(&path) {
+                if walk(&path, moved_away) {
                     return true;
                 }
-            } else if file_type.is_file() {
+            } else if file_type.is_file() && !moved_away.contains(&path) {
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                     if is_video_path(name) {
                         return true;
@@ -74,7 +81,39 @@ fn dir_contains_a_video(dir: &Path) -> bool {
         }
         false
     }
-    walk(dir)
+    walk(dir, moved_away)
+}
+
+/// Every source path phase 1 plans to move a video out of (excluding any
+/// conflicted item, which will stay right where it is) — the "predicted
+/// post-phase-1 state" phases 2 and 3 need to give an accurate dry-run
+/// preview instead of only reflecting what's on disk *right now*.
+fn planned_video_sources(root: &Path, plan: &reorganize::ReorgPlan) -> HashSet<PathBuf> {
+    plan.items
+        .iter()
+        .filter(|item| item.kind == "video" && item.conflict.is_none())
+        .map(|item| root.join(&item.from))
+        .collect()
+}
+
+/// Lowercased top-level canonical folder name -> (its real-case name, the
+/// stem the video inside it will have), predicted from phase 1's plan
+/// (`to` is always `"<dir>/<stem>.<ext>"` for a video item) rather than
+/// read off disk, since that folder may not exist yet in a dry run.
+fn planned_video_dirs(plan: &reorganize::ReorgPlan) -> HashMap<String, (String, String)> {
+    let mut by_dir = HashMap::new();
+    for item in &plan.items {
+        if item.kind != "video" || item.conflict.is_some() {
+            continue;
+        }
+        let Some((dir, file)) = item.to.split_once('/') else {
+            continue;
+        };
+        if let Some(stem) = Path::new(file).file_stem().and_then(|s| s.to_str()) {
+            by_dir.insert(dir.to_lowercase(), (dir.to_string(), stem.to_string()));
+        }
+    }
+    by_dir
 }
 
 /// Same character-stripping rule `reorganize::canonical_video_path` uses
@@ -94,7 +133,7 @@ struct QuarantineMove {
     to: PathBuf,
 }
 
-fn plan_quarantine(root: &Path) -> std::io::Result<Vec<QuarantineMove>> {
+fn plan_quarantine(root: &Path, moved_away: &HashSet<PathBuf>) -> std::io::Result<Vec<QuarantineMove>> {
     let mut moves = Vec::new();
     for entry in std::fs::read_dir(root)? {
         let entry = entry?;
@@ -108,7 +147,7 @@ fn plan_quarantine(root: &Path) -> std::io::Result<Vec<QuarantineMove>> {
         if RESERVED_TOP_LEVEL_NAMES.contains(&name) {
             continue;
         }
-        if !dir_contains_a_video(&path) {
+        if !dir_contains_a_video(&path, moved_away) {
             moves.push(QuarantineMove {
                 from: path.clone(),
                 to: root.join("_cleanup_leftovers").join(name),
@@ -168,11 +207,20 @@ fn sole_video_stem(dir: &Path) -> Option<String> {
     found.and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
 }
 
-fn plan_subtitle_matches(root: &Path) -> std::io::Result<Vec<SubtitleMove>> {
-    // Canonical movie folders are every top-level directory left once
-    // quarantine has run — build the name index once rather than
-    // re-reading the directory per subtitle.
-    let mut canonical_dirs: Vec<(String, PathBuf)> = Vec::new();
+fn plan_subtitle_matches(root: &Path, plan: &reorganize::ReorgPlan) -> std::io::Result<Vec<SubtitleMove>> {
+    // Canonical movie folders are every top-level directory that will exist
+    // once phase 1 has run — real directories already on disk, unioned
+    // with anything phase 1 plans to create, predicted from `plan` rather
+    // than read off disk. Without the predicted half, a dry-run preview
+    // (nothing actually moved yet) would only ever "find" folders that
+    // already existed before this tool ran at all — every subtitle whose
+    // video phase 1 is about to relocate or newly organize would wrongly
+    // report "no folder found", drastically under-representing what
+    // `--apply` will actually match. Each entry also predicts the video
+    // stem phase 1 will give that folder, so the destination filename can
+    // be computed without needing that folder to exist yet either.
+    let predicted = planned_video_dirs(plan);
+    let mut canonical_dirs: HashMap<String, (PathBuf, Option<String>)> = HashMap::new();
     for entry in std::fs::read_dir(root)? {
         let entry = entry?;
         let path = entry.path();
@@ -185,7 +233,14 @@ fn plan_subtitle_matches(root: &Path) -> std::io::Result<Vec<SubtitleMove>> {
         if RESERVED_TOP_LEVEL_NAMES.contains(&name) {
             continue;
         }
-        canonical_dirs.push((name.to_lowercase(), path));
+        let lower = name.to_lowercase();
+        let predicted_stem = predicted.get(&lower).map(|(_, stem)| stem.clone());
+        canonical_dirs.insert(lower, (path, predicted_stem));
+    }
+    for (lower, (case_preserved_name, stem)) in &predicted {
+        canonical_dirs
+            .entry(lower.clone())
+            .or_insert_with(|| (root.join(case_preserved_name), Some(stem.clone())));
     }
 
     let mut moves = Vec::new();
@@ -227,37 +282,32 @@ fn plan_subtitle_matches(root: &Path) -> std::io::Result<Vec<SubtitleMove>> {
             None => sanitize(&classified.title),
         };
         let lower = canonical_name.to_lowercase();
-        let candidates: Vec<&PathBuf> = canonical_dirs
-            .iter()
-            .filter(|(name, _)| *name == lower)
-            .map(|(_, path)| path)
-            .collect();
-        let target_dir = match candidates.as_slice() {
-            [only] => *only,
-            [] => {
-                moves.push(SubtitleMove::Unmatched {
-                    from: path,
-                    reason: format!("no folder named \"{canonical_name}\" found"),
-                });
-                continue;
-            }
-            _ => {
-                moves.push(SubtitleMove::Unmatched {
-                    from: path,
-                    reason: format!("multiple folders match \"{canonical_name}\" — ambiguous"),
-                });
-                continue;
-            }
-        };
-        let Some(video_stem) = sole_video_stem(target_dir) else {
+        let Some((target_dir, predicted_stem)) = canonical_dirs.get(&lower) else {
             moves.push(SubtitleMove::Unmatched {
                 from: path,
-                reason: format!(
-                    "\"{}\" has no single video to attach the subtitle to",
-                    target_dir.display()
-                ),
+                reason: format!("no folder named \"{canonical_name}\" found"),
             });
             continue;
+        };
+        // A predicted stem (phase 1 is about to put exactly one video
+        // there) is exact; otherwise this is a folder phase 1 leaves
+        // untouched (already canonical), so read its one real video off
+        // disk the same way phase 1 itself would have named the subtitle.
+        let video_stem = match predicted_stem {
+            Some(stem) => stem.clone(),
+            None => match sole_video_stem(target_dir) {
+                Some(stem) => stem,
+                None => {
+                    moves.push(SubtitleMove::Unmatched {
+                        from: path,
+                        reason: format!(
+                            "\"{}\" has no single video to attach the subtitle to",
+                            target_dir.display()
+                        ),
+                    });
+                    continue;
+                }
+            },
         };
         let lang_suffix = parsed.language.as_deref().map(|l| format!(".{l}")).unwrap_or_default();
         let to = target_dir.join(format!("{video_stem}{lang_suffix}.{ext}"));
@@ -341,8 +391,10 @@ async fn main() {
         }
     }
 
+    let moved_away = planned_video_sources(&root, &plan);
+
     println!("\n=== Phase 2: quarantine leftover non-video folders ===");
-    let quarantine = match plan_quarantine(&root) {
+    let quarantine = match plan_quarantine(&root, &moved_away) {
         Ok(moves) => moves,
         Err(error) => {
             eprintln!("could not scan {} for leftovers: {error}", root.display());
@@ -360,7 +412,7 @@ async fn main() {
     }
 
     println!("\n=== Phase 3: match orphaned subtitles to their canonical folder ===");
-    let subtitle_moves = match plan_subtitle_matches(&root) {
+    let subtitle_moves = match plan_subtitle_matches(&root, &plan) {
         Ok(moves) => moves,
         Err(error) => {
             eprintln!("could not scan {} for orphaned subtitles: {error}", root.display());

@@ -5,6 +5,7 @@ import android.util.Log
 import android.view.LayoutInflater
 import android.view.ViewGroup
 import androidx.annotation.OptIn
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -50,6 +51,15 @@ private const val PREVIEW_VISIBLE_STARTUP_TIMEOUT_MS = 20_000L
  * grids (#159) so both feel identical. */
 private const val BROWSE_PREVIEW_WARMUP_MS = 2_000L
 private const val BROWSE_PREVIEW_EXPAND_MS = 2_000L
+
+/** Resting poster shape vs. the widescreen shape a hover preview animates
+ * into, shared by the "Browse All" grids (#269). [CatalogScreen]'s rows get
+ * the same 16:9 result by growing a fixed-height card's *width*; a grid
+ * column can't widen without breaking the row, so here the card's *aspect
+ * ratio* animates instead, shrinking a fixed-width box's height into a
+ * widescreen frame. */
+private const val BROWSE_PREVIEW_POSTER_ASPECT_RATIO = 2f / 3f
+private const val BROWSE_PREVIEW_VIDEO_ASPECT_RATIO = 16f / 9f
 
 /**
  * The per-screen state machine behind hover previews, extracted from
@@ -125,12 +135,28 @@ internal fun rememberBrowsePreviewCoordinator(
     )
 }
 
+/** Animates a grid card's artwork box between its resting 2:3 poster shape
+ * and a 16:9 widescreen shape while its hover preview is expanded (#269),
+ * mirroring [CatalogScreen]'s width-driven version of the same effect. Apply
+ * the returned ratio to the same [Box] that hosts [BrowsePreviewGridOverlay]
+ * in place of a static `aspectRatio(2f / 3f)`; it animates back to the
+ * poster shape automatically once [isExpanded] goes false, whether that's
+ * because the preview finished or because focus moved elsewhere. */
+@Composable
+internal fun rememberBrowsePreviewAspectRatio(isExpanded: Boolean): Float {
+    val ratio by animateFloatAsState(
+        if (isExpanded) BROWSE_PREVIEW_VIDEO_ASPECT_RATIO else BROWSE_PREVIEW_POSTER_ASPECT_RATIO,
+        label = "browse-grid-preview-aspect",
+    )
+    return ratio
+}
+
 /**
- * Poster-box preview layer for the "Browse All" full grids (#159). Unlike
- * [CatalogScreen]'s horizontal rows the card can't widen inside a fixed grid
- * cell, so the preview simply plays zoom-cropped within the existing 2:3
- * poster bounds: the loading indicator while a focused card's stream
- * negotiates, then the inline video once it is ready. Call from inside the
+ * Poster-box preview layer for the "Browse All" full grids (#159): the
+ * loading indicator while a focused card's stream negotiates, then the
+ * inline video once it is ready. Pair with [rememberBrowsePreviewAspectRatio]
+ * on the hosting [Box] so the video plays widescreen rather than
+ * zoom-cropped inside the resting poster bounds. Call from inside the
  * card's artwork [Box], over the [ArtworkImage].
  */
 @Composable

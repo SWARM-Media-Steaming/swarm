@@ -12,12 +12,16 @@ package app.swarm.tv.app.ui.screens
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredWidth
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
@@ -33,6 +37,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -117,7 +122,7 @@ fun MovieShelfScreen(
             // just the Column's own outer padding").
             LazyVerticalGrid(
                 state = gridState,
-                columns = GridCells.Fixed(5),
+                columns = GridCells.Fixed(BROWSE_ALL_GRID_COLUMNS),
                 verticalArrangement = Arrangement.spacedBy(20.dp),
                 horizontalArrangement = Arrangement.spacedBy(20.dp),
                 contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 32.dp, bottom = 12.dp),
@@ -131,35 +136,41 @@ fun MovieShelfScreen(
                     var isFocused by remember(movie.entry.entryKey) { mutableStateOf(false) }
                     val isPreviewExpanded = isFocused &&
                         previewCoordinator.expandedPreviewEntryKey == movie.entry.entryKey
-                    Card(
-                        onClick = { onOpenMovie(movie) },
-                        colors = CardDefaults.colors(containerColor = SwarmSurface),
-                        modifier = focusModifier.fillMaxWidth()
-                            .testTag(UatTestTags.GRID_MOVIE_PREFIX + movie.entry.entryKey)
-                            .onFocusChanged { focusState ->
-                                if (isFocused != focusState.isFocused) {
-                                    isFocused = focusState.isFocused
-                                    previewCoordinator.onPreviewFocusChanged(movie, focusState.isFocused)
-                                }
-                            },
+                    BoxWithConstraints(
+                        modifier = Modifier.fillMaxWidth().aspectRatio(2f / 3f)
+                            .zIndex(if (isFocused) 1f else 0f),
                     ) {
-                        val previewAspectRatio = rememberBrowsePreviewAspectRatio(isPreviewExpanded)
-                        Box(
-                            modifier = Modifier.fillMaxWidth().aspectRatio(previewAspectRatio).clip(RoundedCornerShape(4.dp)),
+                        val previewWidth = rememberBrowsePreviewWidth(maxWidth, isPreviewExpanded)
+                        val previewAlignment = browsePreviewAlignment(index)
+                        Card(
+                            onClick = { onOpenMovie(movie) },
+                            colors = CardDefaults.colors(containerColor = SwarmSurface),
+                            modifier = focusModifier.fillMaxHeight()
+                                .wrapContentWidth(align = previewAlignment, unbounded = true)
+                                .requiredWidth(previewWidth)
+                                .testTag(UatTestTags.GRID_MOVIE_PREFIX + movie.entry.entryKey)
+                                .onFocusChanged { focusState ->
+                                    if (isFocused != focusState.isFocused) {
+                                        isFocused = focusState.isFocused
+                                        previewCoordinator.onPreviewFocusChanged(movie, focusState.isFocused)
+                                    }
+                                },
                         ) {
-                            ArtworkImage(
-                                label = movie.entry.scrapedTitle ?: movie.entry.title,
-                                placeholderType = "Movie",
-                                primaryUrl = artworkUrl(movie),
-                                modifier = Modifier.fillMaxSize(),
-                            )
-                            BrowsePreviewGridOverlay(
-                                entryKey = movie.entry.entryKey,
-                                isFocused = isFocused,
-                                isExpanded = isPreviewExpanded,
-                                preview = preview,
-                                onFinished = previewCoordinator.onPreviewFinished,
-                            )
+                            Box(modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(4.dp))) {
+                                ArtworkImage(
+                                    label = movie.entry.scrapedTitle ?: movie.entry.title,
+                                    placeholderType = "Movie",
+                                    primaryUrl = artworkUrl(movie),
+                                    modifier = Modifier.fillMaxSize(),
+                                )
+                                BrowsePreviewGridOverlay(
+                                    entryKey = movie.entry.entryKey,
+                                    isFocused = isFocused,
+                                    isExpanded = isPreviewExpanded,
+                                    preview = preview,
+                                    onFinished = previewCoordinator.onPreviewFinished,
+                                )
+                            }
                         }
                     }
                 }

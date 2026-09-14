@@ -776,6 +776,19 @@ private fun SwarmApp(
                 // track preloadNextTrack appended — promote it in the
                 // ViewModel so state follows the seamless transition (#160).
                 if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) {
+                    // The appended item's HLS playlist can still be
+                    // #EXT-X-PLAYLIST-TYPE:EVENT (still transcoding, or not
+                    // yet finalized with #EXT-X-ENDLIST) at the moment
+                    // ExoPlayer buffers it ahead of time. ExoPlayer's default
+                    // position for a still-"live" playlist is its live edge,
+                    // not its start, so a natural gapless transition can
+                    // otherwise begin the next track a few seconds from its
+                    // *end* instead of its beginning (#274) even though
+                    // every explicit skip/negotiation path in the ViewModel
+                    // already forces position 0 for a queue transition. Force
+                    // it here too rather than trusting ExoPlayer's own
+                    // default-position resolution for this one path.
+                    player?.seekTo(0L)
                     onMusicPlaylistAdvanced(mediaItem?.localConfiguration?.uri?.toString())
                 }
             }

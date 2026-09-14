@@ -210,6 +210,7 @@ internal fun CatalogScreen(
     onOpenShowShelf: (List<ShowGroup>) -> Unit,
     onOpenShow: (ShowGroup) -> Unit,
     onOpenSwarm: () -> Unit,
+    onOpenBuzz: () -> Unit,
     onBack: () -> Unit,
     // Which card should get initial D-pad focus in the Movies/Shows/Music
     // *top-level* row specifically (not a genre sub-shelf — see MainActivity's
@@ -369,6 +370,7 @@ internal fun CatalogScreen(
                 likedOnly = false
             },
             onOpenSwarm = onOpenSwarm,
+            onOpenBuzz = onOpenBuzz,
             unreachable = unreachable,
             playbackError = playbackError,
             onNavigateDown = onNavigateDown,
@@ -914,6 +916,7 @@ private fun CatalogControls(
     showClear: Boolean,
     onClear: () -> Unit,
     onOpenSwarm: () -> Unit,
+    onOpenBuzz: () -> Unit,
     unreachable: List<SwarmDevice>,
     playbackError: String?,
     onNavigateDown: (() -> Unit)?,
@@ -947,6 +950,9 @@ private fun CatalogControls(
                     .onFocusChanged { onSearchFocusChanged(it.isFocused) }
                     .testTag(UatTestTags.SEARCH_FIELD),
             )
+            Button(onClick = onOpenBuzz, colors = swarmActionButtonColors()) {
+                Text("Ask Buzz", fontSize = 13.sp)
+            }
             Button(
                 onClick = onOpenSwarm,
                 colors = swarmActionButtonColors(),

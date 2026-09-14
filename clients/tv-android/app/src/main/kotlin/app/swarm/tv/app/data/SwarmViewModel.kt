@@ -19,6 +19,9 @@ import app.swarm.tv.core.client.SignalingClient
 import app.swarm.tv.core.client.StunApiClient
 import app.swarm.tv.core.client.StunClientError
 import app.swarm.tv.core.peer.ClientErrorReport
+import app.swarm.tv.core.peer.BuzzRequest
+import app.swarm.tv.core.peer.BuzzResponse
+import app.swarm.tv.core.peer.BuzzChoice
 import app.swarm.tv.core.peer.LikeToggle
 import app.swarm.tv.core.peer.MediaKind
 import app.swarm.tv.core.peer.PlaybackMode
@@ -210,6 +213,13 @@ sealed class UiState {
         val unreachable: List<SwarmDevice> = emptyList(),
         val playbackError: String? = null,
     ) : UiState()
+    data class Buzz(
+        val catalog: Catalog,
+        val serverId: String,
+        val response: BuzzResponse? = null,
+        val loading: Boolean = true,
+        val error: String? = null,
+    ) : UiState()
     /** Music: Music row -> here (grouped, replacing the old flat-track shelf) -> [ArtistAlbums]. */
     data class ArtistShelf(val catalog: Catalog, val artists: List<ArtistGroup>) : UiState()
     /** One artist's albums; [AlbumScreen] handles the album-grid<->track-list sub-navigation locally. */
@@ -312,6 +322,7 @@ private fun UiState.embeddedCatalog(): UiState.Catalog? = when (this) {
     is UiState.ArtistAlbums -> catalog
     is UiState.MovieShelf -> catalog
     is UiState.MovieDetail -> previous.embeddedCatalog()
+    is UiState.Buzz -> catalog
     is UiState.ShowSeasons -> catalog
     else -> null
 }
@@ -1544,6 +1555,80 @@ class SwarmViewModel(
         Log.i(logTag, "browseCatalog() called, current state=${current::class.simpleName}")
         if (current !is UiState.Dashboard) return
         openCatalog(current)
+    }
+
+    fun startBuzz(mode: String = "find_me_something") {
+        val catalog = _state.value.embeddedCatalog() ?: return
+        val server = catalog.devices.firstOrNull { device ->
+            device.online && device.deviceType != DeviceType.CLIENT &&
+                catalog.entries.any { device.deviceId in it.sources }
+        }?.let(::withPreferredLanRoute) ?: run {
+            notify("Buzz needs a connected media server.", ClientNotificationKind.WARNING)
+            return
+        }
+        if (mode == "choose") {
+            _state.value = UiState.Buzz(catalog, server.deviceId, BuzzResponse(
+                sessionId = "", screen = "mode", buzzText = "How should I pick tonight?",
+                choices = listOf(
+                    BuzzChoice("find_me_something", "Find Me Something"),
+                    BuzzChoice("surprise_me", "Surprise Me"),
+                    BuzzChoice("buzz_knows_best", "Buzz Knows Best"),
+                ),
+            ), loading = false)
+            return
+        }
+        _state.value = UiState.Buzz(catalog, server.deviceId)
+        sendBuzz(server, BuzzRequest(action = "start", value = mode))
+    }
+
+    fun answerBuzz(choiceId: String) {
+        val current = _state.value as? UiState.Buzz ?: return
+        val session = current.response?.sessionId ?: return
+        if (session.isEmpty()) {
+            _state.value = current.catalog
+            startBuzz(choiceId)
+            return
+        }
+        val server = current.catalog.devices.find { it.deviceId == current.serverId }?.let(::withPreferredLanRoute) ?: return
+        _state.value = current.copy(loading = true, error = null)
+        sendBuzz(server, BuzzRequest(action = "answer", sessionId = session, value = choiceId))
+    }
+
+    fun buzzAction(action: String) {
+        val current = _state.value as? UiState.Buzz ?: return
+        if (action == "back") {
+            _state.value = current.catalog
+            return
+        }
+        val response = current.response ?: return
+        val mediaId = response.mediaId ?: return
+        val server = current.catalog.devices.find { it.deviceId == current.serverId }?.let(::withPreferredLanRoute) ?: return
+        if (action == "play") {
+            viewModelScope.launch { runCatching { catalogSession.buzz(server, BuzzRequest(action = "play", sessionId = response.sessionId, mediaId = mediaId), clientCertificate, clientKey) } }
+            val entry = current.catalog.entries.firstOrNull { merged -> merged.entry.entryKey == mediaId && current.serverId in merged.sources }
+            if (entry == null) notify("That title is no longer in the catalog.", ClientNotificationKind.WARNING)
+            else playEntry(entry, current.catalog, previousScreen = current)
+            return
+        }
+        _state.value = current.copy(loading = true, error = null)
+        sendBuzz(server, BuzzRequest(action = action, sessionId = response.sessionId, mediaId = mediaId))
+    }
+
+    fun backFromBuzz() {
+        val current = _state.value as? UiState.Buzz ?: return
+        _state.value = current.catalog
+    }
+
+    private fun sendBuzz(server: SwarmDevice, request: BuzzRequest) {
+        viewModelScope.launch {
+            val result = runCatching { catalogSession.buzz(server, request, clientCertificate, clientKey) }
+            val current = _state.value as? UiState.Buzz ?: return@launch
+            if (current.serverId != server.deviceId) return@launch
+            result.fold(
+                onSuccess = { response -> _state.value = current.copy(response = response ?: current.response, loading = false, error = null) },
+                onFailure = { error -> _state.value = current.copy(loading = false, error = error.message ?: "Buzz is unavailable") },
+            )
+        }
     }
 
     /** Transitions directly from a resolved startup dashboard to Browse.
@@ -3191,12 +3276,33 @@ class SwarmViewModel(
 
     /** Called when [PlayerScreen] is disposed; 95% counts as complete so credits do not leave an item in Continue Watching. */
     fun savePlaybackPosition(entry: MergedEntry, positionSecs: Double, durationSecs: Double) {
+        val buzz = activePlayerSession()?.takeIf { it.entry.entry.entryKey == entry.entry.entryKey }?.previous as? UiState.Buzz
         viewModelScope.launch {
             val fingerprint = entry.entry.fingerprint
             val saved = WatchState.fromPlayback(positionSecs, durationSecs, System.currentTimeMillis())
             watchStateStore.set(fingerprint, saved)
             val states = _watchStates.value + (fingerprint to saved)
             _watchStates.value = states
+
+            if (buzz != null) {
+                val response = buzz.response
+                val server = buzz.catalog.devices.find { it.deviceId == buzz.serverId }?.let(::withPreferredLanRoute)
+                if (response != null && server != null) {
+                    runCatching {
+                        catalogSession.buzz(
+                            server,
+                            BuzzRequest(
+                                action = "playback_outcome",
+                                sessionId = response.sessionId,
+                                mediaId = entry.entry.entryKey,
+                                value = if (saved.watched) "completed" else "stopped",
+                            ),
+                            clientCertificate,
+                            clientKey,
+                        )
+                    }
+                }
+            }
 
             if (saved.watched) {
                 val completedKey = when (entry.entry.kind) {

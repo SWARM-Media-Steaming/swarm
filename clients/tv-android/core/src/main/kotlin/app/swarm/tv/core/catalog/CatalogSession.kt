@@ -21,6 +21,8 @@ import app.swarm.tv.core.peer.ByteRange
 import app.swarm.tv.core.peer.CatalogManifest
 import app.swarm.tv.core.peer.CatalogThumbprint
 import app.swarm.tv.core.peer.ClientErrorReport
+import app.swarm.tv.core.peer.BuzzRequest
+import app.swarm.tv.core.peer.BuzzResponse
 import app.swarm.tv.core.peer.ClientResolutionNotification
 import app.swarm.tv.core.peer.LikeToggle
 import app.swarm.tv.core.peer.PlaybackMode
@@ -54,6 +56,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.decodeFromStream
 
 /**
@@ -537,6 +540,34 @@ class CatalogSession internal constructor(
     suspend fun toggleLike(device: SwarmDevice, like: LikeToggle, clientCertificate: X509Certificate, clientKey: PrivateKey) {
         val connection = connectionFor(device, clientCertificate, clientKey) ?: return
         runCatching { connection.request(path = "/likes/toggle", like = like) }
+    }
+
+    /** Advance a server-owned Buzz session on the authenticated device link. */
+    @Throws(IOException::class)
+    suspend fun buzz(
+        device: SwarmDevice,
+        request: BuzzRequest,
+        clientCertificate: X509Certificate,
+        clientKey: PrivateKey,
+    ): BuzzResponse? = withContext(Dispatchers.IO) {
+        var connection = connectionFor(device, clientCertificate, clientKey)
+            ?: throw IOException("server is no longer connected")
+        repeat(2) { attempt ->
+            try {
+                val json = SwarmJson.encodeToString(request)
+                val payload = json.encodeToByteArray().joinToString("") { byte -> "%02x".format(byte) }
+                val response = connection.request(path = "/buzz?payload=$payload")
+                val body = response.body.use { it.readBytes().decodeToString() }
+                if (response.header.status == 204) return@withContext null
+                if (response.header.status != 200) throw IOException("Buzz request failed (${response.header.status})")
+                return@withContext SwarmJson.decodeFromString<BuzzResponse>(body)
+            } catch (error: IOException) {
+                evictConnection(device.deviceId, connection)
+                if (attempt == 0) connection = connectionFor(device, clientCertificate, clientKey) ?: throw error
+                else throw error
+            }
+        }
+        null
     }
 
     suspend fun refresh(devices: List<SwarmDevice>, clientCertificate: X509Certificate, clientKey: PrivateKey): Result {

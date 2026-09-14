@@ -82,6 +82,7 @@ import app.swarm.tv.app.ui.screens.AlbumScreen
 import app.swarm.tv.app.ui.screens.ArtistShelfScreen
 import app.swarm.tv.app.ui.screens.BROWSE_ALL_TILE_FOCUS_KEY
 import app.swarm.tv.app.ui.screens.CatalogScreen
+import app.swarm.tv.app.ui.screens.BuzzScreen
 import app.swarm.tv.app.ui.screens.CatalogBrowseState
 import app.swarm.tv.app.ui.screens.ExitConfirmOverlay
 import app.swarm.tv.app.ui.screens.MiniPlayerBar
@@ -346,6 +347,10 @@ class MainActivity : ComponentActivity() {
                         onStartActivation = viewModel::startActivation,
                         onCancelActivation = viewModel::cancelActivation,
                         onBrowseCatalog = viewModel::browseCatalog,
+                        onStartBuzz = viewModel::startBuzz,
+                        onAnswerBuzz = viewModel::answerBuzz,
+                        onBuzzAction = viewModel::buzzAction,
+                        onBackFromBuzz = viewModel::backFromBuzz,
                         onPlay = viewModel::play,
                         onPlayPaused = { entry -> viewModel.play(entry, startPaused = true) },
                         onPlayPauseRecommendation = viewModel::playPauseRecommendation,
@@ -495,6 +500,10 @@ private fun SwarmApp(
     onStartActivation: (deviceName: String) -> Unit,
     onCancelActivation: () -> Unit,
     onBrowseCatalog: () -> Unit,
+    onStartBuzz: (String) -> Unit,
+    onAnswerBuzz: (String) -> Unit,
+    onBuzzAction: (String) -> Unit,
+    onBackFromBuzz: () -> Unit,
     onPlay: (MergedEntry) -> Unit,
     onPlayPaused: (MergedEntry) -> Unit,
     onPlayPauseRecommendation: (MergedEntry) -> Unit,
@@ -976,6 +985,7 @@ private fun SwarmApp(
                         showCatalogExitConfirm = false
                         onBackToDashboard()
                     },
+                    onOpenBuzz = { onStartBuzz("choose") },
                     onBack = {
                         val unreachableIds = state.unreachable.mapTo(mutableSetOf()) { it.deviceId }
                         val hasConnectedServer = state.devices.any {
@@ -1003,6 +1013,15 @@ private fun SwarmApp(
                     onPreviewFinished = onFinishBrowsePreview,
                     initialBrowseState = catalogBrowseState,
                     onBrowseStateChange = { catalogBrowseState = it },
+                )
+            is UiState.Buzz ->
+                BuzzScreen(
+                    response = state.response,
+                    loading = state.loading,
+                    error = state.error,
+                    onChoice = onAnswerBuzz,
+                    onAction = onBuzzAction,
+                    onBack = onBackFromBuzz,
                 )
             is UiState.ArtistShelf ->
                 ArtistShelfScreen(

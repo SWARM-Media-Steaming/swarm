@@ -269,6 +269,9 @@ pub struct SessionAnswers {
     pub like_titles: Vec<String>,
     /// A stable per-session value; drives deterministic "Surprise Me" jitter.
     pub session_seed: u64,
+    /// Stable question ids already answered. Persistence needs this separate
+    /// from values because "don't care" is a meaningful answered value.
+    pub answered_questions: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------

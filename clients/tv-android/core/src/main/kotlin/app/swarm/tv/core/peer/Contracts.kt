@@ -199,6 +199,31 @@ data class PeerRequest(
     val like: LikeToggle? = null,
 )
 
+@Serializable
+data class BuzzRequest(
+    val action: String,
+    val sessionId: String? = null,
+    val profileId: String? = null,
+    val value: String? = null,
+    val mediaId: String? = null,
+)
+
+@Serializable
+data class BuzzChoice(val id: String, val label: String)
+
+@Serializable
+data class BuzzResponse(
+    val sessionId: String,
+    val screen: String,
+    val buzzText: String,
+    val voiceAsset: String? = null,
+    val choices: List<BuzzChoice> = emptyList(),
+    val mediaId: String? = null,
+    val title: String? = null,
+    val reasons: List<String> = emptyList(),
+    val actions: List<String> = emptyList(),
+)
+
 /**
  * Mirrors `swarm_core::peer::LikeToggle` (Rust) — see that type's doc
  * comment. Sent on `/likes/toggle`; [liked] is the desired end state (not

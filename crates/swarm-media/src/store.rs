@@ -3,6 +3,9 @@
 //! thumbprint (the delta-sync/library-version primitive). Schema is created
 //! idempotently; never bump applied schema in place.
 
+use crate::recommend::{
+    DeviceHistory, DiscoveryMode, Mood, RejectionStat, SessionAnswers, WatchStat,
+};
 use sha2::{Digest, Sha256};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
@@ -11,6 +14,14 @@ use std::str::FromStr;
 use swarm_core::peer::{
     AudioStreamInfo, CatalogEntry, MediaKind, SkipSegment, TrackLyrics, VideoStreamInfo,
 };
+
+#[derive(Debug, Clone)]
+pub struct BuzzSessionRecord {
+    pub id: String,
+    pub device_id: String,
+    pub profile_id: Option<String>,
+    pub answers: SessionAnswers,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct EntryRecord {
@@ -411,6 +422,33 @@ impl Library {
                 liked_at_ms INTEGER NOT NULL,
                 PRIMARY KEY (entry_key, device_id)
             );
+            CREATE TABLE IF NOT EXISTS buzz_sessions (
+                id TEXT PRIMARY KEY,
+                device_id TEXT NOT NULL,
+                profile_id TEXT,
+                mode TEXT NOT NULL,
+                answers_json TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_buzz_sessions_owner
+                ON buzz_sessions(device_id, profile_id, updated_at_ms DESC);
+            CREATE TABLE IF NOT EXISTS buzz_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL REFERENCES buzz_sessions(id) ON DELETE CASCADE,
+                occurred_at_ms INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                question TEXT,
+                answer TEXT,
+                recommendations_json TEXT,
+                media_id TEXT,
+                playback_outcome TEXT,
+                feedback TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_buzz_events_session
+                ON buzz_events(session_id, occurred_at_ms, id);
+            CREATE INDEX IF NOT EXISTS idx_buzz_events_media
+                ON buzz_events(media_id, event_type, occurred_at_ms DESC);
             CREATE TABLE IF NOT EXISTS scan_manifest (
                 scan_id TEXT NOT NULL,
                 relative_path TEXT NOT NULL,
@@ -505,6 +543,173 @@ impl Library {
         .execute(&pool)
         .await?;
         Ok(Self { pool })
+    }
+
+    pub async fn create_buzz_session(
+        &self,
+        id: &str,
+        device_id: &str,
+        profile_id: Option<&str>,
+        mode: DiscoveryMode,
+        answers: &SessionAnswers,
+    ) -> sqlx::Result<()> {
+        let now = unix_time_ms();
+        sqlx::query("INSERT INTO buzz_sessions (id, device_id, profile_id, mode, answers_json, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?)")
+            .bind(id).bind(device_id).bind(profile_id)
+            .bind(serde_json::to_string(&mode).unwrap_or_else(|_| "\"find_me_something\"".into()))
+            .bind(serde_json::to_string(answers).unwrap_or_else(|_| "{}".into()))
+            .bind(now).bind(now).execute(&self.pool).await?;
+        self.record_buzz_event(id, "session_started", None, None, None, None, None, None)
+            .await
+    }
+
+    pub async fn buzz_session(
+        &self,
+        id: &str,
+        device_id: &str,
+    ) -> sqlx::Result<Option<BuzzSessionRecord>> {
+        let row: Option<(String, Option<String>, String)> = sqlx::query_as(
+            "SELECT device_id, profile_id, answers_json FROM buzz_sessions WHERE id = ? AND device_id = ?")
+            .bind(id).bind(device_id).fetch_optional(&self.pool).await?;
+        Ok(row.and_then(|(device_id, profile_id, json)| {
+            serde_json::from_str(&json)
+                .ok()
+                .map(|answers| BuzzSessionRecord {
+                    id: id.to_owned(),
+                    device_id,
+                    profile_id,
+                    answers,
+                })
+        }))
+    }
+
+    pub async fn save_buzz_answers(
+        &self,
+        session_id: &str,
+        answers: &SessionAnswers,
+        question: &str,
+        answer: &str,
+    ) -> sqlx::Result<()> {
+        sqlx::query("UPDATE buzz_sessions SET answers_json = ?, updated_at_ms = ? WHERE id = ?")
+            .bind(serde_json::to_string(answers).unwrap_or_else(|_| "{}".into()))
+            .bind(unix_time_ms())
+            .bind(session_id)
+            .execute(&self.pool)
+            .await?;
+        self.record_buzz_event(
+            session_id,
+            "answer",
+            Some(question),
+            Some(answer),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn record_buzz_event(
+        &self,
+        session_id: &str,
+        event_type: &str,
+        question: Option<&str>,
+        answer: Option<&str>,
+        recommendations_json: Option<&str>,
+        media_id: Option<&str>,
+        playback_outcome: Option<&str>,
+        feedback: Option<&str>,
+    ) -> sqlx::Result<()> {
+        sqlx::query("INSERT INTO buzz_events (session_id, occurred_at_ms, event_type, question, answer, recommendations_json, media_id, playback_outcome, feedback) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            .bind(session_id).bind(unix_time_ms()).bind(event_type).bind(question).bind(answer)
+            .bind(recommendations_json).bind(media_id).bind(playback_outcome).bind(feedback)
+            .execute(&self.pool).await?;
+        Ok(())
+    }
+
+    /// Aggregate server-owned Buzz behavior for one authenticated device and
+    /// optional profile. Profile history is isolated when supplied.
+    pub async fn buzz_history(
+        &self,
+        device_id: &str,
+        profile_id: Option<&str>,
+    ) -> sqlx::Result<DeviceHistory> {
+        let mut history = DeviceHistory::default();
+        let likes: Vec<(String,)> =
+            sqlx::query_as("SELECT entry_key FROM entry_likes WHERE device_id = ?")
+                .bind(device_id)
+                .fetch_all(&self.pool)
+                .await?;
+        history.liked.extend(likes.into_iter().map(|r| r.0));
+        let rows: Vec<(String, String, Option<String>, i64)> = sqlx::query_as(
+            "SELECT e.event_type, COALESCE(e.answer,''), e.media_id, e.occurred_at_ms FROM buzz_events e JOIN buzz_sessions s ON s.id=e.session_id WHERE s.device_id=? AND ((? IS NULL AND s.profile_id IS NULL) OR s.profile_id=?) ORDER BY e.occurred_at_ms")
+            .bind(device_id).bind(profile_id).bind(profile_id).fetch_all(&self.pool).await?;
+        for (event, answer, media_id, occurred_ms) in rows {
+            if event == "answer" {
+                if let Ok(mood) = serde_json::from_str::<Mood>(&format!("\"{}\"", answer)) {
+                    *history.mood_answer_history.entry(mood).or_insert(0.0) += 1.0;
+                }
+            }
+            let Some(media_id) = media_id else { continue };
+            match event.as_str() {
+                "not_interested" | "try_again" => {
+                    let stat = history
+                        .rejected
+                        .entry(media_id)
+                        .or_insert_with(RejectionStat::default);
+                    stat.count += 1;
+                    stat.last_rejected_unix = Some(occurred_ms / 1000);
+                }
+                "play" | "playback_outcome" => {
+                    let stat = history
+                        .watched
+                        .entry(media_id.clone())
+                        .or_insert_with(WatchStat::default);
+                    stat.play_count += u32::from(event == "play");
+                    stat.last_played_unix = Some(occurred_ms / 1000);
+                    stat.completed |= answer == "completed";
+                }
+                _ => {}
+            }
+        }
+        let (_, entries) = self.catalog_snapshot().await?;
+        for entry in entries {
+            let strength = history
+                .watched
+                .get(&entry.entry_key)
+                .map_or(0.0, |w| w.play_count.max(1) as f32)
+                + if history.liked.contains(&entry.entry_key) {
+                    2.0
+                } else {
+                    0.0
+                };
+            if strength <= 0.0 {
+                continue;
+            }
+            for genre in &entry.genres {
+                *history
+                    .genre_affinity
+                    .entry(genre.to_ascii_lowercase())
+                    .or_insert(0.0) += strength;
+            }
+            if let Some(year) = entry.year {
+                *history.decade_affinity.entry(year / 10 * 10).or_insert(0.0) += strength;
+            }
+            *history.kind_affinity.entry(entry.kind).or_insert(0.0) += strength;
+            for actor in &entry.cast {
+                *history
+                    .actor_affinity
+                    .entry(actor.name.to_ascii_lowercase())
+                    .or_insert(0.0) += strength;
+            }
+            if history.liked.contains(&entry.entry_key) {
+                history
+                    .similarity_seed_titles
+                    .push(entry.scraped_title.unwrap_or(entry.title));
+            }
+        }
+        Ok(history)
     }
 
     pub async fn begin_scan_manifest(&self) -> sqlx::Result<String> {
@@ -1910,12 +2115,11 @@ impl Library {
         &self,
         entry_key: &str,
     ) -> sqlx::Result<Option<Vec<SkipSegment>>> {
-        let row: Option<(Option<String>,)> = sqlx::query_as(
-            "SELECT skip_segments_json FROM library_entries WHERE entry_key = ?",
-        )
-        .bind(entry_key)
-        .fetch_optional(&self.pool)
-        .await?;
+        let row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT skip_segments_json FROM library_entries WHERE entry_key = ?")
+                .bind(entry_key)
+                .fetch_optional(&self.pool)
+                .await?;
         Ok(row
             .and_then(|(json,)| json)
             .map(|json| serde_json::from_str(&json).unwrap_or_default()))

@@ -16,6 +16,17 @@ fn request(path: &str) -> PeerRequest {
     }
 }
 
+fn track_entry(entry_key: &str, relative_path: &str, artist: &str, album: &str) -> EntryRecord {
+    EntryRecord {
+        relative_path: relative_path.into(),
+        kind: MediaKind::Track,
+        title: "Example Track".into(),
+        artist: Some(artist.into()),
+        album: Some(album.into()),
+        ..entry(entry_key)
+    }
+}
+
 fn entry(entry_key: &str) -> EntryRecord {
     EntryRecord {
         entry_key: entry_key.into(),
@@ -226,6 +237,112 @@ async fn artwork_disk_cache_is_opt_in_read_through_and_version_invalidated() {
         !first_path.exists(),
         "superseded cache file should be removed"
     );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn artist_artwork_falls_back_to_the_first_album_cover_when_no_photo_was_scraped() {
+    let root =
+        std::env::temp_dir().join(format!("swarm-artist-fallback-{}", rand::random::<u64>()));
+    let media_root = root.join("media");
+    let images = media_root.join("music/images");
+    std::fs::create_dir_all(&images).unwrap();
+    let cover = images.join("album-cover.jpg");
+    image::RgbImage::from_pixel(8, 8, image::Rgb([200, 100, 50]))
+        .save(&cover)
+        .unwrap();
+
+    let library = Arc::new(
+        Library::open(root.join("library.sqlite").to_str().unwrap())
+            .await
+            .unwrap(),
+    );
+    let track_a = "aaaaaaaaaaaaaaaaaaaaaaaa";
+    let track_b = "bbbbbbbbbbbbbbbbbbbbbbbb";
+    // "A First Album" sorts before "Z Second Album", so the fallback must
+    // pick the cover from the first one even though it's inserted second.
+    library
+        .upsert(&track_entry(
+            track_b,
+            "music/z-second-album/track.mp3",
+            "Test Artist",
+            "Z Second Album",
+        ))
+        .await
+        .unwrap();
+    library
+        .upsert(&track_entry(
+            track_a,
+            "music/a-first-album/track.mp3",
+            "Test Artist",
+            "A First Album",
+        ))
+        .await
+        .unwrap();
+    library
+        .set_artwork(track_a, ArtworkKind::Cover, "music/images/album-cover.jpg")
+        .await
+        .unwrap();
+    let service = MediaService::new(library.clone(), media_root);
+
+    // Neither track has its own artist photo, so a request against either
+    // one's entry_key must resolve to the same fallback cover.
+    let resolved = service
+        .resolve(&request(&format!("/art/{track_b}/artist")))
+        .await;
+    assert_eq!(resolved.header.status, 200);
+    let Body::File { path, .. } = resolved.body else {
+        panic!("fallback artist artwork should be file-backed")
+    };
+    assert_eq!(path, cover);
+
+    // A real artist photo, once scraped, always wins over the fallback.
+    library
+        .set_artwork(track_b, ArtworkKind::ArtistPhoto, "music/images/photo.jpg")
+        .await
+        .unwrap();
+    std::fs::write(images.join("photo.jpg"), b"not a real image, just bytes").unwrap();
+    let with_photo = service
+        .resolve(&request(&format!("/art/{track_b}/artist")))
+        .await;
+    assert_eq!(with_photo.header.status, 200);
+    let Body::File { path, .. } = with_photo.body else {
+        panic!("scraped artist photo should be file-backed")
+    };
+    assert_eq!(path, images.join("photo.jpg"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn artist_artwork_404s_when_the_artist_has_no_art_anywhere() {
+    let root =
+        std::env::temp_dir().join(format!("swarm-artist-no-fallback-{}", rand::random::<u64>()));
+    let media_root = root.join("media");
+    std::fs::create_dir_all(&media_root).unwrap();
+
+    let library = Arc::new(
+        Library::open(root.join("library.sqlite").to_str().unwrap())
+            .await
+            .unwrap(),
+    );
+    let track_key = "cccccccccccccccccccccccc";
+    library
+        .upsert(&track_entry(
+            track_key,
+            "music/no-art/track.mp3",
+            "Unadorned Artist",
+            "Only Album",
+        ))
+        .await
+        .unwrap();
+    let service = MediaService::new(library.clone(), media_root);
+
+    let resolved = service
+        .resolve(&request(&format!("/art/{track_key}/artist")))
+        .await;
+    assert_eq!(resolved.header.status, 404);
 
     let _ = std::fs::remove_dir_all(root);
 }

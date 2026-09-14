@@ -387,9 +387,24 @@ async fn scan_roots_scoped_inner(
         .await?;
         let remaining = MAX_SUBTITLE_SIDECARS.saturating_sub(subtitle_sidecars.len());
         subtitle_sidecars.extend(sidecars.into_iter().take(remaining));
-        if complete {
+        // A music root walked with individual-track scanning turned off
+        // produces a manifest with zero entries for it by design (every
+        // track path is filtered out before it's ever added — see
+        // `media_path_allowed`), not because the walk found the root
+        // empty. That's indistinguishable, to the deletion-reconciliation
+        // pass below, from "every previously catalogued track was deleted
+        // from disk" — confirmed live: a routine rescan with the option
+        // off wiped every already-catalogued track's availability even
+        // though none of the files had moved. Treat it the same as an
+        // incomplete walk for scoping purposes (excluded from
+        // reconciliation and from add/update) but without the warning or
+        // the auto-rescan backoff penalty, since nothing here is actually
+        // flaky.
+        let deliberately_unscanned_music =
+            root.asset_type == MediaRootAssetType::Music && !options.scan_music_tracks;
+        if complete && !deliberately_unscanned_music {
             complete_roots.push(*root);
-        } else {
+        } else if !complete {
             // A changing directory is not a complete snapshot. It must not
             // reconcile deletions (absent rows stay available), and its
             // partial adds/updates must not be applied either: a root that
@@ -1282,8 +1297,19 @@ fn walk_value<T>(result: std::io::Result<T>, complete: &mut bool) -> std::io::Re
 /// which permanently blocks deletion reconciliation for any root busy
 /// enough to hit this (#230). Only a `NotFound` that survives every retry
 /// is treated as real.
-const TRANSIENT_STAT_RETRIES: u32 = 4;
-const TRANSIENT_STAT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(20);
+///
+/// The original budget (4 tries, ~140ms total) was tuned against a modest
+/// tree and turned out to be far too tight for a large one: a music root
+/// with several thousand files issues tens of thousands of these stat calls
+/// per pass, so even a low per-call transient-failure rate accumulates to a
+/// near-certain "some call exhausts its retries" over the whole walk —
+/// which is enough to permanently wedge that root's catalog reconciliation
+/// every single pass (confirmed: a ~8,400-file `smbfs` music root failed
+/// every scan attempt with no concurrent load on the share at all). Widened
+/// to 7 tries / ~1.9s worst-case per call, still negligible next to the
+/// tens-of-seconds this share already takes to walk.
+const TRANSIENT_STAT_RETRIES: u32 = 7;
+const TRANSIENT_STAT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(30);
 
 fn retry_transient_not_found<T>(mut stat: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
     let mut attempt = 0;
@@ -1407,10 +1433,28 @@ fn walk_media_files(config: WalkConfig<'_>) -> std::io::Result<WalkOutcome> {
                 continue;
             }
             if media_path_allowed(&relative_under_root, asset_type, scan_music_tracks) {
-                let Some(metadata) =
-                    walk_value(retry_transient_not_found(|| entry.metadata()), &mut complete)?
-                else {
-                    continue;
+                let metadata = match retry_transient_not_found(|| entry.metadata()) {
+                    Ok(metadata) => metadata,
+                    // A single leaf file that never resolves even after a
+                    // full retry budget is not the same signal as a root
+                    // that's genuinely changing underneath the walk (see
+                    // `walk_value`'s doc comment) — confirmed live: a smbfs
+                    // mount can permanently fail to `stat` one specific file
+                    // (a Unicode-normalization mismatch between the name
+                    // `read_dir` reports and what a lookup by that exact
+                    // name resolves to — reproduced with the platform's own
+                    // `stat`/`find` outside this process too, so no retry
+                    // count ever fixes it) while every other file in the
+                    // same tree stats fine. Marking the *whole root*
+                    // incomplete over one such straggler means it can never
+                    // scan cleanly again; skip just this file's manifest
+                    // entry instead and leave the root's completeness
+                    // alone — the rest of the walk still reconciles
+                    // normally, and this file's own catalog entry (if any)
+                    // is simply never added/updated/reconciled, forever,
+                    // same as it would be under an incomplete root anyway.
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(error) => return Err(error),
                 };
                 let modified_time = metadata
                     .modified()

@@ -640,6 +640,10 @@ async fn typed_roots_filter_media_and_music_tracks_are_opt_in() {
     assert_eq!(scanned.added, 1);
     assert_eq!(fx.library.list().await.unwrap()[0].kind, MediaKind::Track);
 
+    // Turning the option back off must not be read as "every previously
+    // catalogued track vanished from disk" — that's a manifest built with
+    // the option off filtering every track path out *by design*, not
+    // evidence of deletion. The track must survive untouched.
     let disabled = scan_roots_with_options(
         &fx.library,
         &roots,
@@ -651,8 +655,8 @@ async fn typed_roots_filter_media_and_music_tracks_are_opt_in() {
     )
     .await
     .unwrap();
-    assert_eq!(disabled.removed, 1);
-    assert!(fx.library.list().await.unwrap().is_empty());
+    assert_eq!(disabled.removed, 0);
+    assert_eq!(fx.library.list().await.unwrap().len(), 1);
 }
 
 #[tokio::test]

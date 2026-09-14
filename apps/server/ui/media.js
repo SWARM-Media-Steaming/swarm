@@ -234,12 +234,12 @@ function renderMediaResults() {
 
 function renderMediaTab() {
   const container = document.getElementById("library");
-  const toggle = `<div class="row" style="margin-bottom:14px">
-    <button class="${mediaSection === "browse" ? "" : "secondary"}" id="mediaSectionBrowseBtn" style="flex:0 0 auto"><i class="bi bi-grid"></i>Browse</button>
-    <button class="${mediaSection === "table" ? "" : "secondary"}" id="mediaSectionTableBtn" style="flex:0 0 auto"><i class="bi bi-list-ul"></i>All entries</button>
+  const toggle = `<div class="row media-view-toggle">
+    <button class="${mediaSection === "browse" ? "primary-button" : "secondary-button"}" id="mediaSectionBrowseBtn"><i class="bi bi-grid"></i>Browse</button>
+    <button class="${mediaSection === "table" ? "primary-button" : "secondary-button"}" id="mediaSectionTableBtn"><i class="bi bi-list-ul"></i>All entries</button>
   </div>
   <div class="row media-search-row">
-    <div class="search-input-wrap" style="flex:2">
+    <div class="search-input-wrap">
       <i class="bi bi-search search-input-icon"></i>
       <input id="mediaSearchInput" class="search-input" placeholder="Search title, artist, show…" value="${esc(searchQuery)}">
     </div>
@@ -366,13 +366,16 @@ function groupEpisodes(entries) {
   const episodes = entries.filter(e => e.kind === "episode");
   const canonicalFor = canonicalShowKeys(episodes);
   const byShow = new Map();       // Map<show, Map<season, EntrySummary[]>> — extra_type == null only
-  const extrasByShow = new Map(); // Map<show, EntrySummary[]> — extra_type != null, same "nested under the parent, not a plain episode" treatment as a movie's extras
+  const extrasByShow = new Map(); // Map<show, Map<season, EntrySummary[]>> — extras stay with their owning show/season
   for (const e of episodes) {
     const rawShow = e.show_title || "Unknown Show";
     const show = canonicalFor.get(rawShow) || rawShow;
     if (e.extra_type) {
-      if (!extrasByShow.has(show)) extrasByShow.set(show, []);
-      extrasByShow.get(show).push(e);
+      const season = e.season ?? 0;
+      if (!extrasByShow.has(show)) extrasByShow.set(show, new Map());
+      const seasons = extrasByShow.get(show);
+      if (!seasons.has(season)) seasons.set(season, []);
+      seasons.get(season).push(e);
       continue;
     }
     const season = e.season ?? -1; // -1 = "Unknown Season" bucket, sorts first
@@ -386,16 +389,19 @@ function groupEpisodes(entries) {
       episodes.sort((a, b) => (a.episode ?? Infinity) - (b.episode ?? Infinity));
     }
   }
-  for (const extras of extrasByShow.values()) {
-    extras.sort((a, b) => `${a.extra_type}:${a.extra_title || a.title}`.localeCompare(`${b.extra_type}:${b.extra_title || b.title}`));
+  for (const seasons of extrasByShow.values()) {
+    for (const extras of seasons.values()) {
+      extras.sort((a, b) => `${a.extra_type}:${a.extra_title || a.title}`.localeCompare(`${b.extra_type}:${b.extra_title || b.title}`));
+    }
   }
-  // A show whose only season-0 content is bonus material still needs a
-  // reachable "Specials" tile, or its extras would be nested nowhere —
-  // never orphan them the way a top-level leak would.
-  for (const [show, extras] of extrasByShow) {
-    if (extras.length && !byShow.get(show)?.has(0)) {
+  // Every season containing only bonus material still needs a reachable
+  // tile. This keeps show-level extras under Specials and season-specific
+  // extras under the season whose directory owns them.
+  for (const [show, extraSeasons] of extrasByShow) {
+    for (const [season, extras] of extraSeasons) {
+      if (!extras.length || byShow.get(show)?.has(season)) continue;
       if (!byShow.has(show)) byShow.set(show, new Map());
-      byShow.get(show).set(0, []);
+      byShow.get(show).set(season, []);
     }
   }
   return { byShow, extrasByShow };
@@ -527,7 +533,7 @@ function breadcrumb(parts) {
   // parts: [{label, onClick} | {label} (current, no link)]
   return `<div class="breadcrumb">` + parts.map((p, i) => {
     const sep = i > 0 ? `<span class="crumb-sep">›</span>` : "";
-    if (p.onClick) return `${sep}<button class="crumb-link" data-crumb="${i}">${esc(p.label)}</button>`;
+    if (p.onClick) return `${sep}<button class="text-button crumb-link" data-crumb="${i}">${esc(p.label)}</button>`;
     return `${sep}<span class="crumb-current">${esc(p.label)}</span>`;
   }).join("") + `</div>`;
 }
@@ -560,7 +566,7 @@ function renderBrowseRoot(body) {
     <div class="media-card" data-artist="${esc(artist)}">
       ${firstTrack ? artImg(firstTrack.entry_key, "artist", "card-art round") : `<div class="card-art art-placeholder round"></div>`}
       <div class="card-title" title="${esc(artist)}">${esc(artist)}</div>
-      <div class="muted" style="font-size:.75rem">${tracks.get(artist).size} album${tracks.get(artist).size === 1 ? "" : "s"}</div>
+      <div class="muted card-meta">${tracks.get(artist).size} album${tracks.get(artist).size === 1 ? "" : "s"}</div>
     </div>`;
   }).join("");
 
@@ -570,7 +576,7 @@ function renderBrowseRoot(body) {
     <div class="media-card" data-show="${esc(show)}">
       ${first ? artImg(first.entry_key, "poster", "card-art") : `<div class="card-art art-placeholder"></div>`}
       <div class="card-title" title="${esc(show)}">${esc(show)}</div>
-      <div class="muted" style="font-size:.75rem">${shows.get(show).size} season${shows.get(show).size === 1 ? "" : "s"}</div>
+      <div class="muted card-meta">${shows.get(show).size} season${shows.get(show).size === 1 ? "" : "s"}</div>
     </div>`;
   }).join("");
 
@@ -594,7 +600,7 @@ function renderBrowseRoot(body) {
     </div>`;
   body.innerHTML = `
     ${summary}
-    ${movies.length ? `<div class="shelf-section"><h2 style="margin-top:0">Movies</h2><div class="media-grid">${movieCards}</div></div>` : ""}
+    ${movies.length ? `<div class="shelf-section"><h2 class="shelf-title-first">Movies</h2><div class="media-grid">${movieCards}</div></div>` : ""}
     ${shows.size ? `<div class="shelf-section"><h2>Shows</h2><div class="media-grid">${showCards}</div></div>` : ""}
     ${tracks.size ? `<div class="shelf-section"><h2>Music</h2><div class="media-grid">${artistCards}</div></div>` : ""}
     ${nothingMatched ? `<span class="muted">${emptyMessage}</span>` : ""}
@@ -658,18 +664,18 @@ function detailView(entry, backCrumbs, extras = []) {
       <div class="detail-body">
         ${artImg(entry.entry_key, "poster", "detail-poster")}
         <div>
-          <h2 style="margin-top:0; text-transform:none; font-size:1.2rem; color:var(--text)">
+          <h2 class="detail-title">
             ${esc(displayEntryTitle(entry))}${entry.year ? ` <span class="muted">(${entry.year})</span>` : ""}
-            ${entry.rating ? `<span class="tag" style="margin-left:8px; vertical-align:middle">${esc(entry.rating)}</span>` : ""}
-            ${entry.community_rating != null ? `<span class="tag" style="margin-left:8px; vertical-align:middle">${communityRating(entry)}</span>` : ""}
-            ${entry.like_count ? `<span class="muted" style="margin-left:8px; font-size:.85rem; vertical-align:middle"><i class="bi bi-heart-fill" style="color:#ff5d7a"></i> ${entry.like_count}</span>` : ""}
+            ${entry.rating ? `<span class="tag detail-tag">${esc(entry.rating)}</span>` : ""}
+            ${entry.community_rating != null ? `<span class="tag detail-tag">${communityRating(entry)}</span>` : ""}
+            ${entry.like_count ? `<span class="muted detail-likes"><i class="bi bi-heart-fill"></i> ${entry.like_count}</span>` : ""}
           </h2>
-          ${entry.genres.length ? `<div class="category-chips">${entry.genres.map(g => `<button class="category-chip" data-filter-category="${esc(g)}">${esc(g)}</button>`).join("")}</div>` : ""}
-          ${entry.overview ? `<p class="muted" style="margin-top:8px">${esc(entry.overview)}</p>` : ""}
+          ${entry.genres.length ? `<div class="category-chips">${entry.genres.map(g => `<button class="secondary-button category-chip" data-filter-category="${esc(g)}">${esc(g)}</button>`).join("")}</div>` : ""}
+          ${entry.overview ? `<p class="muted detail-overview">${esc(entry.overview)}</p>` : ""}
           ${cast.length ? `<h2>Cast</h2><p>${cast.map(c => esc(c.character ? `${c.name} as ${c.character}` : c.name)).join(", ")}</p>` : ""}
           <h2>File</h2>
-          <p class="mono muted" style="font-size:.78rem" title="${esc(entry.relative_path)}">
-            ${esc(fileName)}<br><span style="opacity:.75">${esc(fileLocation)}</span>
+          <p class="mono muted detail-file" title="${esc(entry.relative_path)}">
+            ${esc(fileName)}<br><span>${esc(fileLocation)}</span>
           </p>
         </div>
       </div>
@@ -754,8 +760,8 @@ function wireDetailManage(entry) {
   const target = document.getElementById("detailManage");
   if (!target) return;
   const wasOpen = openManageKey === entry.entry_key;
-  target.innerHTML = `<div class="row" style="margin-top:14px">
-    <button class="secondary" data-detail-manage="${esc(entry.entry_key)}">${wasOpen ? '<i class="bi bi-x-lg"></i>Close' : '<i class="bi bi-sliders"></i>Manage metadata / artwork / rescrape'}</button>
+  target.innerHTML = `<div class="row detail-manage-row">
+    <button class="secondary-button" data-detail-manage="${esc(entry.entry_key)}">${wasOpen ? '<i class="bi bi-x-lg"></i>Close' : '<i class="bi bi-sliders"></i>Manage metadata / artwork / rescrape'}</button>
   </div>${wasOpen ? manageRow(entry) : ""}`;
   target.querySelector("[data-detail-manage]").addEventListener("click", () => {
     openManageKey = wasOpen ? null : entry.entry_key;
@@ -809,10 +815,10 @@ let pickedGroupArtworkPath = null;
 
 function groupArtworkPanel(label) {
   return `
-    <div class="row" style="margin:10px 0 4px; align-items:center">
-      <button id="groupArtworkPickBtn" class="secondary"><i class="bi bi-image"></i>Choose image…</button>
-      <button id="groupArtworkUploadBtn"><i class="bi bi-upload"></i>Upload ${label}</button>
-      <span class="muted" id="groupArtworkPickedNote" style="font-size:.8rem">${pickedGroupArtworkPath ? esc(pickedGroupArtworkPath) : "No file chosen."}</span>
+    <div class="row group-artwork-row">
+      <button id="groupArtworkPickBtn" class="secondary-button"><i class="bi bi-image"></i>Choose image…</button>
+      <button id="groupArtworkUploadBtn" class="primary-button"><i class="bi bi-upload"></i>Upload ${label}</button>
+      <span class="muted group-artwork-note" id="groupArtworkPickedNote">${pickedGroupArtworkPath ? esc(pickedGroupArtworkPath) : "No file chosen."}</span>
     </div>`;
 }
 
@@ -856,7 +862,7 @@ function renderArtist(body, artist) {
     <div class="media-card" data-album="${esc(album)}">
       ${artImg(tracks[0].entry_key, "cover", "card-art")}
       <div class="card-title" title="${esc(album)}">${esc(album)}</div>
-      <div class="muted" style="font-size:.75rem">${tracks.length} track${tracks.length === 1 ? "" : "s"}</div>
+      <div class="muted card-meta">${tracks.length} track${tracks.length === 1 ? "" : "s"}</div>
     </div>`).join("");
   const artistEntryKeys = [...albums.values()].flat().map(t => t.entry_key);
   body.innerHTML = `${breadcrumb(crumbs)}${groupArtworkPanel("artist photo")}<div class="media-grid">${cards}</div>`;
@@ -882,7 +888,7 @@ function renderAlbum(body, artist, album) {
       <td>${esc(t.scraped_title || t.title)}</td>
       <td>${t.duration_secs ? formatDuration(t.duration_secs) : "—"}</td>
       <td>${communityRating(t)}</td>
-      <td><button class="secondary" data-manage="${esc(t.entry_key)}">${openManageKey === t.entry_key ? '<i class="bi bi-x-lg"></i>Close' : '<i class="bi bi-sliders"></i>Manage'}</button></td>
+      <td><button class="secondary-button compact" data-manage="${esc(t.entry_key)}">${openManageKey === t.entry_key ? '<i class="bi bi-x-lg"></i>Close' : '<i class="bi bi-sliders"></i>Manage'}</button></td>
     </tr>
     ${openManageKey === t.entry_key ? `<tr><td colspan="5">${manageRow(t)}</td></tr>` : ""}
   `).join("");
@@ -976,24 +982,25 @@ function renderShow(body, show) {
   const { byShow, extrasByShow } = groupEpisodes(libraryEntries);
   const seasons = byShow.get(show);
   if (!seasons) { browsePath = { kind: "root" }; return renderBrowse(); }
-  const extras = extrasByShow.get(show) || [];
+  const extraSeasons = extrasByShow.get(show) || new Map();
   const crumbs = [{ label: "Media", onClick: () => browsePath = { kind: "root" } }, { label: show }];
   const cards = [...seasons.entries()].sort(([a], [b]) => a - b).map(([season, episodes]) => {
-    const artSource = episodes[0] || (season === 0 ? extras[0] : undefined);
-    const count = season === 0 && extras.length
+    const extras = extraSeasons.get(season) || [];
+    const artSource = episodes[0] || extras[0];
+    const count = extras.length
       ? `${episodes.length} episode${episodes.length === 1 ? "" : "s"}, ${extras.length} extra${extras.length === 1 ? "" : "s"}`
       : `${episodes.length} episode${episodes.length === 1 ? "" : "s"}`;
     return `
     <div class="media-card" data-season="${season}">
       ${artSource ? artImg(artSource.entry_key, "season", "card-art") : `<div class="card-art art-placeholder"></div>`}
       <div class="card-title">${seasonLabel(season)}</div>
-      <div class="muted" style="font-size:.75rem">${count}</div>
+      <div class="muted card-meta">${count}</div>
     </div>`;
   }).join("");
   const episodeKeys = [...seasons.values()].flat().map(episode => episode.entry_key);
   body.innerHTML = `${breadcrumb(crumbs)}
     <div class="row media-group-actions">
-      <button id="rescrapeShowBtn" class="secondary"${groupRescrapeRunning ? " disabled" : ""}><i class="bi bi-arrow-repeat"></i>Re-scrape all seasons</button>
+      <button id="rescrapeShowBtn" class="secondary-button"${groupRescrapeRunning ? " disabled" : ""}><i class="bi bi-arrow-repeat"></i>Re-scrape all seasons</button>
       <span class="muted">Refresh metadata and artwork for all ${episodeKeys.length} episode${episodeKeys.length === 1 ? "" : "s"} in this show.</span>
     </div>
     <div class="media-grid">${cards}</div>`;
@@ -1011,7 +1018,7 @@ function renderSeason(body, show, season) {
   const { byShow, extrasByShow } = groupEpisodes(libraryEntries);
   const episodes = byShow.get(show)?.get(season);
   if (!episodes) { browsePath = { kind: "show", show }; return renderBrowse(); }
-  const extras = season === 0 ? (extrasByShow.get(show) || []) : [];
+  const extras = extrasByShow.get(show)?.get(season) || [];
   const crumbs = [
     { label: "Media", onClick: () => browsePath = { kind: "root" } },
     { label: show, onClick: () => browsePath = { kind: "show", show } },
@@ -1025,7 +1032,7 @@ function renderSeason(body, show, season) {
     </div>`).join("");
   body.innerHTML = `${breadcrumb(crumbs)}
     <div class="row media-group-actions">
-      <button id="rescrapeSeasonBtn" class="secondary"${groupRescrapeRunning ? " disabled" : ""}><i class="bi bi-arrow-repeat"></i>Re-scrape all episodes</button>
+      <button id="rescrapeSeasonBtn" class="secondary-button"${groupRescrapeRunning ? " disabled" : ""}><i class="bi bi-arrow-repeat"></i>Re-scrape all episodes</button>
       <span class="muted">Refresh metadata and artwork for all ${episodes.length} episode${episodes.length === 1 ? "" : "s"} in this season.</span>
     </div>
     <div class="media-grid">${cards}</div>
@@ -1083,7 +1090,7 @@ function renderLibrary() {
         <td>${e.has_artwork ? "✓" : "—"}</td>
         <td class="mono" title="${esc(e.relative_path)}">${esc(e.relative_path)}</td>
         <td>${(e.size / 1048576).toFixed(1)} MB</td>
-        <td><button class="secondary" data-manage="${esc(e.entry_key)}">${openManageKey === e.entry_key ? '<i class="bi bi-x-lg"></i>Close' : '<i class="bi bi-sliders"></i>Manage'}</button></td>
+        <td><button class="secondary-button compact" data-manage="${esc(e.entry_key)}">${openManageKey === e.entry_key ? '<i class="bi bi-x-lg"></i>Close' : '<i class="bi bi-sliders"></i>Manage'}</button></td>
       </tr>
       ${openManageKey === e.entry_key ? `<tr><td colspan="7">${manageRow(e)}</td></tr>` : ""}
     `).join("") + `</tbody></table></div>`;
@@ -1123,7 +1130,7 @@ function manageRow(entry) {
       <section class="metadata-editor-section metadata-editor-section-first">
         <div class="metadata-editor-heading">
           <div><h2>Edit metadata</h2><p class="muted">Update the information people see while browsing this item.</p></div>
-          <button id="editSaveBtn"><i class="bi bi-check-lg"></i>Save metadata</button>
+          <button id="editSaveBtn" class="primary-button"><i class="bi bi-check-lg"></i>Save metadata</button>
         </div>
         <div class="metadata-form-grid">
           <label class="metadata-field">
@@ -1150,14 +1157,14 @@ function manageRow(entry) {
                 </div>
                 <div class="category-picker" id="editCategoryPicker">
                   ${pickerCategories.length ? pickerCategories.map(c => `
-                    <label class="checkbox-label category-picker-item">
+                    <label class="toggle checkbox-label category-picker-item">
                       <input type="checkbox" class="editCategoryCheck" value="${esc(c)}"${entry.genres.includes(c) ? " checked" : ""}>
                       ${esc(c)}
                     </label>`).join("") : `<span class="muted category-picker-empty">No categories yet — add one below.</span>`}
                 </div>
                 <div class="row category-add-row">
                   <input id="editNewCategoryInput" placeholder="New category name">
-                  <button id="editAddCategoryBtn" class="secondary" type="button"><i class="bi bi-plus-lg"></i>Add</button>
+                  <button id="editAddCategoryBtn" class="secondary-button" type="button"><i class="bi bi-plus-lg"></i>Add</button>
                 </div>
               </div>
             </details>
@@ -1183,9 +1190,9 @@ function manageRow(entry) {
           </label>
         ` : ""}
         <div class="row metadata-action-row">
-          <button id="rescrapeBtn"><i class="bi bi-arrow-repeat"></i>${entry.kind === "movie" ? "Re-scrape this movie" : entry.kind === "episode" ? "Re-scrape this episode" : "Re-scrape this track / album"}</button>
+          <button id="rescrapeBtn" class="primary-button"><i class="bi bi-arrow-repeat"></i>${entry.kind === "movie" ? "Re-scrape this movie" : entry.kind === "episode" ? "Re-scrape this episode" : "Re-scrape this track / album"}</button>
           ${entry.scraped_title || entry.genres.length || entry.has_artwork
-            ? `<button id="revertScrapeBtn" class="danger"><i class="bi bi-arrow-counterclockwise"></i>Revert to unscraped</button>`
+            ? `<button id="revertScrapeBtn" class="danger-button"><i class="bi bi-arrow-counterclockwise"></i>Revert to unscraped</button>`
             : ""}
         </div>
       </section>
@@ -1204,8 +1211,8 @@ function manageRow(entry) {
             </select>
           </label>
           <div class="row metadata-action-row">
-            <button id="pickArtworkBtn" class="secondary"><i class="bi bi-image"></i>Choose image…</button>
-            <button id="uploadArtworkBtn"><i class="bi bi-upload"></i>Upload</button>
+            <button id="pickArtworkBtn" class="secondary-button"><i class="bi bi-image"></i>Choose image…</button>
+            <button id="uploadArtworkBtn" class="primary-button"><i class="bi bi-upload"></i>Upload</button>
           </div>
           <p class="muted compact-help" id="artworkPickedNote">${pickedArtworkPath ? esc(pickedArtworkPath) : "No file chosen."}</p>
         </section>
@@ -1224,11 +1231,11 @@ function manageRow(entry) {
             </select>
           </label>
           <div class="row metadata-action-row">
-            <button id="downloadSubtitleBtn" class="secondary"><i class="bi bi-cloud-arrow-down"></i>Find and download</button>
+            <button id="downloadSubtitleBtn" class="secondary-button"><i class="bi bi-cloud-arrow-down"></i>Find and download</button>
           </div>
           <p class="muted compact-help">Or generate an English subtitle locally with Whisper, just for this ${entry.kind === "episode" ? "episode" : "movie"}.</p>
           <div class="row metadata-action-row">
-            <button id="generateWhisperSubtitleBtn" class="secondary"><i class="bi bi-cpu"></i>Generate with Whisper</button>
+            <button id="generateWhisperSubtitleBtn" class="secondary-button"><i class="bi bi-cpu"></i>Generate with Whisper</button>
           </div>
         </section>` : ""}
       </div>
@@ -1245,15 +1252,15 @@ function manageRow(entry) {
               <option value="track"${entry.kind === "track" ? " selected" : ""}>Music track</option>
             </select>
           </label>
-          <div id="moveTrackFields" class="metadata-field metadata-field-wide metadata-inline-fields" style="display:${entry.kind === "track" ? "grid" : "none"}">
+          <div id="moveTrackFields" class="metadata-field metadata-field-wide metadata-inline-fields${entry.kind === "track" ? "" : " d-none"}">
             <input id="moveArtistInput" placeholder="Artist" value="${entry.kind === "track" ? esc(entry.artist || "") : ""}">
             <input id="moveAlbumInput" placeholder="Album" value="${entry.kind === "track" ? esc(entry.album || "") : ""}">
           </div>
-          <div id="moveEpisodeFields" class="metadata-field metadata-field-wide" style="display:${entry.kind === "episode" ? "block" : "none"}">
+          <div id="moveEpisodeFields" class="metadata-field metadata-field-wide${entry.kind === "episode" ? "" : " d-none"}">
             <input id="moveShowInput" placeholder="Show name" value="${entry.kind === "episode" ? esc(entry.show_title || "") : ""}">
           </div>
         </div>
-        <div class="row metadata-action-row"><button id="moveKindBtn" class="secondary"><i class="bi bi-arrow-left-right"></i>Move to this type</button></div>
+        <div class="row metadata-action-row"><button id="moveKindBtn" class="secondary-button"><i class="bi bi-arrow-left-right"></i>Move to this type</button></div>
       </section>
 
       <section class="metadata-editor-section metadata-file-section">
@@ -1262,7 +1269,7 @@ function manageRow(entry) {
             <h2><i class="bi bi-file-earmark-play"></i>File</h2>
             <p class="mono muted" title="${esc(entry.relative_path)}">${esc(entry.relative_path)}</p>
           </div>
-          <button id="deleteAssetBtn" class="danger"><i class="bi bi-trash3"></i>Delete asset</button>
+          <button id="deleteAssetBtn" class="danger-button"><i class="bi bi-trash3"></i>Delete asset</button>
         </div>
       </section>
     </div>`;
@@ -1299,8 +1306,8 @@ function wireMoveKindFields(entryKey) {
   const trackFields = document.getElementById("moveTrackFields");
   const episodeFields = document.getElementById("moveEpisodeFields");
   const sync = () => {
-    trackFields.style.display = select.value === "track" ? "grid" : "none";
-    episodeFields.style.display = select.value === "episode" ? "block" : "none";
+    trackFields.classList.toggle("d-none", select.value !== "track");
+    episodeFields.classList.toggle("d-none", select.value !== "episode");
   };
   select.addEventListener("change", sync);
   document.getElementById("moveKindBtn")?.addEventListener("click", () => moveKind(entryKey));
@@ -1354,7 +1361,7 @@ function wireAddCategoryBtn() {
     } else {
       picker.querySelector(".category-picker-empty")?.remove();
       const label = document.createElement("label");
-      label.className = "checkbox-label category-picker-item";
+      label.className = "toggle checkbox-label category-picker-item";
       label.innerHTML = `<input type="checkbox" class="editCategoryCheck" value="${esc(name)}" checked> ${esc(name)}`;
       picker.appendChild(label);
       wireCheckbox(label.querySelector(".editCategoryCheck"));

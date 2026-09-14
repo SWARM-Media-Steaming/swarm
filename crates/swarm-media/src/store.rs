@@ -2418,7 +2418,7 @@ impl Library {
     ///
     /// An entry is left completely untouched (including its existing scrape
     /// data) unless its `kind`/`show_title`/`season`/`episode`/`artist`/
-    /// `album`/`track_number` actually differ from what it's currently
+    /// `album`/`track_number`/extra metadata actually differ from what it's currently
     /// stored as. When they do differ, the old scrape result can no longer
     /// be trusted (it was very possibly produced by searching under the
     /// wrong classification entirely — e.g. bonus content scraped as if it
@@ -2441,10 +2441,15 @@ impl Library {
             Option<String>,
             Option<i64>,
             i64,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
         );
         let mut report = ReclassifyReport::default();
         let rows: Vec<ReclassifyRow> = sqlx::query_as(
-            "SELECT entry_key, relative_path, kind, show_title, season, episode, artist, album, track_number, kind_overridden \
+            "SELECT entry_key, relative_path, kind, show_title, season, episode, artist, album, track_number, kind_overridden, \
+             extra_type, extra_title, extra_relative_path, extra_category_path \
              FROM library_entries WHERE available = 1",
         )
         .fetch_all(&self.pool)
@@ -2461,6 +2466,10 @@ impl Library {
             old_album,
             old_track_number,
             kind_overridden,
+            old_extra_type,
+            old_extra_title,
+            old_extra_relative_path,
+            old_extra_category_path,
         ) in rows
         {
             // A manually-reclassified entry (see `set_manual_kind`) must
@@ -2476,7 +2485,10 @@ impl Library {
             // grouping must never see a root's label as though it were a
             // real folder.
             let (_, path_under_root) = roots.split(&relative_path);
-            let Some(classified) = crate::classify::classify(&path_under_root) else {
+            let asset_type = roots.asset_type_for(&relative_path);
+            let Some(classified) =
+                crate::classify::classify_for_asset_type(&path_under_root, asset_type)
+            else {
                 continue;
             };
             let new_kind = kind_str(classified.kind);
@@ -2490,6 +2502,10 @@ impl Library {
                 && classified.artist == old_artist
                 && classified.album == old_album
                 && new_track_number == old_track_number
+                && classified.extra_kind == old_extra_type.as_deref()
+                && classified.extra_title == old_extra_title
+                && classified.extra_relative_path == old_extra_relative_path
+                && classified.extra_category_path == old_extra_category_path
             {
                 report.unchanged += 1;
                 continue;
@@ -2497,9 +2513,12 @@ impl Library {
 
             sqlx::query(
                 "UPDATE library_entries SET kind = ?, title = ?, artist = ?, album = ?, track_number = ?, \
-                 show_title = ?, season = ?, episode = ?, year = ? WHERE entry_key = ?",
+                 show_title = ?, season = ?, episode = ?, year = ?, \
+                 parent_entry_key = CASE WHEN ? = 'episode' THEN NULL ELSE parent_entry_key END, \
+                 extra_type = ?, extra_title = ?, extra_relative_path = ?, extra_category_path = ? \
+                 WHERE entry_key = ?",
             )
-            .bind(new_kind)
+            .bind(&new_kind)
             .bind(&classified.title)
             .bind(&classified.artist)
             .bind(&classified.album)
@@ -2508,6 +2527,11 @@ impl Library {
             .bind(new_season)
             .bind(new_episode)
             .bind(classified.year.map(i64::from))
+            .bind(&new_kind)
+            .bind(classified.extra_kind)
+            .bind(&classified.extra_title)
+            .bind(&classified.extra_relative_path)
+            .bind(&classified.extra_category_path)
             .bind(&entry_key)
             .execute(&self.pool)
             .await?;

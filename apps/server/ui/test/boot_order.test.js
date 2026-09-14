@@ -244,6 +244,30 @@ async function main() {
   if (JSON.stringify(actualTabOrder) !== JSON.stringify(expectedTabOrder)) {
     failures.push(`Expected tab order ${expectedTabOrder.join(", ")}, got ${actualTabOrder.join(", ")}.`);
   }
+  if (!document.querySelector("#dashView.app-shell > .sidebar .tabnav")) {
+    failures.push("Expected the dashboard navigation to use the shared sidebar shell.");
+  }
+  if (!document.querySelector("#dashView.app-shell > main.workspace > .topbar")) {
+    failures.push("Expected the dashboard content to use the shared sticky topbar shell.");
+  }
+  if (document.getElementById("pageTitle").textContent !== "Media library") {
+    failures.push("Expected the topbar title to reflect the active Media view.");
+  }
+  if (document.querySelector(".section-intro")) {
+    failures.push("Expected the sticky topbar to be the only page-level heading.");
+  }
+  const sidebarToggle = document.getElementById("toggleSidebarBtn");
+  sidebarToggle.click();
+  if (!document.getElementById("dashView").classList.contains("sidebar-collapsed") || sidebarToggle.getAttribute("aria-expanded") !== "false") {
+    failures.push("Expected the side menu control to collapse the dashboard shell accessibly.");
+  }
+  sidebarToggle.click();
+  if (document.getElementById("dashView").classList.contains("sidebar-collapsed") || sidebarToggle.getAttribute("aria-expanded") !== "true") {
+    failures.push("Expected the side menu control to restore the expanded dashboard shell.");
+  }
+  if (/<style\b|style\s*=/.test(html)) {
+    failures.push("Expected index.html to keep all visual rules in style.css instead of inline styles.");
+  }
   if (!document.getElementById("tabBtn-media").classList.contains("tab-active")) {
     failures.push("Expected Media to be the active default tab after boot.");
   }
@@ -279,8 +303,8 @@ async function main() {
   if (!document.getElementById("transcriptionProgressText").textContent.includes("disabled")) {
     failures.push("Expected the Media subtitle panel to render the current durable-worker status.");
   }
-  // Companion regression: index.html's inline `body { visibility: hidden }`
-  // guard (a flash-of-onboarding fix, same "wrong view painted first" family
+  // Companion regression: style.css's `body.boot-pending` visibility guard
+  // (a flash-of-onboarding fix, same "wrong view painted first" family
   // as this file's main bug) only ever gets lifted by show() -- if body
   // stayed hidden, the user would see nothing at all rather than the wrong
   // view, but it's the same "did boot() actually finish deciding what to

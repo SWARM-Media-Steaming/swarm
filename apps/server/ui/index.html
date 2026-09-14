@@ -2,49 +2,20 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>SWARM Server — Stream Whatever, Anywhere</title>
 <link rel="stylesheet" href="vendor/bootstrap-icons/bootstrap-icons.min.css">
 <link rel="stylesheet" href="style.css">
-<!--
-  Real bug, found live: onboardFolderView/onboardSwarmView/dashView all
-  start `class="d-none"` in the markup below, but that class is defined in
-  the external style.css — loaded over a separate request/file read that
-  isn't guaranteed to finish before the webview's first paint. On a slow
-  enough load, the raw HTML (onboardFolderView first in document order)
-  briefly painted un-hidden before style.css caught up, showing the
-  onboarding "Welcome to SWARM" card for a moment even on an install that
-  was always going straight to the dashboard. This inline style is parsed
-  as part of the very first chunk of HTML, before any external file round
-  trip, so it can never race — app.js's show() (apps/server/ui/app.js)
-  reveals the body itself the first time it actually knows which view to
-  display, once boot() has resolved.
--->
-<style>
-  body { visibility: hidden; }
-  /* #splashView overrides the inherited hidden state (visibility, unlike
-     display, cascades but can be overridden by a descendant) so the splash
-     portrait still paints on the very first frame, before app.js has run —
-     the same reasoning as the body rule above, just one level deeper. */
-  #splashView { visibility: visible; position: fixed; inset: 0; z-index: 9999; display: flex; align-items: center; justify-content: center; background: #101828; }
-  #splashView img { max-width: min(80vw, 420px); max-height: 85vh; object-fit: contain; }
-</style>
 </head>
-<body>
+<body class="boot-pending">
 <div id="splashView"><img src="splash.png" alt="SWARM — Stream Whatever, Anywhere"></div>
-<header>
-  <img src="badge.png" alt="" class="brand-mark">
-  <div class="brand-text">
-    <h1>SWARM</h1>
-    <span class="tagline">Stream Whatever, Anywhere — Remote Media</span>
-  </div>
-  <span class="tag">SERVER</span>
-</header>
-
-<main>
 
 <div id="onboardFolderView" class="d-none">
-  <div class="card centered-card">
+  <div class="onboarding-shell">
+  <div class="panel centered-card">
+    <div class="onboarding-brand"><img src="badge.png" alt="" class="brand-mark"><span>SWARM SERVER</span></div>
     <img src="hero.png" alt="SWARM mascot" class="hero-image">
+    <p class="eyebrow">YOUR PRIVATE MEDIA CLOUD</p>
     <h2>Welcome to SWARM</h2>
     <p class="tagline centered">Stream Whatever, Anywhere — Remote Media</p>
     <p class="muted">Choose the folder with your music and video. SWARM will scan it and can stream from it to devices in your swarm.</p>
@@ -57,23 +28,46 @@
       <option value="photos_videos">Photos &amp; videos</option>
     </select>
     <div class="onboarding-root-actions">
-      <button id="chooseFolderBtn"><i class="bi bi-folder2-open"></i>Choose media folder…</button>
-      <button id="onboardNetworkRootBtn" class="secondary"><i class="bi bi-hdd-network"></i>Connect SMB…</button>
+      <button id="chooseFolderBtn" class="primary-button"><i class="bi bi-folder2-open"></i>Choose media folder…</button>
+      <button id="onboardNetworkRootBtn" class="secondary-button"><i class="bi bi-hdd-network"></i>Connect SMB…</button>
     </div>
+  </div>
   </div>
 </div>
 
-<div id="dashView" class="d-none">
-  <div class="tabnav">
-    <button id="tabBtn-media" class="tab-active"><i class="bi bi-collection-play"></i>Media</button>
-    <button id="tabBtn-metrics"><i class="bi bi-speedometer2"></i>Metrics</button>
-    <button id="tabBtn-settings"><i class="bi bi-gear-fill"></i>Settings</button>
-    <button id="tabBtn-swarm"><i class="bi bi-diagram-3"></i>Swarm</button>
-    <button id="tabBtn-notifications"><i class="bi bi-bell-fill"></i>Notifications<span id="notificationBadge" class="badge-count d-none">0</span></button>
-    <button id="tabBtn-ai"><i class="bi bi-stars"></i>AI</button>
-    <button id="tabBtn-about"><i class="bi bi-info-circle-fill"></i>About</button>
-    <button id="hideToTrayBtn" class="tray-hide-button" title="Hide this window; the media server will keep running"><i class="bi bi-dash-square"></i>Hide</button>
-  </div>
+<div id="dashView" class="app-shell d-none">
+  <aside class="sidebar">
+    <div class="brand">
+      <img src="badge.png" alt="" class="brand-mark">
+      <div class="brand-text"><strong>SWARM</strong><small>Media server</small></div>
+    </div>
+    <button id="toggleSidebarBtn" class="icon-button sidebar-toggle" aria-label="Collapse side menu" aria-controls="sidebarNav" aria-expanded="true" title="Collapse side menu"><i class="bi bi-chevron-left"></i></button>
+    <nav id="sidebarNav" class="tabnav" aria-label="Application sections">
+      <button id="tabBtn-media" class="nav-item tab-active" data-view-target="media" aria-label="Media" title="Media"><i class="bi bi-collection-play nav-icon"></i><span>Media</span></button>
+      <button id="tabBtn-metrics" class="nav-item" data-view-target="metrics" aria-label="Metrics" title="Metrics"><i class="bi bi-speedometer2 nav-icon"></i><span>Metrics</span></button>
+      <button id="tabBtn-settings" class="nav-item" data-view-target="settings" aria-label="Settings" title="Settings"><i class="bi bi-gear-fill nav-icon"></i><span>Settings</span></button>
+      <button id="tabBtn-swarm" class="nav-item" data-view-target="swarm" aria-label="Swarm" title="Swarm"><i class="bi bi-diagram-3 nav-icon"></i><span>Swarm</span></button>
+      <button id="tabBtn-notifications" class="nav-item" data-view-target="notifications" aria-label="Notifications" title="Notifications"><i class="bi bi-bell-fill nav-icon"></i><span>Notifications</span><span id="notificationBadge" class="badge-count d-none">0</span></button>
+      <button id="tabBtn-ai" class="nav-item" data-view-target="ai" aria-label="AI tools" title="AI tools"><i class="bi bi-stars nav-icon"></i><span>AI tools</span></button>
+      <button id="tabBtn-about" class="nav-item" data-view-target="about" aria-label="About" title="About"><i class="bi bi-info-circle-fill nav-icon"></i><span>About</span></button>
+    </nav>
+    <div class="sidebar-foot">
+      <div class="machine-state"><span class="pulse-dot"></span><span>Serving from this Mac</span></div>
+      <button id="hideToTrayBtn" class="text-button" title="Hide this window; the media server will keep running"><i class="bi bi-dash-square"></i>Hide to menu bar</button>
+    </div>
+  </aside>
+
+  <main class="workspace">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow" id="pageKicker">MEDIA SERVER</p>
+        <h1 id="pageTitle">Media library</h1>
+      </div>
+      <div class="topbar-actions">
+        <span class="status-pill running"><span class="pulse-dot"></span>Server online</span>
+      </div>
+    </header>
+    <div class="view-stack">
 
   <div id="mediaRootWarning" class="media-root-warning d-none" role="alert" aria-live="assertive">
     <i class="bi bi-hdd-network-fill media-root-warning-icon"></i>
@@ -81,15 +75,15 @@
       <strong>Media storage is unavailable</strong>
       <div id="mediaRootWarningText"></div>
     </div>
-    <button id="mediaRootWarningGrantBtn" class="secondary d-none"><i class="bi bi-shield-lock"></i>Open macOS Settings</button>
-    <button id="mediaRootWarningDetailsBtn" class="secondary"><i class="bi bi-folder2-open"></i>View media roots</button>
+    <button id="mediaRootWarningGrantBtn" class="secondary-button compact d-none"><i class="bi bi-shield-lock"></i>Open macOS Settings</button>
+    <button id="mediaRootWarningDetailsBtn" class="secondary-button compact"><i class="bi bi-folder2-open"></i>View media roots</button>
   </div>
 
-  <div id="tabPanel-metrics" class="d-none">
-    <div class="card">
+  <section id="tabPanel-metrics" class="view d-none">
+    <div class="panel">
       <div class="card-head">
         <h2 class="info-trigger" data-info="artwork-cache" tabindex="0" role="button"><i class="bi bi-images heading-icon"></i>Artwork cache <i class="bi bi-info-circle info-affordance"></i></h2>
-        <label class="checkbox-label transcription-toggle"><input type="checkbox" id="artworkDiskCacheEnabledCheck"> Cache requested artwork</label>
+        <label class="toggle checkbox-label transcription-toggle"><input type="checkbox" id="artworkDiskCacheEnabledCheck"> Cache requested artwork</label>
       </div>
       <div class="grid" id="artworkCacheStatusGrid"><div class="stat"><div class="label">Loading…</div></div></div>
       <div class="cache-chart-controls">
@@ -116,7 +110,7 @@
       </details>
     </div>
 
-    <div class="card">
+    <div class="panel">
       <div class="card-head">
         <h2 class="info-trigger" data-info="streaming-bandwidth" tabindex="0" role="button"><i class="bi bi-graph-up heading-icon"></i>Streaming bandwidth <i class="bi bi-info-circle info-affordance"></i></h2>
       </div>
@@ -127,11 +121,11 @@
         <div id="bandwidthTooltip" class="bandwidth-tooltip d-none"></div>
       </div>
       <p class="muted compact-help">Bytes actually being sent to every connected client combined, sampled every 5 seconds.</p>
-      <label class="checkbox-label upload-budget-toggle"><input type="checkbox" id="uploadBudgetEnabledCheck"> Limit internet streaming to the measured upload budget</label>
+      <label class="toggle checkbox-label upload-budget-toggle"><input type="checkbox" id="uploadBudgetEnabledCheck"> Limit internet streaming to the measured upload budget</label>
       <p class="muted compact-help">LAN streaming is never throttled. Turn this off to let internet streams use all available upload bandwidth.</p>
     </div>
 
-    <div class="card">
+    <div class="panel">
       <div class="card-head">
         <h2 class="info-trigger" data-info="transcoding" tabindex="0" role="button"><i class="bi bi-cpu heading-icon"></i>Transcoding <i class="bi bi-info-circle info-affordance"></i></h2>
       </div>
@@ -173,57 +167,57 @@
       </div>
       <p class="muted compact-help">Files the client can already play are copied without re-encoding; these settings apply only when a transcode is unavoidable.</p>
     </div>
-  </div>
+  </section>
 
-  <div id="tabPanel-settings" class="d-none">
-    <div class="card">
+  <section id="tabPanel-settings" class="view d-none">
+    <div class="panel">
       <div class="card-head">
         <h2 class="info-trigger" data-info="local-subtitles" tabindex="0" role="button"><i class="bi bi-badge-cc-fill heading-icon"></i>Local subtitles <i class="bi bi-info-circle info-affordance"></i></h2>
-        <label class="checkbox-label transcription-toggle"><input type="checkbox" id="localTranscriptionEnabledCheck"> <i class="bi bi-cpu"></i>Generate with Whisper</label>
+        <label class="toggle checkbox-label transcription-toggle"><input type="checkbox" id="localTranscriptionEnabledCheck"> <i class="bi bi-cpu"></i>Generate with Whisper</label>
       </div>
       <p id="localTranscriptionSettingStatus" class="muted compact-help">Loading subtitle settings…</p>
-      <label class="checkbox-label transcription-toggle"><input type="checkbox" id="transcriptionPauseWhileStreamingCheck"> <i class="bi bi-pause-circle"></i>Pause subtitle generation while clients are streaming</label>
+      <label class="toggle checkbox-label transcription-toggle"><input type="checkbox" id="transcriptionPauseWhileStreamingCheck"> <i class="bi bi-pause-circle"></i>Pause subtitle generation while clients are streaming</label>
       <p class="muted compact-help">Recommended for smooth playback. Turn this off only if the server has enough CPU for streaming and Whisper at the same time.</p>
-      <label class="checkbox-label transcription-toggle"><input type="checkbox" id="transcriptionSkipIfSubtitlesExistCheck"> <i class="bi bi-skip-forward"></i>Skip movies/episodes that already have subtitles</label>
+      <label class="toggle checkbox-label transcription-toggle"><input type="checkbox" id="transcriptionSkipIfSubtitlesExistCheck"> <i class="bi bi-skip-forward"></i>Skip movies/episodes that already have subtitles</label>
       <p class="muted compact-help">When bulk-generating, leave anything with an existing subtitle track (Whisper or downloaded) alone instead of regenerating it. Generating subtitles for one specific movie or episode from its Manage panel always runs regardless of this.</p>
     </div>
 
-    <div class="card">
+    <div class="panel">
       <div class="card-head">
         <h2 class="info-trigger" data-info="media-roots" tabindex="0" role="button">Media roots <i class="bi bi-info-circle info-affordance"></i></h2>
-        <button id="connectNetworkRootBtn" class="secondary"><i class="bi bi-hdd-network"></i>Connect SMB share…</button>
+        <button id="connectNetworkRootBtn" class="secondary-button"><i class="bi bi-hdd-network"></i>Connect SMB share…</button>
       </div>
-      <label class="checkbox-label"><input type="checkbox" id="autoLibraryWatchEnabledCheck"> Automatically detect new/changed/removed files and scrape their metadata</label>
+      <label class="toggle checkbox-label"><input type="checkbox" id="autoLibraryWatchEnabledCheck"> Automatically detect new/changed/removed files and scrape their metadata</label>
       <p class="muted compact-help">Checks every 15 minutes. Movies/shows scrape from TMDb only if a key is saved below; music always scrapes from MusicBrainz.</p>
-      <label class="checkbox-label"><input type="checkbox" id="comprehensiveCheck"> Comprehensive Check</label>
+      <label class="toggle checkbox-label"><input type="checkbox" id="comprehensiveCheck"> Comprehensive Check</label>
       <p class="muted compact-help">After the fast path/size/date comparison, verify existing files by fingerprint one at a time. Disabled by default to minimize disk I/O.</p>
-      <label class="checkbox-label"><input type="checkbox" id="scanMusicTracksCheck"> Scan individual music tracks</label>
+      <label class="toggle checkbox-label"><input type="checkbox" id="scanMusicTracksCheck"> Scan individual music tracks</label>
       <p class="muted compact-help">Disabled by default. Artist and album metadata/artwork are still grouped and scraped once per album when tracks are indexed.</p>
       <div id="mediaRootsList">Loading…</div>
       <div class="media-roots-add">
-        <button id="openAddRootBtn"><i class="bi bi-folder-plus"></i>Add media root…</button>
+        <button id="openAddRootBtn" class="primary-button"><i class="bi bi-folder-plus"></i>Add media root…</button>
       </div>
     </div>
 
-    <div class="card">
+    <div class="panel">
       <h2 class="info-trigger" data-info="tmdb-scraping" tabindex="0" role="button">TMDb scraping <i class="bi bi-info-circle info-affordance"></i></h2>
       <div class="row">
         <input id="tmdbKeyInput" placeholder="TMDb API key">
-        <button id="saveTmdbKeyBtn" class="secondary"><i class="bi bi-key"></i>Save key</button>
+        <button id="saveTmdbKeyBtn" class="secondary-button"><i class="bi bi-key"></i>Save key</button>
       </div>
       <p id="tmdbKeyStatus" class="note"></p>
     </div>
 
-    <div class="card">
+    <div class="panel">
       <h2 class="info-trigger" data-info="opensubtitles-downloads" tabindex="0" role="button"><i class="bi bi-cloud-arrow-down heading-icon"></i>Subtitle downloads <i class="bi bi-info-circle info-affordance"></i></h2>
       <div class="row">
         <input id="openSubtitlesKeyInput" type="password" placeholder="OpenSubtitles.com API key">
-        <button id="saveOpenSubtitlesKeyBtn" class="secondary"><i class="bi bi-key"></i>Save key</button>
+        <button id="saveOpenSubtitlesKeyBtn" class="secondary-button"><i class="bi bi-key"></i>Save key</button>
       </div>
       <p id="openSubtitlesKeyStatus" class="note"></p>
     </div>
 
-    <div class="card">
+    <div class="panel">
       <h2 class="info-trigger" data-info="software-update" tabindex="0" role="button"><i class="bi bi-arrow-repeat heading-icon"></i>Software update <i class="bi bi-info-circle info-affordance"></i></h2>
       <p class="muted compact-help">New versions publish automatically after each change passes tests. Updates swap in place; playback keeps running and the new version takes effect the next time the server restarts.</p>
       <div class="row">
@@ -232,74 +226,74 @@
           <option value="notify">Notify me when one is available</option>
           <option value="auto">Download automatically, apply on restart</option>
         </select>
-        <button id="checkUpdateBtn" class="secondary"><i class="bi bi-search"></i>Check now</button>
+        <button id="checkUpdateBtn" class="secondary-button"><i class="bi bi-search"></i>Check now</button>
       </div>
       <p id="softwareUpdateStatus" class="note"></p>
-      <button id="installUpdateBtn" class="d-none"><i class="bi bi-download"></i>Install &amp; restart</button>
+      <button id="installUpdateBtn" class="primary-button d-none"><i class="bi bi-download"></i>Install &amp; restart</button>
     </div>
-  </div>
+  </section>
 
-  <div id="tabPanel-swarm" class="d-none">
-    <div class="card">
+  <section id="tabPanel-swarm" class="view d-none">
+    <div class="panel">
       <div class="card-head">
         <h2 class="info-trigger" data-info="approve-tv" tabindex="0" role="button">Approve a TV <i class="bi bi-info-circle info-affordance"></i></h2>
       </div>
       <p class="muted">On the TV, choose <strong>Connect through SWARM</strong> or select this server under <strong>Servers on LAN</strong>. Enter the code shown there — the same box works either way.</p>
       <div class="row">
         <input id="approveTvCode" inputmode="numeric" placeholder="8-digit TV code" maxlength="8">
-        <button id="approveTvBtn"><i class="bi bi-shield-check"></i>Approve TV</button>
+        <button id="approveTvBtn" class="primary-button"><i class="bi bi-shield-check"></i>Approve TV</button>
       </div>
-      <div id="approveTvStatus" class="d-none" style="margin-top:10px"></div>
+      <div id="approveTvStatus" class="status-message d-none"></div>
     </div>
-    <div class="card">
+    <div class="panel">
       <div class="card-head">
         <h2 class="info-trigger" data-info="lan-network" tabindex="0" role="button">Local network <i class="bi bi-info-circle info-affordance"></i></h2>
       </div>
-      <div id="localPeersList" style="margin-top:4px">Loading…</div>
+      <div id="localPeersList" class="panel-list">Loading…</div>
     </div>
-    <div class="card">
+    <div class="panel">
       <div class="card-head">
         <h2 class="info-trigger" data-info="http-media-device" tabindex="0" role="button">Plain-HTTP devices <i class="bi bi-info-circle info-affordance"></i></h2>
       </div>
-      <div id="httpMediaDevicesList" style="margin-top:4px">Loading…</div>
+      <div id="httpMediaDevicesList" class="panel-list">Loading…</div>
     </div>
-    <div class="card swarm-remote-card">
+    <div class="panel swarm-remote-card">
       <h2 class="info-trigger" data-info="swarm-concept" tabindex="0" role="button">Swarm <i class="bi bi-info-circle info-affordance"></i></h2>
       <div id="swarmContent">Loading…</div>
     </div>
-  </div>
+  </section>
 
-  <div id="tabPanel-notifications" class="d-none">
-    <div class="card">
+  <section id="tabPanel-notifications" class="view d-none">
+    <div class="panel">
       <div class="card-head">
         <h2>Server notifications</h2>
         <div class="card-head-actions">
-          <span id="serverNotificationsCount" class="muted" style="font-size:.8rem"></span>
-          <button id="clearServerNotificationsBtn" class="secondary d-none"><i class="bi bi-check2-all"></i>Clear all</button>
+          <span id="serverNotificationsCount" class="muted count-label"></span>
+          <button id="clearServerNotificationsBtn" class="secondary-button compact d-none"><i class="bi bi-check2-all"></i>Clear all</button>
         </div>
       </div>
-      <p class="muted" style="margin-top:-6px">Important background-task results and errors from this media server. Select a notification to view its full details.</p>
-      <div id="serverNotificationsList" style="margin-top:10px">Loading…</div>
+      <p class="muted panel-description">Important background-task results and errors from this media server. Select a notification to view its full details.</p>
+      <div id="serverNotificationsList" class="notification-list">Loading…</div>
     </div>
-    <div class="card">
+    <div class="panel">
       <div class="card-head">
         <h2>Client errors</h2>
         <div class="card-head-actions">
-          <span id="clientErrorsCount" class="muted" style="font-size:.8rem"></span>
-          <button id="clearClientErrorsBtn" class="secondary d-none"><i class="bi bi-check2-all"></i>Clear all</button>
+          <span id="clientErrorsCount" class="muted count-label"></span>
+          <button id="clearClientErrorsBtn" class="secondary-button compact d-none"><i class="bi bi-check2-all"></i>Clear all</button>
         </div>
       </div>
-      <p class="muted" style="margin-top:-6px">Problems reported by client devices. Mark one resolved to notify that device the next time it connects.</p>
-      <div id="clientErrorsList" style="margin-top:10px">Loading…</div>
+      <p class="muted panel-description">Problems reported by client devices. Mark one resolved to notify that device the next time it connects.</p>
+      <div id="clientErrorsList" class="notification-list">Loading…</div>
     </div>
-  </div>
+  </section>
 
-  <div id="tabPanel-media">
-    <div class="card">
+  <section id="tabPanel-media" class="view active">
+    <div class="panel library-panel">
       <div class="card-head">
         <h2>Library</h2>
         <div class="card-head-actions">
-          <button id="maintainLibraryBtn"><i class="bi bi-arrow-repeat"></i>Scan and update library</button>
+          <button id="maintainLibraryBtn" class="primary-button"><i class="bi bi-arrow-repeat"></i>Scan and update library</button>
         </div>
       </div>
       <div id="transcriptionProgress" class="transcription-progress" aria-live="polite">
@@ -307,7 +301,7 @@
           <span><i class="bi bi-badge-cc-fill"></i> Local subtitle generation</span>
           <span id="transcriptionProgressPercent" class="muted">0%</span>
         </div>
-        <div class="progress-bar"><div id="transcriptionProgressFill" class="progress-bar-fill" style="width:0%"></div></div>
+        <div class="progress-bar"><div id="transcriptionProgressFill" class="progress-bar-fill"></div></div>
         <div class="transcription-progress-copy">
           <span id="transcriptionProgressText" class="muted">Loading status…</span>
           <span id="transcriptionProgressCounts" class="muted"></span>
@@ -316,88 +310,88 @@
       <div id="libraryMaintenanceProgress" class="library-maintenance-progress d-none" aria-live="polite">
         <div class="library-maintenance-progress-head">
           <span id="libraryMaintenanceProgressStage">Preparing library update…</span>
-          <button id="cancelLibraryMaintenanceBtn" class="secondary"><i class="bi bi-x-circle"></i>Cancel</button>
+          <button id="cancelLibraryMaintenanceBtn" class="secondary-button compact"><i class="bi bi-x-circle"></i>Cancel</button>
         </div>
-        <div class="progress-bar"><div id="libraryMaintenanceProgressFill" class="progress-bar-fill" style="width:0%"></div></div>
+        <div class="progress-bar"><div id="libraryMaintenanceProgressFill" class="progress-bar-fill"></div></div>
         <span id="libraryMaintenanceProgressText" class="muted"></span>
       </div>
       <div id="scrapeIssuesWrap" class="d-none">
-        <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:6px">
-          <span id="scrapeIssuesCount" class="muted" style="font-size:.8rem"></span>
-          <button id="dismissScrapeIssuesBtn" class="secondary" style="padding:3px 10px; font-size:.75rem"><i class="bi bi-x-lg"></i>Dismiss</button>
+        <div class="row issue-list-head">
+          <span id="scrapeIssuesCount" class="muted count-label"></span>
+          <button id="dismissScrapeIssuesBtn" class="secondary-button compact"><i class="bi bi-x-lg"></i>Dismiss</button>
         </div>
         <ul id="scrapeIssues" class="issue-list"></ul>
       </div>
       <div id="library">Loading…</div>
     </div>
-  </div>
+  </section>
 
-  <div id="tabPanel-ai" class="d-none">
-    <div class="card">
+  <section id="tabPanel-ai" class="view d-none">
+    <div class="panel">
       <p class="eyebrow">PROVIDERS</p>
       <h2><i class="bi bi-stars heading-icon"></i>Enabled AI tools</h2>
       <p class="muted">Turn on the AI tools SWARM may call for the advanced features below. SWARM uses each tool's own command-line app and the sign-in already on this machine — there is no API key to enter and nothing to save. Metered tools are used only when at least 10% of their available usage remains. Nothing here is required for MCP (further down this tab), which works the other way around: an AI tool connecting <em>to</em> SWARM.</p>
       <div id="aiProvidersList"></div>
     </div>
-    <div class="card">
+    <div class="panel">
       <p class="eyebrow">AUTOMATION</p>
       <h2><i class="bi bi-magic heading-icon"></i>AI automation</h2>
-      <div class="row" style="align-items:center">
-        <label class="checkbox-label"><input type="checkbox" id="aiScanAssistCheck"> Scan &amp; scrape assist</label>
+      <div class="row align-center">
+        <label class="toggle checkbox-label"><input type="checkbox" id="aiScanAssistCheck"> Scan &amp; scrape assist</label>
         <span id="aiScanAssistStatus" class="note"></span>
       </div>
-      <div class="row" style="align-items:center">
-        <label class="checkbox-label"><input type="checkbox" id="aiReorganizeCheck"> Reorganize media</label>
+      <div class="row align-center">
+        <label class="toggle checkbox-label"><input type="checkbox" id="aiReorganizeCheck"> Reorganize media</label>
         <span id="aiReorganizeStatus" class="note"></span>
       </div>
     </div>
-    <div class="card">
+    <div class="panel">
       <div class="card-head"><h2 class="info-trigger" data-info="scan-scrape-assist" tabindex="0" role="button"><i class="bi bi-search-heart-fill heading-icon"></i>Scan &amp; scrape assist <i class="bi bi-info-circle info-affordance"></i></h2>
-        <button id="runScrapeAssistNowBtn" class="secondary"><i class="bi bi-stars"></i>Check now</button>
+        <button id="runScrapeAssistNowBtn" class="secondary-button"><i class="bi bi-stars"></i>Check now</button>
       </div>
       <div id="scrapeAssistWrap" class="d-none">
-        <h3 style="margin:14px 0 8px; font-size:.95rem">Needs review</h3>
+        <h3 class="review-heading">Needs review</h3>
         <ul id="scrapeAssistList" class="issue-list"></ul>
       </div>
     </div>
-    <div class="card">
+    <div class="panel">
       <div class="card-head"><h2 class="info-trigger" data-info="reorganize-media" tabindex="0" role="button"><i class="bi bi-folder-symlink-fill heading-icon"></i>Reorganize media <i class="bi bi-info-circle info-affordance"></i></h2></div>
-      <div id="aiReorganizeScanWrap" class="row d-none" style="margin-top:10px">
-        <select id="aiReorganizeRootSelect" style="flex:1"></select>
-        <button id="aiReorganizeScanBtn" class="secondary"><i class="bi bi-search"></i>Scan for cleanup</button>
+      <div id="aiReorganizeScanWrap" class="row action-row d-none">
+        <select id="aiReorganizeRootSelect" class="grow"></select>
+        <button id="aiReorganizeScanBtn" class="secondary-button"><i class="bi bi-search"></i>Scan for cleanup</button>
       </div>
       <div id="aiReorgPlansList"></div>
     </div>
-    <div class="card">
+    <div class="panel compact-panel">
       <h2 class="info-trigger" data-info="mcp-help" tabindex="0" role="button"><i class="bi bi-question-circle-fill heading-icon"></i>About MCP &amp; the AI tools API <i class="bi bi-info-circle info-affordance"></i></h2>
     </div>
-    <div class="card">
+    <div class="panel">
       <div class="card-head"><h2 class="info-trigger" data-info="mcp-server" tabindex="0" role="button"><i class="bi bi-hdd-network-fill heading-icon"></i>MCP Server <i class="bi bi-info-circle info-affordance"></i></h2></div>
       <div class="row">
-        <label class="checkbox-label"><input type="checkbox" id="mcpEnabledCheck"> Enable MCP server</label>
-        <button id="saveMcpSettingsBtn" class="secondary"><i class="bi bi-check-lg"></i>Save</button>
+        <label class="toggle checkbox-label"><input type="checkbox" id="mcpEnabledCheck"> Enable MCP server</label>
+        <button id="saveMcpSettingsBtn" class="secondary-button"><i class="bi bi-check-lg"></i>Save</button>
       </div>
       <div class="row token-row">
         <input id="mcpAccessTokenInput" class="mono" readonly placeholder="Create an access token first">
-        <button id="generateMcpTokenBtn" class="secondary"><i class="bi bi-key-fill"></i>Create access token</button>
-        <button id="copyMcpTokenBtn" class="secondary"><i class="bi bi-copy"></i>Copy</button>
+        <button id="generateMcpTokenBtn" class="secondary-button"><i class="bi bi-key-fill"></i>Create access token</button>
+        <button id="copyMcpTokenBtn" class="secondary-button"><i class="bi bi-copy"></i>Copy</button>
       </div>
       <p id="mcpStatus" class="note"></p>
     </div>
-    <div class="card" id="mcpConfigCard">
+    <div class="panel" id="mcpConfigCard">
       <h2><i class="bi bi-plug-fill heading-icon"></i>Connect an AI tool</h2>
       <p class="muted">Add this Streamable HTTP server to your AI tool's MCP configuration. Replace the LAN IP, keep the bearer token private, then restart the AI tool.</p>
-      <pre id="mcpConfigSnippet" class="mono" style="background:var(--surface-muted); border:1px solid var(--border); border-radius:8px; padding:12px; overflow-x:auto; font-size:.78rem"></pre>
+      <pre id="mcpConfigSnippet" class="mono code-block"></pre>
     </div>
-  </div>
+  </section>
 
-  <div id="tabPanel-about" class="d-none">
-    <div class="card about-hero">
+  <section id="tabPanel-about" class="view d-none">
+    <div class="panel about-hero">
       <div class="about-hero-head">
         <img src="badge.png" alt="" class="about-hero-badge">
         <div>
-          <h2 style="margin-bottom:2px">What is SWARM?</h2>
-          <p class="muted" style="margin:0">A private media server and a family of clients that stream your own library straight to your own devices — no cloud, no subscription, no middleman.</p>
+          <h2 class="about-title">What is SWARM?</h2>
+          <p class="muted about-summary">A private media server and a family of clients that stream your own library straight to your own devices — no cloud, no subscription, no middleman.</p>
         </div>
       </div>
       <div class="about-flow">
@@ -483,10 +477,10 @@
         <p>Signing in to generate codes needs a basic account (just an email and password) that's kept completely separate from your media — it stores nothing about your library, your files, or what you watch. Login credentials on your devices are kept in hardware-backed secure storage, not as plain files anything could read.</p>
       </div>
     </details>
-  </div>
+  </section>
+    </div>
+  </main>
 </div>
-
-</main>
 
 <div id="toastStack" aria-live="polite"></div>
 
@@ -498,7 +492,7 @@
 -->
 <div id="infoModalBackdrop" class="modal-backdrop d-none">
   <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="infoModalTitle">
-    <button id="infoModalClose" class="modal-close" aria-label="Close"><i class="bi bi-x-lg"></i></button>
+    <button id="infoModalClose" class="icon-button modal-close" aria-label="Close"><i class="bi bi-x-lg"></i></button>
     <div class="modal-icon"><i id="infoModalIcon" class="bi"></i></div>
     <h2 id="infoModalTitle"></h2>
     <p id="infoModalBody" class="muted"></p>
@@ -508,14 +502,14 @@
 
 <div id="addRootModalBackdrop" class="modal-backdrop d-none">
   <div class="modal-box add-root-modal-box" role="dialog" aria-modal="true" aria-labelledby="addRootModalTitle">
-    <button id="addRootModalClose" class="modal-close" aria-label="Close"><i class="bi bi-x-lg"></i></button>
+    <button id="addRootModalClose" class="icon-button modal-close" aria-label="Close"><i class="bi bi-x-lg"></i></button>
     <div class="modal-icon"><i class="bi bi-folder-plus"></i></div>
     <h2 id="addRootModalTitle">Add a media root</h2>
     <p class="muted">Pick a folder SWARM should scan, and tell it what kind of media lives there. See <span class="modal-inline-link" data-info="media-roots">how to organise a media root</span> for the folder layout SWARM expects.</p>
     <div class="add-root-fields">
       <label>Folder</label>
       <div class="add-root-folder-row">
-        <button id="addRootChooseBtn" class="secondary"><i class="bi bi-folder2-open"></i>Choose folder…</button>
+        <button id="addRootChooseBtn" class="secondary-button"><i class="bi bi-folder2-open"></i>Choose folder…</button>
         <span id="addRootChosenPath" class="mono muted">No folder chosen yet</span>
       </div>
       <label for="addRootAssetType">Asset type <span class="req">required</span></label>
@@ -528,15 +522,15 @@
       </select>
     </div>
     <div class="add-root-modal-actions">
-      <button id="addRootCancelBtn" class="secondary">Cancel</button>
-      <button id="addRootConfirmBtn" disabled><i class="bi bi-plus-lg"></i>Add root</button>
+      <button id="addRootCancelBtn" class="secondary-button">Cancel</button>
+      <button id="addRootConfirmBtn" class="primary-button" disabled><i class="bi bi-plus-lg"></i>Add root</button>
     </div>
   </div>
 </div>
 
 <div id="networkRootModalBackdrop" class="modal-backdrop d-none">
   <div class="modal-box network-root-modal-box" role="dialog" aria-modal="true" aria-labelledby="networkRootModalTitle">
-    <button id="networkRootModalClose" class="modal-close" aria-label="Close"><i class="bi bi-x-lg"></i></button>
+    <button id="networkRootModalClose" class="icon-button modal-close" aria-label="Close"><i class="bi bi-x-lg"></i></button>
     <div class="modal-icon"><i class="bi bi-hdd-network"></i></div>
     <h2 id="networkRootModalTitle">Connect an SMB share</h2>
     <p class="muted network-root-help">Connect a NAS share through macOS. The password stays in the macOS credential prompt and Keychain.</p>
@@ -562,15 +556,15 @@
     </div>
     <p id="networkRootProtocolNote" class="muted compact-help">macOS will ask for the SMB password and can save it in Keychain. SWARM never sees or stores it.</p>
     <div class="network-root-modal-actions">
-      <button id="networkRootCancelBtn" class="secondary">Cancel</button>
-      <button id="networkRootConnectBtn"><i class="bi bi-link-45deg"></i>Connect and scan</button>
+      <button id="networkRootCancelBtn" class="secondary-button">Cancel</button>
+      <button id="networkRootConnectBtn" class="primary-button"><i class="bi bi-link-45deg"></i>Connect and scan</button>
     </div>
   </div>
 </div>
 
 <div id="notificationModalBackdrop" class="modal-backdrop d-none">
   <div class="modal-box notification-modal-box" role="dialog" aria-modal="true" aria-labelledby="notificationModalTitle">
-    <button id="notificationModalClose" class="modal-close" aria-label="Close"><i class="bi bi-x-lg"></i></button>
+    <button id="notificationModalClose" class="icon-button modal-close" aria-label="Close"><i class="bi bi-x-lg"></i></button>
     <div class="modal-icon"><i id="notificationModalIcon" class="bi bi-bell-fill"></i></div>
     <h2 id="notificationModalTitle"></h2>
     <div id="notificationModalMeta" class="client-error-meta"></div>
@@ -580,15 +574,15 @@
       <textarea id="notificationResolutionComments" rows="4" placeholder="Tell the client what was fixed or what they should try next."></textarea>
     </div>
     <div class="notification-modal-actions">
-      <button id="notificationModalCopy" class="secondary"><i class="bi bi-copy"></i>Copy notification</button>
-      <button id="notificationModalResolve" class="d-none"><i class="bi bi-check-circle-fill"></i>Mark resolved</button>
+      <button id="notificationModalCopy" class="secondary-button"><i class="bi bi-copy"></i>Copy notification</button>
+      <button id="notificationModalResolve" class="primary-button d-none"><i class="bi bi-check-circle-fill"></i>Mark resolved</button>
     </div>
   </div>
 </div>
 
 <div id="deleteAssetModalBackdrop" class="modal-backdrop d-none">
   <div class="modal-box delete-asset-modal-box" role="alertdialog" aria-modal="true" aria-labelledby="deleteAssetModalTitle" aria-describedby="deleteAssetModalBody">
-    <button id="deleteAssetModalClose" class="modal-close" aria-label="Close"><i class="bi bi-x-lg"></i></button>
+    <button id="deleteAssetModalClose" class="icon-button modal-close" aria-label="Close"><i class="bi bi-x-lg"></i></button>
     <div class="modal-icon modal-icon-danger"><i class="bi bi-trash3-fill"></i></div>
     <h2 id="deleteAssetModalTitle">Delete asset?</h2>
     <p id="deleteAssetModalBody" class="muted"></p>
@@ -596,21 +590,21 @@
     <ul id="deleteAssetModalItems" class="delete-asset-modal-items"></ul>
     <p class="delete-asset-warning"><i class="bi bi-exclamation-triangle-fill"></i>This cannot be undone.</p>
     <div class="delete-asset-modal-actions">
-      <button id="deleteAssetModalCancel" class="secondary">Cancel</button>
-      <button id="deleteAssetModalConfirm" class="danger"><i class="bi bi-trash3"></i>Delete permanently</button>
+      <button id="deleteAssetModalCancel" class="secondary-button">Cancel</button>
+      <button id="deleteAssetModalConfirm" class="danger-button"><i class="bi bi-trash3"></i>Delete permanently</button>
     </div>
   </div>
 </div>
 
 <div id="libraryMaintenanceModalBackdrop" class="modal-backdrop d-none">
   <div class="modal-box library-maintenance-modal-box" role="dialog" aria-modal="true" aria-labelledby="libraryMaintenanceModalTitle" aria-describedby="libraryMaintenanceModalBody">
-    <button id="libraryMaintenanceModalClose" class="modal-close" aria-label="Close"><i class="bi bi-x-lg"></i></button>
+    <button id="libraryMaintenanceModalClose" class="icon-button modal-close" aria-label="Close"><i class="bi bi-x-lg"></i></button>
     <div class="modal-icon"><i class="bi bi-arrow-repeat"></i></div>
     <h2 id="libraryMaintenanceModalTitle">Update library metadata</h2>
     <p id="libraryMaintenanceModalBody">Choose how metadata should be handled. Replacing existing data redownloads titles, artwork, and details; missing-only keeps what you have and fills gaps. Both options scan files, scrape metadata, then repair classifications.</p>
     <div class="library-maintenance-modal-actions">
-      <button id="libraryMaintenanceMissingBtn" class="secondary"><i class="bi bi-plus-circle"></i>Only scrape missing data</button>
-      <button id="libraryMaintenanceOverrideBtn"><i class="bi bi-arrow-repeat"></i>Replace existing metadata</button>
+      <button id="libraryMaintenanceMissingBtn" class="secondary-button"><i class="bi bi-plus-circle"></i>Only scrape missing data</button>
+      <button id="libraryMaintenanceOverrideBtn" class="primary-button"><i class="bi bi-arrow-repeat"></i>Replace existing metadata</button>
     </div>
   </div>
 </div>

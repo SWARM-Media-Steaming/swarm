@@ -509,6 +509,19 @@ impl ServerCore {
         };
         match result {
             Ok(report) => {
+                // A scan's unchanged-file fast path deliberately avoids
+                // rebuilding full records. Follow every successful scan
+                // with the cheap, path-only repair so classifier changes
+                // (especially typed-root show extras) take effect for an
+                // existing catalog without requiring files to be touched or
+                // a separate maintenance action.
+                let classifications = self.library.reclassify_all(&self.media_roots).await?;
+                if classifications.changed > 0 {
+                    tracing::info!(
+                        changed = classifications.changed,
+                        "repaired path-derived library classifications"
+                    );
+                }
                 self.scan_status
                     .send_modify(|s| *s = ScanState::Done(report.clone()));
                 Ok(report)

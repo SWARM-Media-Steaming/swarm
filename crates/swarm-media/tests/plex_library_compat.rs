@@ -13,7 +13,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use swarm_core::entry_key::entry_key;
 use swarm_core::peer::MediaKind;
-use swarm_media::roots::MediaRoot;
+use swarm_media::roots::{MediaRoot, MediaRootAssetType, RootResolver, SharedRootResolver};
 use swarm_media::scan::{scan_root, scan_roots, scan_roots_with_options, ScanOptions};
 use swarm_media::store::{EntryRecord, Library};
 
@@ -167,6 +167,45 @@ async fn nested_movie_extras_attach_to_the_feature_and_nearest_category_wins() {
         find(&entries, moved_path).extra_type.as_deref(),
         Some("featurette")
     );
+}
+
+#[tokio::test]
+async fn typed_show_root_repairs_and_nests_show_and_season_extras() {
+    let fx = fixture("typed-show-extras").await;
+    let episode = "Aqua Teen Hunger Force/Season 1/Aqua Teen Hunger Force S01E01.mkv";
+    let show_extra =
+        "Aqua Teen Hunger Force/Featurettes/The Movie/Deleted Scenes/Dorm Room Extended.mkv";
+    let season_extra = "Aqua Teen Hunger Force/Season 1/Featurettes/Making Of.mkv";
+    for path in [episode, show_extra, season_extra] {
+        write(&fx.root, path, path.as_bytes());
+    }
+
+    // Start with the legacy/mixed-root interpretation, then exercise the
+    // same repair operation exposed by "Fix classifications" in the UI.
+    scan_root(&fx.library, &fx.root).await.unwrap();
+    assert_eq!(find(&fx.library.list().await.unwrap(), show_extra).kind, MediaKind::Movie);
+
+    let roots = SharedRootResolver::new(RootResolver::new(vec![MediaRoot {
+        label: "shows".into(),
+        path: fx.root.clone(),
+        asset_type: MediaRootAssetType::Shows,
+    }]));
+    let report = fx.library.reclassify_all(&roots).await.unwrap();
+    assert!(report.changed >= 2);
+
+    let entries = fx.library.list().await.unwrap();
+    let show_extra = find(&entries, show_extra);
+    assert_eq!(show_extra.kind, MediaKind::Episode);
+    assert_eq!(show_extra.show_title.as_deref(), Some("Aqua Teen Hunger Force"));
+    assert_eq!(show_extra.season, Some(0));
+    assert_eq!(show_extra.extra_type.as_deref(), Some("deletedScene"));
+    assert_eq!(show_extra.extra_title.as_deref(), Some("Dorm Room Extended"));
+
+    let season_extra = find(&entries, season_extra);
+    assert_eq!(season_extra.kind, MediaKind::Episode);
+    assert_eq!(season_extra.show_title.as_deref(), Some("Aqua Teen Hunger Force"));
+    assert_eq!(season_extra.season, Some(1));
+    assert_eq!(season_extra.extra_type.as_deref(), Some("featurette"));
 }
 
 #[tokio::test]

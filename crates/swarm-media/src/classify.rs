@@ -10,6 +10,8 @@
 
 use swarm_core::peer::MediaKind;
 
+use crate::roots::MediaRootAssetType;
+
 pub const AUDIO_EXTS: &[&str] = &[
     "mp3", "flac", "ogg", "opus", "m4a", "wav", "wma", "aac", "aiff", "ape",
 ];
@@ -226,15 +228,21 @@ struct EpisodeExtra {
     category_path: String,
 }
 
-/// Resolve a show's own season-0 bonus content to the nearest recognized
-/// extras directory, same "deepest match wins" rule as
-/// [movie_extra_from_dirs]'s `category_path`. Unlike a movie extra, there is
+/// Resolve a show's bonus content from the first recognized extras directory,
+/// while the deepest recognized directory determines its type (the same rule
+/// as [`movie_extra_from_dirs`]). A `Specials` season folder is not itself an
+/// extras-category anchor. Unlike a movie extra, there is
 /// no parent-folder title/year to resolve here — a show extra links to its
 /// show purely via the `show_title` already carried by its caller, not a
 /// synthetic parent entry_key, so this only reports the type/title/paths.
 fn episode_extra_from_dirs(dirs: &[&str], file_name: &str, clip_stem: &str) -> Option<EpisodeExtra> {
-    let extras_idx = dirs.iter().rposition(|dir| is_extras_folder(dir))?;
-    let kind = crate::plex::PlexExtraKind::from_dir_name(dirs[extras_idx])?;
+    let extras_idx = dirs
+        .iter()
+        .position(|dir| is_extras_folder(dir) && !is_season_folder(dir))?;
+    let kind = dirs[extras_idx..]
+        .iter()
+        .rev()
+        .find_map(|dir| crate::plex::PlexExtraKind::from_dir_name(dir))?;
     Some(EpisodeExtra {
         kind,
         title: clean_title(clip_stem),
@@ -830,6 +838,111 @@ pub fn classify(relative_path: &str) -> Option<Classified> {
         edition,
         ..blank_classified()
     })
+}
+
+/// Classify a path with the configured root type as additional structural
+/// context. A dedicated Shows root begins at `<Show Name>/...`, so it does
+/// not carry the `Shows/<Show Name>/...` wrapper that [`classify`] can use
+/// to distinguish deeply nested bonus clips from standalone movies.
+///
+/// Root typing is authoritative: every video in a Shows root belongs to the
+/// first show directory, explicitly numbered files remain normal episodes,
+/// and every unnumbered clip is an extra. Recognized Plex extra directories
+/// provide the category; otherwise it falls into Plex's `Other` category.
+/// Extras below a season folder retain that season, while show-level extras
+/// use season 0 (Specials).
+pub fn classify_for_asset_type(
+    relative_path: &str,
+    asset_type: MediaRootAssetType,
+) -> Option<Classified> {
+    let mut classified = classify(relative_path)?;
+    match asset_type {
+        MediaRootAssetType::Mixed => {}
+        MediaRootAssetType::Music if classified.kind != MediaKind::Track => return None,
+        MediaRootAssetType::Music => {}
+        MediaRootAssetType::Movies | MediaRootAssetType::PhotosVideos => {
+            if classified.kind == MediaKind::Track {
+                return None;
+            }
+            classified.kind = MediaKind::Movie;
+            classified.show_title = None;
+            classified.season = None;
+            classified.episode = None;
+            classified.episode_end = None;
+        }
+        MediaRootAssetType::Shows => {
+            if classified.kind == MediaKind::Track {
+                return None;
+            }
+            let segments: Vec<&str> = relative_path
+                .split('/')
+                .filter(|segment| !segment.is_empty())
+                .collect();
+            let file_name = *segments.last()?;
+            let dirs = &segments[..segments.len() - 1];
+            let show_idx = usize::from(dirs.first().is_some_and(|dir| is_video_type_wrapper(dir)));
+            let raw_show = crate::plex::strip_plex_tokens(dirs.get(show_idx)?);
+            let show_title = clean_title(strip_trailing_year_paren(&raw_show));
+            if show_title.is_empty() {
+                return None;
+            }
+
+            classified.kind = MediaKind::Episode;
+            classified.show_title = Some(show_title);
+
+            // An SxxEyy/NxNN/Ep marker is explicit episode identity even if
+            // the file happens to live beneath a Featurettes folder. This
+            // is common for genuine season-0 specials in existing libraries.
+            if classified.episode.is_none() {
+                let stem = file_name
+                    .rsplit_once('.')
+                    .map_or(file_name, |(stem, _)| stem);
+                let clip_stem = extract_bracket_tags(stem).0;
+                let recognized = episode_extra_from_dirs(dirs, file_name, &clip_stem);
+                let season = find_ancestor_season(dirs).map_or(0, |(_, season, _)| season);
+                let category_start = dirs
+                    .iter()
+                    .rposition(|dir| is_season_folder(dir))
+                    .map_or(show_idx + 1, |index| index + 1);
+                let fallback_category = dirs[category_start..].join("/");
+                let extra_relative_path = dirs[category_start..]
+                    .iter()
+                    .copied()
+                    .chain(std::iter::once(file_name))
+                    .collect::<Vec<_>>()
+                    .join("/");
+
+                classified.season = Some(season);
+                classified.episode_end = None;
+                classified.extra_kind = Some(
+                    recognized
+                        .as_ref()
+                        .map_or(crate::plex::PlexExtraKind::Other.slug(), |extra| {
+                            extra.kind.slug()
+                        }),
+                );
+                classified.extra_title = Some(
+                    recognized
+                        .as_ref()
+                        .map_or_else(|| clean_title(&clip_stem), |extra| extra.title.clone()),
+                );
+                classified.extra_relative_path = Some(
+                    recognized
+                        .as_ref()
+                        .map_or(extra_relative_path, |extra| extra.relative_path.clone()),
+                );
+                classified.extra_category_path = Some(
+                    recognized
+                        .as_ref()
+                        .map_or(fallback_category, |extra| extra.category_path.clone()),
+                )
+                .filter(|path| !path.is_empty());
+                classified.extra_parent_title = None;
+                classified.extra_parent_dir = None;
+            }
+        }
+    }
+    Some(classified)
 }
 
 /// The pre-existing show-name fallback (kept as its own function since it's
@@ -1972,6 +2085,53 @@ mod tests {
         assert_eq!(entry.show_title.as_deref(), Some("Aqua Teen Hunger Force"));
         assert_eq!(entry.season, Some(0));
         assert_eq!(entry.episode, None);
+    }
+
+    #[test]
+    fn typed_shows_root_attaches_deeply_nested_plex_extras_to_its_root_show() {
+        let entry = classify_for_asset_type(
+            "Aqua Teen Hunger Force/Featurettes/The Movie/Deleted Scenes/Dorm Room Extended.mkv",
+            MediaRootAssetType::Shows,
+        )
+        .unwrap();
+        assert_eq!(entry.kind, MediaKind::Episode);
+        assert_eq!(entry.show_title.as_deref(), Some("Aqua Teen Hunger Force"));
+        assert_eq!(entry.season, Some(0));
+        assert_eq!(entry.episode, None);
+        assert_eq!(entry.extra_kind, Some("deletedScene"));
+        assert_eq!(entry.extra_title.as_deref(), Some("Dorm Room Extended"));
+        assert_eq!(
+            entry.extra_category_path.as_deref(),
+            Some("Featurettes/The Movie/Deleted Scenes")
+        );
+    }
+
+    #[test]
+    fn typed_shows_root_keeps_season_extras_with_their_season() {
+        let entry = classify_for_asset_type(
+            "The X-Files/Season 7/Featurettes/Deleted Scenes.mkv",
+            MediaRootAssetType::Shows,
+        )
+        .unwrap();
+        assert_eq!(entry.kind, MediaKind::Episode);
+        assert_eq!(entry.show_title.as_deref(), Some("The X-Files"));
+        assert_eq!(entry.season, Some(7));
+        assert_eq!(entry.episode, None);
+        assert_eq!(entry.extra_kind, Some("featurette"));
+        assert_eq!(entry.extra_title.as_deref(), Some("Deleted Scenes"));
+    }
+
+    #[test]
+    fn typed_shows_root_does_not_turn_numbered_specials_into_extras() {
+        let entry = classify_for_asset_type(
+            "Aqua Teen Hunger Force/Featurettes/S00E02 Boston [youtube rip].mp4",
+            MediaRootAssetType::Shows,
+        )
+        .unwrap();
+        assert_eq!(entry.show_title.as_deref(), Some("Aqua Teen Hunger Force"));
+        assert_eq!(entry.season, Some(0));
+        assert_eq!(entry.episode, Some(2));
+        assert_eq!(entry.extra_kind, None);
     }
 
     #[test]

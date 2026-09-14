@@ -261,7 +261,8 @@ pub async fn run_bulk_scrape(
             &videos,
             cancel,
             &mut video_report,
-            progress.as_ref()
+            progress.as_ref(),
+            force,
         ),
         scrape_tracks(
             library,
@@ -274,6 +275,7 @@ pub async fn run_bulk_scrape(
             cancel,
             &mut track_report,
             progress.as_ref(),
+            force,
         ),
     );
     video_result?;
@@ -647,6 +649,7 @@ fn match_tmdb_episode<'a>(
     match_tmdb_episode_title(&entry.title, entry.season, entry.episode, season)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn scrape_videos(
     library: &Library,
     roots: &SharedRootResolver,
@@ -655,6 +658,7 @@ async fn scrape_videos(
     cancel: &AtomicBool,
     report: &mut BulkScrapeReport,
     progress: Option<&ScrapeProgress>,
+    force: bool,
 ) -> sqlx::Result<()> {
     let Some(api_key) = &config.tmdb_api_key else {
         report.skipped += entries.len() as u64;
@@ -766,8 +770,16 @@ async fn scrape_videos(
                     library.set_overview(&entry.entry_key, overview).await?;
                 }
                 if let Some(url) = &scraped.poster_url {
-                    save_video_artwork(library, roots, entry, ArtworkKind::Poster, "poster", url)
-                        .await;
+                    save_video_artwork(
+                        library,
+                        roots,
+                        entry,
+                        ArtworkKind::Poster,
+                        "poster",
+                        url,
+                        force,
+                    )
+                    .await;
                 }
                 if let Some(url) = &scraped.season_poster_url {
                     save_video_artwork(
@@ -777,6 +789,7 @@ async fn scrape_videos(
                         ArtworkKind::SeasonPoster,
                         "season-poster",
                         url,
+                        force,
                     )
                     .await;
                 }
@@ -788,6 +801,7 @@ async fn scrape_videos(
                         ArtworkKind::Backdrop,
                         "backdrop",
                         url,
+                        force,
                     )
                     .await;
                 }
@@ -845,6 +859,23 @@ async fn scrape_videos(
     Ok(())
 }
 
+/// True when `kind` already has a recorded path for this entry *and* that
+/// file is still on disk — the condition under which a non-force scrape
+/// should leave it alone rather than re-fetching from TMDb/MusicBrainz/Cover
+/// Art Archive. A recorded path whose file has gone missing is treated as
+/// absent so it still gets repaired.
+async fn artwork_already_present(
+    library: &Library,
+    roots: &SharedRootResolver,
+    entry_key: &str,
+    kind: ArtworkKind,
+) -> bool {
+    match library.artwork(entry_key, kind).await {
+        Ok(Some((path, _version))) => artwork::exists(roots, &path).await,
+        _ => false,
+    }
+}
+
 async fn save_video_artwork(
     library: &Library,
     roots: &SharedRootResolver,
@@ -852,7 +883,11 @@ async fn save_video_artwork(
     kind: ArtworkKind,
     label: &str,
     url: &str,
+    force: bool,
 ) {
+    if !force && artwork_already_present(library, roots, &entry.entry_key, kind).await {
+        return;
+    }
     let Ok(bytes) = download_bytes(url).await else {
         return;
     };
@@ -905,6 +940,7 @@ impl MusicScrapers {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn scrape_tracks(
     library: &Library,
     roots: &SharedRootResolver,
@@ -913,6 +949,7 @@ async fn scrape_tracks(
     cancel: &AtomicBool,
     report: &mut BulkScrapeReport,
     progress: Option<&ScrapeProgress>,
+    force: bool,
 ) -> sqlx::Result<()> {
     let scrapers = MusicScrapers::from_config(config);
 
@@ -944,7 +981,7 @@ async fn scrape_tracks(
             continue;
         }
         if let Some(reason) = scrape_one_album_group(
-            library, roots, &scrapers, &artist, &album, &group, report, progress,
+            library, roots, &scrapers, &artist, &album, &group, report, progress, force,
         )
         .await?
         {
@@ -1097,6 +1134,7 @@ async fn scrape_one_album_group(
     group: &[&EntryRecord],
     report: &mut BulkScrapeReport,
     progress: Option<&ScrapeProgress>,
+    force: bool,
 ) -> sqlx::Result<Option<String>> {
     let MusicScrapers {
         mb,
@@ -1168,40 +1206,55 @@ async fn scrape_one_album_group(
             report.matched += group.len() as u64;
 
             if let Some(first) = group.first() {
-                if let Ok(cover) = coverart.front_cover(&release_mbid).await {
-                    if let Ok(relative) = artwork::save_artwork(
-                        roots,
-                        &first.relative_path,
-                        "album-cover.jpg",
-                        &cover,
-                    )
-                    .await
-                    {
-                        for track in group {
-                            let _ = library
-                                .set_artwork(&track.entry_key, ArtworkKind::Cover, &relative)
-                                .await;
-                        }
-                    }
-                }
-                if let Some(artist_mbid) = details.as_ref().and_then(|d| d.artist_mbid.as_deref()) {
-                    if let Some(bytes) = fetch_artist_photo(mb, wikimedia, artist_mbid).await {
+                let need_cover = force
+                    || !artwork_already_present(library, roots, &first.entry_key, ArtworkKind::Cover)
+                        .await;
+                if need_cover {
+                    if let Ok(cover) = coverart.front_cover(&release_mbid).await {
                         if let Ok(relative) = artwork::save_artwork(
                             roots,
                             &first.relative_path,
-                            "artist-photo.jpg",
-                            &bytes,
+                            "album-cover.jpg",
+                            &cover,
                         )
                         .await
                         {
                             for track in group {
                                 let _ = library
-                                    .set_artwork(
-                                        &track.entry_key,
-                                        ArtworkKind::ArtistPhoto,
-                                        &relative,
-                                    )
+                                    .set_artwork(&track.entry_key, ArtworkKind::Cover, &relative)
                                     .await;
+                            }
+                        }
+                    }
+                }
+                let need_artist_photo = force
+                    || !artwork_already_present(
+                        library,
+                        roots,
+                        &first.entry_key,
+                        ArtworkKind::ArtistPhoto,
+                    )
+                    .await;
+                if need_artist_photo {
+                    if let Some(artist_mbid) = details.as_ref().and_then(|d| d.artist_mbid.as_deref()) {
+                        if let Some(bytes) = fetch_artist_photo(mb, wikimedia, artist_mbid).await {
+                            if let Ok(relative) = artwork::save_artwork(
+                                roots,
+                                &first.relative_path,
+                                "artist-photo.jpg",
+                                &bytes,
+                            )
+                            .await
+                            {
+                                for track in group {
+                                    let _ = library
+                                        .set_artwork(
+                                            &track.entry_key,
+                                            ArtworkKind::ArtistPhoto,
+                                            &relative,
+                                        )
+                                        .await;
+                                }
                             }
                         }
                     }
@@ -1338,7 +1391,16 @@ pub async fn scrape_one_video(
         library.set_overview(&entry.entry_key, overview).await?;
     }
     if let Some(url) = &scraped.poster_url {
-        save_video_artwork(library, roots, entry, ArtworkKind::Poster, "poster", url).await;
+        save_video_artwork(
+            library,
+            roots,
+            entry,
+            ArtworkKind::Poster,
+            "poster",
+            url,
+            true,
+        )
+        .await;
     }
     if let Some(url) = &scraped.season_poster_url {
         save_video_artwork(
@@ -1348,6 +1410,7 @@ pub async fn scrape_one_video(
             ArtworkKind::SeasonPoster,
             "season-poster",
             url,
+            true,
         )
         .await;
     }
@@ -1359,6 +1422,7 @@ pub async fn scrape_one_video(
             ArtworkKind::Backdrop,
             "backdrop",
             url,
+            true,
         )
         .await;
     }
@@ -1393,6 +1457,7 @@ pub async fn scrape_one_track(
         &group,
         &mut report,
         None,
+        true,
     )
     .await?
     {
@@ -2170,6 +2235,118 @@ mod tests {
         assert_eq!(
             third.matched, 1,
             "force must re-scrape an already-processed entry"
+        );
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
+    #[tokio::test]
+    async fn bulk_scrape_does_not_redownload_artwork_already_on_disk() {
+        let (root, db_path) = fixture_dirs("bulk-skip-existing-artwork");
+        std::fs::create_dir_all(root.join("movies/Heat (1995)")).unwrap();
+        std::fs::write(root.join("movies/Heat (1995)/Heat.1995.mkv"), vec![0u8; 10]).unwrap();
+        let library = Library::open(db_path.to_str().unwrap()).await.unwrap();
+        scan_root(&library, &root).await.unwrap();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let poster_hits = std::sync::Arc::new(AtomicUsize::new(0));
+        let backdrop_hits = std::sync::Arc::new(AtomicUsize::new(0));
+        let poster_hits_route = poster_hits.clone();
+        let backdrop_hits_route = backdrop_hits.clone();
+        let router = Router::new()
+            .route(
+                "/search/movie",
+                get(|| async { Json(json!({"results": [{"id": 1}]})) }),
+            )
+            .route(
+                "/movie/1",
+                get(|| async {
+                    // Deliberately no vote_average/vote_count: community_rating
+                    // stays NULL forever, so this entry keeps matching
+                    // `incomplete_scrape()` across repeated non-force runs —
+                    // the setup needed to prove artwork is left alone on a
+                    // second pass while everything else still gets rewritten.
+                    Json(json!({
+                        "title": "Heat",
+                        "genres": [{"name": "Crime"}],
+                        "overview": "A complete test record.",
+                        "poster_path": "/poster.jpg",
+                        "backdrop_path": "/backdrop.jpg",
+                        "credits": {"cast": [{"name": "Al Pacino", "character": "Vincent Hanna"}]},
+                        "release_dates": {"results": [{"iso_3166_1": "US", "release_dates": [{"certification": "R"}]}]}
+                    }))
+                }),
+            )
+            .route(
+                "/w342/poster.jpg",
+                get(move || {
+                    let hits = poster_hits_route.clone();
+                    async move {
+                        hits.fetch_add(1, Ordering::SeqCst);
+                        [1u8, 2, 3]
+                    }
+                }),
+            )
+            .route(
+                "/w1280/backdrop.jpg",
+                get(move || {
+                    let hits = backdrop_hits_route.clone();
+                    async move {
+                        hits.fetch_add(1, Ordering::SeqCst);
+                        [4u8, 5, 6]
+                    }
+                }),
+            );
+        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let config = ScrapeConfig {
+            tmdb_api_key: Some("key".into()),
+            tmdb_api_base: Some(format!("http://{addr}")),
+            tmdb_image_base: Some(format!("http://{addr}")),
+            introdb_api_base: Some(format!("http://{addr}")),
+            ..Default::default()
+        };
+
+        let first = run_bulk_scrape(
+            &library,
+            &resolver(&root),
+            &config,
+            &AtomicBool::new(false),
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(first.matched, 1);
+        assert_eq!(poster_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(backdrop_hits.load(Ordering::SeqCst), 1);
+        assert!(
+            !library.incomplete_scrape().await.unwrap().is_empty(),
+            "community_rating is deliberately never filled, so the entry stays incomplete"
+        );
+
+        let second = run_bulk_scrape(
+            &library,
+            &resolver(&root),
+            &config,
+            &AtomicBool::new(false),
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            second.matched, 1,
+            "entry is still incomplete, so it gets re-scraped"
+        );
+        assert_eq!(
+            poster_hits.load(Ordering::SeqCst),
+            1,
+            "poster already exists on disk, so a non-force re-scrape must not re-download it"
+        );
+        assert_eq!(
+            backdrop_hits.load(Ordering::SeqCst),
+            1,
+            "backdrop already exists on disk, so a non-force re-scrape must not re-download it"
         );
         std::fs::remove_dir_all(root.parent().unwrap()).ok();
     }

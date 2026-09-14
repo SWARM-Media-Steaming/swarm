@@ -9,6 +9,35 @@ document.getElementById("hideToTrayBtn")?.addEventListener("click", async () => 
   }
 });
 
+const sidebarShell = document.getElementById("dashView");
+const sidebarToggle = document.getElementById("toggleSidebarBtn");
+const SIDEBAR_COLLAPSED_KEY = "swarm.sidebar.collapsed";
+
+function setSidebarCollapsed(collapsed, persist = true) {
+  sidebarShell.classList.toggle("sidebar-collapsed", collapsed);
+  sidebarToggle.setAttribute("aria-expanded", String(!collapsed));
+  sidebarToggle.setAttribute("aria-label", collapsed ? "Expand side menu" : "Collapse side menu");
+  sidebarToggle.title = collapsed ? "Expand side menu" : "Collapse side menu";
+  sidebarToggle.querySelector("i").className = `bi ${collapsed ? "bi-chevron-right" : "bi-chevron-left"}`;
+  if (persist) {
+    try { localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(collapsed)); } catch (_) { /* storage can be unavailable under file:// tests */ }
+  }
+}
+
+let sidebarCollapsed = false;
+try {
+  const savedSidebarState = localStorage.getItem(SIDEBAR_COLLAPSED_KEY);
+  sidebarCollapsed = savedSidebarState == null
+    ? Boolean(window.matchMedia?.("(max-width: 820px)").matches)
+    : savedSidebarState === "true";
+} catch (_) {
+  sidebarCollapsed = Boolean(window.matchMedia?.("(max-width: 820px)").matches);
+}
+setSidebarCollapsed(sidebarCollapsed, false);
+sidebarToggle.addEventListener("click", () => {
+  setSidebarCollapsed(!sidebarShell.classList.contains("sidebar-collapsed"));
+});
+
 function esc(v) {
   return String(v ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 }
@@ -31,7 +60,7 @@ function showToast(message, type = "success", opts = {}) {
   toast.innerHTML =
     `<i class="bi ${TOAST_ICONS[type] || TOAST_ICONS.success} toast-icon"></i>` +
     `<span class="toast-message"></span>` +
-    `<button class="toast-close" aria-label="Dismiss"><i class="bi bi-x"></i></button>`;
+    `<button class="icon-button toast-close" aria-label="Dismiss"><i class="bi bi-x"></i></button>`;
   toast.querySelector(".toast-message").textContent = message;
   const remove = () => {
     toast.classList.add("toast-out");
@@ -277,12 +306,10 @@ function show(id) {
   for (const el of document.querySelectorAll("#onboardFolderView, #dashView")) {
     el.classList.toggle("d-none", el.id !== id);
   }
-  // Pairs with index.html's inline `body { visibility: hidden; }` guard —
-  // see that comment. Idempotent and cheap, so just doing it unconditionally
-  // on every show() (not only the first) keeps this single call site as the
-  // one place that owns "is it safe to see the page yet" instead of a
-  // separate first-call flag to track.
-  document.body.style.visibility = "visible";
+  // The CSS boot guard prevents the wrong persisted view flashing before
+  // settings resolve. Keeping that state as a class preserves the strict
+  // separation between structure, presentation, and behavior.
+  document.body.classList.remove("boot-pending");
   // The startup splash (index.html's #splashView) is only ever meant to
   // cover the boot() gap — remove it the first time we know which real view
   // to show, same idempotent reasoning as the visibility line above.
@@ -292,12 +319,24 @@ function show(id) {
 // "about" has no refresh*() dispatch below — its tab content is static
 // (no invoke() calls, nothing that goes stale), unlike every other tab here.
 const TABS = ["media", "metrics", "settings", "swarm", "notifications", "ai", "about"];
+const pageTitles = {
+  media: "Media library",
+  metrics: "Performance and delivery",
+  settings: "Settings",
+  swarm: "Your swarm",
+  notifications: "Notifications",
+  ai: "AI tools",
+  about: "About SWARM",
+};
 
 function showTab(name) {
   for (const tab of TABS) {
-    document.getElementById(`tabPanel-${tab}`).classList.toggle("d-none", tab !== name);
+    const panel = document.getElementById(`tabPanel-${tab}`);
+    panel.classList.toggle("d-none", tab !== name);
+    panel.classList.toggle("active", tab === name);
     document.getElementById(`tabBtn-${tab}`).classList.toggle("tab-active", tab === name);
   }
+  document.getElementById("pageTitle").textContent = pageTitles[name] || pageTitles.media;
   if (name === "metrics") refreshMetrics();
   if (name === "settings") refreshSettings();
   if (name === "swarm") refreshSwarm();

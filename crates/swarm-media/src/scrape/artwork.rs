@@ -58,6 +58,18 @@ pub async fn save_artwork(
     Ok(roots.compose(&label, &relative_under_root))
 }
 
+/// True if the artwork file at a stored `relative_path` (as returned by
+/// [`save_artwork`] and recorded via `Library::set_artwork`) is still
+/// present on disk. Lets a non-force scrape skip re-downloading artwork
+/// whose DB row is intact but whose file was, say, manually deleted —
+/// checking the DB column alone would wrongly treat that as "already have
+/// it" and never repair it.
+pub async fn exists(roots: &SharedRootResolver, relative_path: &str) -> bool {
+    let (root_path, rest) = roots.split(relative_path);
+    let absolute = root_path.join(rest.replace('/', std::path::MAIN_SEPARATOR_STR));
+    tokio::fs::try_exists(&absolute).await.unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

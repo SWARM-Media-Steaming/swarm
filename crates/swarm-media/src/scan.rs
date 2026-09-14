@@ -988,36 +988,7 @@ fn classify_for_asset_type(
     relative_path: &str,
     asset_type: MediaRootAssetType,
 ) -> Option<classify::Classified> {
-    let mut classified = classify::classify(relative_path)?;
-    match asset_type {
-        MediaRootAssetType::Mixed => {}
-        MediaRootAssetType::Music if classified.kind != MediaKind::Track => return None,
-        MediaRootAssetType::Music => {}
-        MediaRootAssetType::Movies | MediaRootAssetType::PhotosVideos => {
-            if classified.kind == MediaKind::Track {
-                return None;
-            }
-            classified.kind = MediaKind::Movie;
-            classified.show_title = None;
-            classified.season = None;
-            classified.episode = None;
-            classified.episode_end = None;
-        }
-        MediaRootAssetType::Shows => {
-            if classified.kind == MediaKind::Track {
-                return None;
-            }
-            classified.kind = MediaKind::Episode;
-            if classified.show_title.is_none() {
-                classified.show_title = relative_path
-                    .split('/')
-                    .next()
-                    .filter(|part| !part.is_empty())
-                    .map(str::to_string);
-            }
-        }
-    }
-    Some(classified)
+    classify::classify_for_asset_type(relative_path, asset_type)
 }
 
 fn media_path_allowed(

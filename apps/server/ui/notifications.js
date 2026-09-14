@@ -13,7 +13,8 @@ function openNotificationModal({ title, body, meta, level = "error", icon = "bi-
   document.getElementById("notificationModalMeta").textContent = meta || "";
   const iconEl = document.getElementById("notificationModalIcon");
   iconEl.className = `bi ${icon}`;
-  iconEl.parentElement.style.color = level === "error" ? "#ff5d7a" : level === "warning" ? "#f5c451" : "var(--green)";
+  iconEl.parentElement.classList.remove("notification-icon-error", "notification-icon-warning", "notification-icon-success");
+  iconEl.parentElement.classList.add(`notification-icon-${level === "error" ? "error" : level === "warning" ? "warning" : "success"}`);
   const resolutionFields = document.getElementById("notificationResolutionFields");
   const resolutionComments = document.getElementById("notificationResolutionComments");
   const resolveButton = document.getElementById("notificationModalResolve");
@@ -68,12 +69,12 @@ async function loadServerNotifications() {
     clearBtn.classList.toggle("d-none", notifications.length === 0);
     list.innerHTML = notifications.length ? notifications.map(notification => `
       <div class="client-error-row notification-level-${esc(notification.level)}" data-open-notification="server-${notification.id}" tabindex="0" role="button">
-        <div style="flex:1; min-width:0">
+        <div class="notification-copy">
           <div class="client-error-message">${esc(notification.title)}</div>
           <div class="client-error-meta"><span><i class="bi bi-clock"></i> ${esc(new Date(notification.created_at_ms).toLocaleString())}</span></div>
           <div class="notification-preview">${esc(notification.message)}</div>
         </div>
-        <button class="danger" data-delete-server-notification="${notification.id}" style="padding:5px 10px; font-size:.75rem" title="Delete"><i class="bi bi-x-lg"></i></button>
+        <button class="danger-button compact" data-delete-server-notification="${notification.id}" title="Delete" aria-label="Delete notification"><i class="bi bi-x-lg"></i></button>
       </div>`).join("") : `<p class="muted">No server notifications.</p>`;
 
     notifications.forEach(notification => {
@@ -120,7 +121,7 @@ async function loadClientErrors() {
     clearBtn.classList.toggle("d-none", errors.length === 0);
     list.innerHTML = errors.length ? errors.map(error => `
       <div class="client-error-row notification-level-${error.resolved_at_ms ? "success" : "error"}" data-open-notification="client-${error.id}" tabindex="0" role="button">
-        <div style="flex:1; min-width:0">
+        <div class="notification-copy">
           <div class="client-error-message">${esc(error.asset_title || error.device_name || "Client error")}</div>
           <div class="client-error-meta">
             <span><i class="bi bi-clock"></i> ${esc(new Date(error.occurred_at_ms).toLocaleString())}</span>
@@ -130,8 +131,8 @@ async function loadClientErrors() {
           </div>
           <div class="notification-preview">${esc(error.resolved_at_ms ? (error.resolution_comments || "Resolved without comments.") : [error.message, error.context].filter(Boolean).join("\n"))}</div>
         </div>
-        ${error.resolved_at_ms ? "" : `<button class="secondary" data-resolve-error="${error.id}" style="padding:5px 10px; font-size:.75rem" title="Resolve"><i class="bi bi-check-circle"></i>Resolve</button>`}
-        <button class="danger" data-delete-error="${error.id}" style="padding:5px 10px; font-size:.75rem" title="Delete"><i class="bi bi-x-lg"></i></button>
+        ${error.resolved_at_ms ? "" : `<button class="secondary-button compact" data-resolve-error="${error.id}" title="Resolve"><i class="bi bi-check-circle"></i>Resolve</button>`}
+        <button class="danger-button compact" data-delete-error="${error.id}" title="Delete" aria-label="Delete client error"><i class="bi bi-x-lg"></i></button>
       </div>`).join("") : `<p class="muted">No client errors reported.</p>`;
 
     errors.forEach(error => {

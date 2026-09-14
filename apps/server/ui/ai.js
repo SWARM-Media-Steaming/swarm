@@ -84,14 +84,14 @@ function renderAiProviders(settings, tools) {
       }
       return `
     <div class="ai-provider-row" data-provider-id="${esc(p.id)}">
-      <label class="checkbox-label ai-provider-toggle"><input type="checkbox" class="ai-provider-enabled" ${p.enabled ? "checked" : ""}> ${esc(p.label)}</label>
+      <label class="toggle checkbox-label ai-provider-toggle"><input type="checkbox" class="ai-provider-enabled" ${p.enabled ? "checked" : ""}> ${esc(p.label)}</label>
       ${pill}
       <span class="ai-provider-hint muted">${hint}</span>
       <a class="ai-provider-docs" href="${esc(tool ? tool.docsUrl : "")}" target="_blank" rel="noopener noreferrer"><i class="bi bi-box-arrow-up-right"></i></a>
     </div>`;
     })
     .join("") +
-    '<div class="ai-provider-actions"><button id="refreshAiToolsBtn" class="secondary"><i class="bi bi-arrow-repeat"></i>Refresh detection</button></div>';
+    '<div class="ai-provider-actions"><button id="refreshAiToolsBtn" class="secondary-button"><i class="bi bi-arrow-repeat"></i>Refresh detection</button></div>';
 
   list.querySelectorAll(".ai-provider-enabled").forEach(input => {
     input.addEventListener("change", async () => {
@@ -165,8 +165,8 @@ async function refreshScanAssist(settings) {
       issue => `
     <li data-entry-key="${esc(issue.entry_key)}">
       <span class="issue-title">${esc(issue.title)}</span> — <span class="issue-reason">${esc(issue.reason)}</span>
-      <button class="secondary ask-ai-btn" style="margin-left:8px; padding:2px 8px; font-size:.75rem"><i class="bi bi-stars"></i>Ask AI</button>
-      <div class="ai-suggestion muted" style="margin-top:4px; font-size:.8rem"></div>
+      <button class="secondary-button compact ask-ai-btn"><i class="bi bi-stars"></i>Ask AI</button>
+      <div class="ai-suggestion muted"></div>
     </li>`
     )
     .join("");
@@ -183,7 +183,7 @@ async function refreshScanAssist(settings) {
         const suggestion = await invoke("ai_scrape_assist", { entryKey });
         suggestionBox.innerHTML = `Suggested: <strong>${esc(suggestion.tmdb_title)}</strong>${
           suggestion.suggested_year ? ` (${esc(String(suggestion.suggested_year))})` : ""
-        } <button class="secondary apply-ai-suggestion-btn" style="padding:2px 8px; font-size:.75rem"><i class="bi bi-check-lg"></i>Apply</button>`;
+        } <button class="secondary-button compact apply-ai-suggestion-btn"><i class="bi bi-check-lg"></i>Apply</button>`;
         suggestionBox.querySelector(".apply-ai-suggestion-btn").addEventListener("click", async () => {
           try {
             await invoke("rescrape_entry", { entryKey, tmdbUrl: suggestion.tmdb_url });
@@ -287,7 +287,7 @@ function renderReorgPlans(plans) {
             item => `
         <li>
           <span class="mono">${esc(item.from)}</span> → <span class="mono">${esc(item.to)}</span>
-          ${item.ai_assisted ? '<span class="muted" style="font-size:.72rem"> (AI-assisted)</span>' : ""}
+          ${item.ai_assisted ? '<span class="muted ai-assisted-label"> (AI-assisted)</span>' : ""}
           ${item.conflict ? `<br><span class="issue-reason">${esc(item.conflict)} — left in place</span>` : ""}
         </li>`
           )
@@ -299,18 +299,18 @@ function renderReorgPlans(plans) {
         : "";
       const actionsHtml =
         plan.status === "proposed"
-          ? `<button class="secondary approve-reorg-btn" data-plan-id="${plan.id}"><i class="bi bi-check-lg"></i>Approve &amp; apply</button>
-           <button class="secondary reject-reorg-btn" data-plan-id="${plan.id}"><i class="bi bi-x-lg"></i>Reject</button>`
+          ? `<button class="secondary-button approve-reorg-btn" data-plan-id="${plan.id}"><i class="bi bi-check-lg"></i>Approve &amp; apply</button>
+           <button class="secondary-button reject-reorg-btn" data-plan-id="${plan.id}"><i class="bi bi-x-lg"></i>Reject</button>`
           : "";
       return `
-        <div class="card" style="margin-top:12px; background:var(--surface-muted)">
-          <div class="row" style="justify-content:space-between; align-items:center">
+        <div class="service-card ai-reorg-plan">
+          <div class="row plan-summary">
             <strong>${esc(plan.root_label)}</strong>
             <span class="muted">${plan.items.length} item(s), ${plan.ai_assisted_count} AI-assisted, ${plan.conflict_count} conflict(s) — <em>${esc(plan.status)}</em></span>
           </div>
-          <ul class="issue-list" style="margin-top:8px">${itemsHtml}</ul>
+          <ul class="issue-list plan-items">${itemsHtml}</ul>
           ${summaryHtml}
-          <div class="row" style="margin-top:8px">${actionsHtml}</div>
+          <div class="row plan-actions">${actionsHtml}</div>
         </div>`;
     })
     .join("");

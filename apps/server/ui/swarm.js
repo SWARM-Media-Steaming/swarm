@@ -27,7 +27,7 @@ async function loadLocalPeers() {
         <td>${esc(peer.name)}</td>
         <td>${esc(new Date(peer.paired_at * 1000).toLocaleString())}</td>
         <td class="mono" title="${esc(peer.fingerprint)}">${esc(formatFingerprint(peer.fingerprint))}</td>
-        <td><button class="danger" data-revoke-local="${esc(peer.fingerprint)}"><i class="bi bi-x-lg"></i>Revoke</button></td>
+        <td><button class="danger-button compact" data-revoke-local="${esc(peer.fingerprint)}"><i class="bi bi-x-lg"></i>Revoke</button></td>
       </tr>`).join("")}</tbody>
     </table>` : `<p class="muted">No LAN clients have been paired yet.</p>`;
     list.querySelectorAll("[data-revoke-local]").forEach(btn => {
@@ -85,7 +85,7 @@ document.getElementById("approveTvBtn").addEventListener("click", async () => {
     status.innerHTML = `<div class="note">
       <strong>${esc(pending.device_name)}</strong><br>
       <span class="muted">${esc(pending.platform)} · expires ${esc(new Date(pending.expires_at).toLocaleTimeString())}</span>
-      <button id="confirmTvBtn" style="margin-left:12px"><i class="bi bi-check-lg"></i>Approve this TV</button>
+      <button id="confirmTvBtn" class="primary-button confirm-tv-button"><i class="bi bi-check-lg"></i>Approve this TV</button>
     </div>`;
     document.getElementById("confirmTvBtn").addEventListener("click", async () => {
       try {
@@ -119,7 +119,7 @@ async function loadHttpMediaDevices() {
         <td>${esc(device.name)}</td>
         <td>${esc(new Date(device.paired_at * 1000).toLocaleString())}</td>
         <td class="mono" title="${esc(device.token_hash)}">${esc(formatFingerprint(device.token_hash))}</td>
-        <td><button class="danger" data-revoke-http-media="${esc(device.token_hash)}"><i class="bi bi-x-lg"></i>Revoke</button></td>
+        <td><button class="danger-button compact" data-revoke-http-media="${esc(device.token_hash)}"><i class="bi bi-x-lg"></i>Revoke</button></td>
       </tr>`).join("")}</tbody>
     </table>` : `<p class="muted">No plain-HTTP devices have been paired yet.</p>`;
     list.querySelectorAll("[data-revoke-http-media]").forEach(btn => {
@@ -159,16 +159,16 @@ async function refreshSwarm() {
 
   content.innerHTML = `
     <div id="swarmList"></div>
-    <div class="row" style="margin-top:12px">
-      <button id="resyncBtn" class="secondary"><i class="bi bi-arrow-repeat"></i>Resync now</button>
+    <div class="row action-row">
+      <button id="resyncBtn" class="secondary-button"><i class="bi bi-arrow-repeat"></i>Resync now</button>
     </div>`;
 
   const swarmList = document.getElementById("swarmList");
   swarmList.innerHTML = link.swarms.map(s => `
-    <div class="card" style="background:var(--surface-muted); margin-bottom:10px">
+    <div class="service-card swarm-card">
       <div class="card-head">
         <strong class="swarm-name"><i class="bi bi-diagram-3"></i><span>${esc(s.name)}</span></strong>
-        <button class="danger" data-leave-swarm="${esc(s.id)}"><i class="bi bi-box-arrow-right"></i>Leave</button>
+        <button class="danger-button compact" data-leave-swarm="${esc(s.id)}"><i class="bi bi-box-arrow-right"></i>Leave</button>
       </div>
       <div id="roster-${esc(s.id)}" class="muted">Loading roster…</div>
     </div>`).join("");

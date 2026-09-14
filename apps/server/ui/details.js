@@ -919,10 +919,10 @@ async function refreshMediaRoots() {
       const permissionDenied = Boolean(status && !status.available && status.permission_denied);
       let reconnectButton = "";
       if (status && !status.available && protocol === "SMB" && !permissionDenied) {
-        reconnectButton = `<button class="secondary" data-repair-smb="${esc(r.label)}"><i class="bi bi-tools"></i>Repair SMB</button>`;
+        reconnectButton = `<button class="secondary-button" data-repair-smb="${esc(r.label)}"><i class="bi bi-tools"></i>Repair SMB</button>`;
       }
       if (permissionDenied) {
-        reconnectButton = `<button class="secondary" data-grant-file-access><i class="bi bi-shield-lock"></i>Open macOS Settings</button>`;
+        reconnectButton = `<button class="secondary-button" data-grant-file-access><i class="bi bi-shield-lock"></i>Open macOS Settings</button>`;
       }
       const statusLabel = status
         ? (status.available ? "Connected" : (permissionDenied ? "Permission needed" : "Unavailable"))
@@ -941,7 +941,7 @@ async function refreshMediaRoots() {
         </div>
         <div class="media-root-actions">
           ${reconnectButton}
-          <button class="danger" data-remove-root="${esc(r.label)}"><i class="bi bi-trash"></i>Remove</button>
+          <button class="danger-button" data-remove-root="${esc(r.label)}"><i class="bi bi-trash"></i>Remove</button>
         </div>
       </div>`;
     }).join("");

@@ -120,6 +120,21 @@ impl RootResolver {
             .unwrap_or_default()
     }
 
+    /// Declared asset type of the root that owns a stored relative path.
+    /// Uses the same label-prefix rules as [`Self::split`].
+    pub fn asset_type_for(&self, relative_path: &str) -> MediaRootAssetType {
+        if self.multi() {
+            if let Some((label, _)) = relative_path.split_once('/') {
+                if let Some(root) = self.roots.iter().find(|root| root.label == label) {
+                    return root.asset_type;
+                }
+            }
+        }
+        self.roots
+            .first()
+            .map_or(MediaRootAssetType::Mixed, |root| root.asset_type)
+    }
+
     /// Build a stored `relative_path` from a root's label and a path under
     /// that root — the inverse of [`Self::split`].
     pub fn compose(&self, label: &str, path_under_root: &str) -> String {
@@ -170,6 +185,10 @@ impl SharedRootResolver {
 
     pub fn label_for(&self, relative_path: &str) -> String {
         self.inner.read().unwrap().label_for(relative_path)
+    }
+
+    pub fn asset_type_for(&self, relative_path: &str) -> MediaRootAssetType {
+        self.inner.read().unwrap().asset_type_for(relative_path)
     }
 
     pub fn compose(&self, label: &str, path_under_root: &str) -> String {

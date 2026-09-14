@@ -1313,7 +1313,7 @@ fun PlayerScreen(
 /** One selectable option in the pause-screen audio/subtitle pickers.
  * [group]/[trackIndex] identify the real Media3 track to select; [group] is
  * null only for the subtitle list's synthetic "Off" entry. */
-private data class TrackChoice(
+internal data class TrackChoice(
     val label: String,
     val group: TrackGroup?,
     val trackIndex: Int,
@@ -1338,7 +1338,7 @@ private fun trackAvailability(tracks: Tracks): TrackAvailability {
             val isSelected = group.isTrackSelected(index)
             when (group.type) {
                 C.TRACK_TYPE_AUDIO -> audioTracks += TrackChoice(
-                    label = audioTrackLabel(format),
+                    label = audioTrackLabel(format, audioTracks.size),
                     group = group.mediaTrackGroup,
                     trackIndex = index,
                     isSelected = isSelected,
@@ -1367,10 +1367,16 @@ private fun trackAvailability(tracks: Tracks): TrackAvailability {
     )
 }
 
-private fun audioTrackLabel(format: Format): String =
+/// Falls back to a numbered "Audio N" label, mirroring [subtitleTrackLabel],
+/// when the container has neither a language tag nor a track name. Without
+/// the index, every untagged track collapsed to the same literal "Default
+/// audio" string, and [distinctByLabel] then discarded all but one of them —
+/// silently hiding the rest of a multi-track file's audio from the picker
+/// (#278: an untagged Spanish+English MKV only ever exposed one track).
+internal fun audioTrackLabel(format: Format, index: Int): String =
     format.language?.takeIf(String::isNotBlank)?.let(::languageDisplayName)
         ?: format.label?.takeIf(String::isNotBlank)
-        ?: "Default audio"
+        ?: "Audio ${index + 1}"
 
 private fun subtitleTrackLabel(format: Format, index: Int): String =
     format.label?.takeIf(String::isNotBlank)
@@ -1385,7 +1391,7 @@ private fun languageDisplayName(code: String): String {
         ?: code.uppercase()
 }
 
-private fun List<TrackChoice>.distinctByLabel(): List<TrackChoice> =
+internal fun List<TrackChoice>.distinctByLabel(): List<TrackChoice> =
     distinctBy { it.label.trim().lowercase() }
 
 /** Applies [choice] as the sole override for its track type, so picking a

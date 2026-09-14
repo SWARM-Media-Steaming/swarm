@@ -9,6 +9,9 @@
 use crate::artwork_cache::{ArtworkCacheEventKind, ArtworkCacheMonitor, ArtworkCacheSnapshot};
 use crate::bandwidth::BandwidthMeter;
 use crate::range::{content_type, resolve, ResolvedRange};
+use crate::recommend::{
+    recommend, DiscoveryMode, EraPreference, KindPreference, LibraryItem, Mood, ScoringWeights,
+};
 use crate::roots::{RootResolver, SharedRootResolver};
 use crate::store::{ArtworkKind, Library};
 use crate::transcode::{
@@ -27,8 +30,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use swarm_core::entry_key::is_valid_entry_key;
 use swarm_core::peer::{
-    CatalogEntry, CatalogManifest, CatalogThumbprint, PeerRequest, PeerResponseHeader, PlaybackPlan,
-    SubtitleTrack,
+    BuzzChoice, BuzzRequest, BuzzResponse, CatalogEntry, CatalogManifest, CatalogThumbprint,
+    PeerRequest, PeerResponseHeader, PlaybackPlan, SubtitleTrack,
 };
 use swarm_p2p::endpoint::{read_request, write_response_header, P2pError};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
@@ -65,6 +68,147 @@ const CATALOG_CHANGE_WAIT: Duration = Duration::from_secs(20);
 const CATALOG_CHANGE_POLL: Duration = Duration::from_secs(1);
 
 const ARTWORK_CACHE_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+
+#[derive(Debug)]
+enum BuzzError {
+    BadRequest,
+    NotFound,
+    Database,
+}
+
+fn unix_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn seed_from(value: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn next_question(answers: &crate::recommend::SessionAnswers) -> Option<&'static str> {
+    ["mood", "kind", "era"]
+        .into_iter()
+        .find(|id| !answers.answered_questions.iter().any(|seen| seen == id))
+}
+
+fn apply_answer(
+    answers: &mut crate::recommend::SessionAnswers,
+    question: &str,
+    value: &str,
+) -> Result<(), BuzzError> {
+    match question {
+        "mood" => match value {
+            "funny" => answers.moods = vec![Mood::Funny],
+            "weird" => answers.moods = vec![Mood::Weird],
+            "action" => answers.moods = vec![Mood::Action],
+            "scary" => answers.moods = vec![Mood::Scary],
+            "surprise" => answers.mode = DiscoveryMode::SurpriseMe,
+            _ => return Err(BuzzError::BadRequest),
+        },
+        "kind" => {
+            answers.kind = match value {
+                "movie" => KindPreference::Movie,
+                "show" => KindPreference::Show,
+                "dont_care" => KindPreference::DontCare,
+                _ => return Err(BuzzError::BadRequest),
+            }
+        }
+        "era" => {
+            answers.era = match value {
+                "older" => EraPreference::Older,
+                "newer" => EraPreference::Newer,
+                "dont_care" => EraPreference::DontCare,
+                _ => return Err(BuzzError::BadRequest),
+            }
+        }
+        _ => return Err(BuzzError::BadRequest),
+    }
+    answers.answered_questions.push(question.to_owned());
+    Ok(())
+}
+
+fn voice_asset(text: &str) -> Option<&'static str> {
+    match text {
+        "Let's find you something." => Some("buzz/lets_find_you_something_01.opus"),
+        "Movie or show?" => Some("buzz/movie_or_show_01.opus"),
+        "I think I've got one." => Some("buzz/i_think_ive_got_one_01.opus"),
+        _ => None,
+    }
+}
+
+fn question_response(
+    session_id: &str,
+    answers: &crate::recommend::SessionAnswers,
+    history: &crate::recommend::DeviceHistory,
+) -> BuzzResponse {
+    let question = next_question(answers).unwrap_or("mood");
+    let (text, choices) = match question {
+        "mood" => (
+            "What kind of night is this?",
+            vec![
+                ("funny", "Make me laugh"),
+                ("weird", "Something weird"),
+                ("action", "Action"),
+                ("scary", "Scare me"),
+                ("surprise", "You decide"),
+            ],
+        ),
+        "kind" => {
+            let movies = history
+                .kind_affinity
+                .get(&swarm_core::peer::MediaKind::Movie)
+                .copied()
+                .unwrap_or(0.0);
+            let shows = history
+                .kind_affinity
+                .get(&swarm_core::peer::MediaKind::Episode)
+                .copied()
+                .unwrap_or(0.0);
+            (
+                if movies > shows && movies > 1.0 {
+                    "Movie again?"
+                } else {
+                    "Movie or show?"
+                },
+                vec![
+                    ("movie", "Movie"),
+                    ("show", "Show"),
+                    ("dont_care", "Don't care"),
+                ],
+            )
+        }
+        _ => (
+            "Older or newer?",
+            vec![
+                ("older", "Older"),
+                ("newer", "Newer"),
+                ("dont_care", "Don't care"),
+            ],
+        ),
+    };
+    BuzzResponse {
+        session_id: session_id.into(),
+        screen: "question".into(),
+        buzz_text: text.into(),
+        voice_asset: voice_asset(text).map(str::to_owned),
+        choices: choices
+            .into_iter()
+            .map(|(id, label)| BuzzChoice {
+                id: id.into(),
+                label: label.into(),
+            })
+            .collect(),
+        media_id: None,
+        title: None,
+        reasons: vec![],
+        actions: vec![],
+    }
+}
 
 /// A resolved response: header plus a body source the transport streams out.
 pub enum Body {
@@ -141,8 +285,10 @@ fn catalog_delta(
         .iter()
         .map(|entry| (entry.entry_key.as_str(), entry))
         .collect();
-    let new_keys: std::collections::HashSet<String> =
-        entries.iter().map(|entry| entry.entry_key.clone()).collect();
+    let new_keys: std::collections::HashSet<String> = entries
+        .iter()
+        .map(|entry| entry.entry_key.clone())
+        .collect();
     let changed = entries
         .into_iter()
         .filter(|entry| old_by_key.get(entry.entry_key.as_str()).copied() != Some(entry))
@@ -328,7 +474,8 @@ impl MediaService {
             "/catalog/changes" => self.catalog_changes(query, false).await,
             "/catalog/changes.gz" => self.catalog_changes(query, true).await,
             "/errors/report" => self.report_error(request).await,
-            "/likes/toggle" => self.set_like(request).await,
+            "/likes/toggle" => self.set_like(request, playback_owner).await,
+            "/buzz" => self.buzz(query, playback_owner).await,
             path => {
                 if let Some(rest) = path.strip_prefix("/notifications/") {
                     self.client_notifications(rest).await
@@ -354,6 +501,245 @@ impl MediaService {
                 }
             }
         }
+    }
+
+    async fn buzz(&self, query: &str, device_id: Option<&str>) -> Resolved {
+        let Some(device_id) = device_id else {
+            return status(401);
+        };
+        let Some(payload) = query
+            .split('&')
+            .find_map(|part| part.strip_prefix("payload="))
+        else {
+            return status(400);
+        };
+        let Ok(bytes) = hex::decode(payload) else {
+            return status(400);
+        };
+        let Ok(request) = serde_json::from_slice::<BuzzRequest>(&bytes) else {
+            return status(400);
+        };
+        match self.buzz_transition(device_id, &request).await {
+            Ok(Some(response)) => json_response(200, &response),
+            Ok(None) => status(204),
+            Err(BuzzError::BadRequest) => status(400),
+            Err(BuzzError::NotFound) => status(404),
+            Err(BuzzError::Database) => status(500),
+        }
+    }
+
+    async fn buzz_transition(
+        &self,
+        device_id: &str,
+        request: &BuzzRequest,
+    ) -> Result<Option<BuzzResponse>, BuzzError> {
+        if request.action == "start" {
+            let mode = match request.value.as_deref().unwrap_or("find_me_something") {
+                "find_me_something" => DiscoveryMode::FindMeSomething,
+                "surprise_me" => DiscoveryMode::SurpriseMe,
+                "buzz_knows_best" => DiscoveryMode::BuzzKnowsBest,
+                _ => return Err(BuzzError::BadRequest),
+            };
+            let id = hex::encode(rand::random::<[u8; 16]>());
+            let answers = crate::recommend::SessionAnswers {
+                mode,
+                session_seed: seed_from(&id),
+                ..Default::default()
+            };
+            self.library
+                .create_buzz_session(
+                    &id,
+                    device_id,
+                    request.profile_id.as_deref(),
+                    mode,
+                    &answers,
+                )
+                .await
+                .map_err(|_| BuzzError::Database)?;
+            if mode != DiscoveryMode::FindMeSomething {
+                return self
+                    .buzz_recommend(device_id, request.profile_id.as_deref(), &id, &answers)
+                    .await
+                    .map(Some);
+            }
+            let history = self
+                .library
+                .buzz_history(device_id, request.profile_id.as_deref())
+                .await
+                .map_err(|_| BuzzError::Database)?;
+            let response = question_response(&id, &answers, &history);
+            self.library
+                .record_buzz_event(
+                    &id,
+                    "question_shown",
+                    next_question(&answers),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .await
+                .map_err(|_| BuzzError::Database)?;
+            return Ok(Some(response));
+        }
+
+        let session_id = request.session_id.as_deref().ok_or(BuzzError::BadRequest)?;
+        let mut session = self
+            .library
+            .buzz_session(session_id, device_id)
+            .await
+            .map_err(|_| BuzzError::Database)?
+            .ok_or(BuzzError::NotFound)?;
+        match request.action.as_str() {
+            "answer" => {
+                let value = request.value.as_deref().ok_or(BuzzError::BadRequest)?;
+                let question = next_question(&session.answers).ok_or(BuzzError::BadRequest)?;
+                apply_answer(&mut session.answers, question, value)?;
+                self.library
+                    .save_buzz_answers(session_id, &session.answers, question, value)
+                    .await
+                    .map_err(|_| BuzzError::Database)?;
+                if next_question(&session.answers).is_some() {
+                    let history = self
+                        .library
+                        .buzz_history(device_id, session.profile_id.as_deref())
+                        .await
+                        .map_err(|_| BuzzError::Database)?;
+                    let response = question_response(session_id, &session.answers, &history);
+                    self.library
+                        .record_buzz_event(
+                            session_id,
+                            "question_shown",
+                            next_question(&session.answers),
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                        )
+                        .await
+                        .map_err(|_| BuzzError::Database)?;
+                    Ok(Some(response))
+                } else {
+                    self.buzz_recommend(
+                        device_id,
+                        session.profile_id.as_deref(),
+                        session_id,
+                        &session.answers,
+                    )
+                    .await
+                    .map(Some)
+                }
+            }
+            "try_again" | "not_interested" | "play" | "playback_outcome" => {
+                let media_id = request.media_id.as_deref().ok_or(BuzzError::BadRequest)?;
+                self.library
+                    .record_buzz_event(
+                        session_id,
+                        &request.action,
+                        None,
+                        request.value.as_deref(),
+                        None,
+                        Some(media_id),
+                        request
+                            .value
+                            .as_deref()
+                            .filter(|_| request.action == "playback_outcome"),
+                        request
+                            .value
+                            .as_deref()
+                            .filter(|_| request.action == "not_interested"),
+                    )
+                    .await
+                    .map_err(|_| BuzzError::Database)?;
+                if request.action == "try_again" || request.action == "not_interested" {
+                    self.buzz_recommend(
+                        device_id,
+                        session.profile_id.as_deref(),
+                        session_id,
+                        &session.answers,
+                    )
+                    .await
+                    .map(Some)
+                } else {
+                    Ok(None)
+                }
+            }
+            _ => Err(BuzzError::BadRequest),
+        }
+    }
+
+    async fn buzz_recommend(
+        &self,
+        device_id: &str,
+        profile_id: Option<&str>,
+        session_id: &str,
+        answers: &crate::recommend::SessionAnswers,
+    ) -> Result<BuzzResponse, BuzzError> {
+        let (_, entries) = self
+            .library
+            .catalog_snapshot()
+            .await
+            .map_err(|_| BuzzError::Database)?;
+        let history = self
+            .library
+            .buzz_history(device_id, profile_id)
+            .await
+            .map_err(|_| BuzzError::Database)?;
+        let items = entries
+            .iter()
+            .filter(|e| {
+                e.kind != swarm_core::peer::MediaKind::Track && e.parent_entry_key.is_none()
+            })
+            .map(LibraryItem::from_catalog)
+            .collect::<Vec<_>>();
+        let picks = recommend(
+            &items,
+            answers,
+            &history,
+            &ScoringWeights::default(),
+            unix_seconds(),
+            10,
+        );
+        let Some(pick) = picks.first() else {
+            return Ok(BuzzResponse {
+                session_id: session_id.into(),
+                screen: "empty".into(),
+                buzz_text: "I couldn't find a match in this library.".into(),
+                voice_asset: None,
+                choices: vec![],
+                media_id: None,
+                title: None,
+                reasons: vec![],
+                actions: vec!["back".into()],
+            });
+        };
+        let picks_json = serde_json::to_string(&picks).ok();
+        self.library
+            .record_buzz_event(
+                session_id,
+                "recommendation_shown",
+                None,
+                None,
+                picks_json.as_deref(),
+                Some(&pick.media_id),
+                None,
+                None,
+            )
+            .await
+            .map_err(|_| BuzzError::Database)?;
+        Ok(BuzzResponse {
+            session_id: session_id.into(),
+            screen: "recommendation".into(),
+            buzz_text: "I think I've got one.".into(),
+            voice_asset: voice_asset("I think I've got one.").map(str::to_owned),
+            choices: vec![],
+            media_id: Some(pick.media_id.clone()),
+            title: Some(pick.title.clone()),
+            reasons: pick.reasons.clone(),
+            actions: vec!["play".into(), "try_again".into(), "not_interested".into()],
+        })
     }
 
     async fn thumbprint(&self) -> Resolved {
@@ -441,7 +827,10 @@ impl MediaService {
 
     fn remember_catalog_snapshot(&self, thumbprint: &str, entries: &[CatalogEntry]) {
         let mut snapshots = self.catalog_snapshots.lock().unwrap();
-        if snapshots.iter().any(|snapshot| snapshot.thumbprint == thumbprint) {
+        if snapshots
+            .iter()
+            .any(|snapshot| snapshot.thumbprint == thumbprint)
+        {
             return;
         }
         snapshots.push_back(CatalogSnapshot {
@@ -504,7 +893,11 @@ impl MediaService {
 
     /// `/likes/toggle` — see [`swarm_core::peer::LikeToggle`]'s doc comment
     /// for the idempotent-desired-end-state semantics.
-    async fn set_like(&self, request: &PeerRequest) -> Resolved {
+    async fn set_like(
+        &self,
+        request: &PeerRequest,
+        authenticated_device_id: Option<&str>,
+    ) -> Resolved {
         let Some(like) = &request.like else {
             return status(400);
         };
@@ -515,7 +908,7 @@ impl MediaService {
             .library
             .set_like(
                 &like.entry_key,
-                &like.device_id,
+                authenticated_device_id.unwrap_or(&like.device_id),
                 &like.device_name,
                 like.liked,
             )
@@ -1607,7 +2000,11 @@ mod catalog_delta_tests {
             thumbprint: "old".into(),
             entries: vec![entry("a", "A"), entry("b", "B")],
         };
-        let delta = catalog_delta(previous, "new".into(), vec![entry("a", "A"), entry("b", "B")]);
+        let delta = catalog_delta(
+            previous,
+            "new".into(),
+            vec![entry("a", "A"), entry("b", "B")],
+        );
         assert!(delta.entries.is_empty());
         assert!(delta.removed.is_empty());
     }

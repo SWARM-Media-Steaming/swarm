@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "optional": true,
+  "assets": [
+    "lets_find_you_something_01.opus",
+    "movie_or_show_01.opus",
+    "i_think_ive_got_one_01.opus"
+  ],
+  "fallback": "silence"
+}

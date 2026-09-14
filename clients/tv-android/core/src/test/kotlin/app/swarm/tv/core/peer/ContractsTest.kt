@@ -17,6 +17,16 @@ import org.junit.jupiter.api.Test
 class ContractsTest {
 
     @Test
+    fun `buzz response decodes serde screen model`() {
+        val json = """{"session_id":"abc","screen":"recommendation","buzz_text":"I think I've got one.","voice_asset":"buzz/i_think_ive_got_one_01.opus","media_id":"123","title":"Galaxy Quest","reasons":["Funny","Not watched yet"],"actions":["play","try_again","not_interested"]}"""
+        val response = SwarmJson.decodeFromString<BuzzResponse>(json)
+        assertEquals("abc", response.sessionId)
+        assertEquals("Galaxy Quest", response.title)
+        assertEquals(listOf("play", "try_again", "not_interested"), response.actions)
+        assertEquals(emptyList<BuzzChoice>(), response.choices)
+    }
+
+    @Test
     fun `resolved problem notification decodes serde field names`() {
         val json = """{"id":7,"asset_title":"Example Movie","original_message":"Playback failed.","comments":"Replaced the file.","resolved_at_ms":1700000000000}"""
         assertEquals(

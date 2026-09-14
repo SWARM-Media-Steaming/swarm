@@ -5,7 +5,7 @@ import android.util.Log
 import android.view.LayoutInflater
 import android.view.ViewGroup
 import androidx.annotation.OptIn
-import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -25,6 +25,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.MediaItem
@@ -51,13 +52,10 @@ private const val PREVIEW_VISIBLE_STARTUP_TIMEOUT_MS = 20_000L
  * grids (#159) so both feel identical. */
 private const val BROWSE_PREVIEW_WARMUP_MS = 2_000L
 private const val BROWSE_PREVIEW_EXPAND_MS = 2_000L
+internal const val BROWSE_ALL_GRID_COLUMNS = 5
 
 /** Resting poster shape vs. the widescreen shape a hover preview animates
- * into, shared by the "Browse All" grids (#269). [CatalogScreen]'s rows get
- * the same 16:9 result by growing a fixed-height card's *width*; a grid
- * column can't widen without breaking the row, so here the card's *aspect
- * ratio* animates instead, shrinking a fixed-width box's height into a
- * widescreen frame. */
+ * into, shared by the "Browse All" grids (#269). */
 private const val BROWSE_PREVIEW_POSTER_ASPECT_RATIO = 2f / 3f
 private const val BROWSE_PREVIEW_VIDEO_ASPECT_RATIO = 16f / 9f
 
@@ -135,27 +133,39 @@ internal fun rememberBrowsePreviewCoordinator(
     )
 }
 
-/** Animates a grid card's artwork box between its resting 2:3 poster shape
- * and a 16:9 widescreen shape while its hover preview is expanded (#269),
- * mirroring [CatalogScreen]'s width-driven version of the same effect. Apply
- * the returned ratio to the same [Box] that hosts [BrowsePreviewGridOverlay]
- * in place of a static `aspectRatio(2f / 3f)`; it animates back to the
- * poster shape automatically once [isExpanded] goes false, whether that's
- * because the preview finished or because focus moved elsewhere. */
+/** Animates a grid card's width while keeping its resting poster height
+ * fixed, matching [CatalogScreen]'s 2:3-to-16:9 preview expansion. The grid
+ * item retains its original slot size; callers let the focused card draw
+ * over adjacent slots until the preview finishes or loses focus. */
 @Composable
-internal fun rememberBrowsePreviewAspectRatio(isExpanded: Boolean): Float {
-    val ratio by animateFloatAsState(
-        if (isExpanded) BROWSE_PREVIEW_VIDEO_ASPECT_RATIO else BROWSE_PREVIEW_POSTER_ASPECT_RATIO,
-        label = "browse-grid-preview-aspect",
+internal fun rememberBrowsePreviewWidth(posterWidth: Dp, isExpanded: Boolean): Dp {
+    val expandedWidth = browsePreviewExpandedWidth(posterWidth)
+    val width by animateDpAsState(
+        if (isExpanded) expandedWidth else posterWidth,
+        label = "browse-grid-preview-width",
     )
-    return ratio
+    return width
+}
+
+internal fun browsePreviewExpandedWidth(posterWidth: Dp): Dp =
+    posterWidth / BROWSE_PREVIEW_POSTER_ASPECT_RATIO * BROWSE_PREVIEW_VIDEO_ASPECT_RATIO
+
+/** Keeps the wider card inside the grid's horizontal bounds at either edge,
+ * while letting middle-column cards expand around their original center. */
+internal fun browsePreviewAlignment(
+    index: Int,
+    columns: Int = BROWSE_ALL_GRID_COLUMNS,
+): Alignment.Horizontal = when (index % columns) {
+    0, 1 -> Alignment.Start
+    columns - 2, columns - 1 -> Alignment.End
+    else -> Alignment.CenterHorizontally
 }
 
 /**
  * Poster-box preview layer for the "Browse All" full grids (#159): the
  * loading indicator while a focused card's stream negotiates, then the
- * inline video once it is ready. Pair with [rememberBrowsePreviewAspectRatio]
- * on the hosting [Box] so the video plays widescreen rather than
+ * inline video once it is ready. Pair with [rememberBrowsePreviewWidth]
+ * on the hosting card so the video plays widescreen rather than
  * zoom-cropped inside the resting poster bounds. Call from inside the
  * card's artwork [Box], over the [ArtworkImage].
  */

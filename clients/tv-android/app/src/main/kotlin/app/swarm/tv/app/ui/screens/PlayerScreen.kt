@@ -1374,7 +1374,12 @@ private fun trackAvailability(tracks: Tracks): TrackAvailability {
         isSelected = !subtitleSelected,
     )
     return TrackAvailability(
-        audioTracks = audioTracks.distinctByLabel(),
+        // Every supported Media3 audio track is a real selectable stream.
+        // Never collapse two streams merely because their metadata labels
+        // happen to match: older multilingual rips commonly leave both
+        // tracks unnamed (or name both "und"), and hiding one here makes it
+        // impossible for the viewer to reach it (#278).
+        audioTracks = audioTracks.withDistinctAudioLabels(),
         subtitleTracks = listOf(offChoice) + subtitleTracks.distinctByLabel(),
     )
 }
@@ -1393,8 +1398,17 @@ internal fun audioTrackLabel(language: String?, label: String?, index: Int): Str
         ?: label?.takeIf(::isMeaningfulTrackMetadata)
         ?: "Audio ${index + 1}"
 
-private fun isMeaningfulTrackMetadata(value: String): Boolean =
-    value.isNotBlank() && value.trim().lowercase() !in setOf("und", "undefined", "undetermined", "unknown")
+private fun isMeaningfulTrackMetadata(value: String): Boolean {
+    val normalized = value.trim().lowercase()
+    return normalized.isNotBlank()
+        && normalized !in setOf("und", "undefined", "undetermined", "unknown")
+        // FFmpeg disambiguates multiple unnamed HLS renditions as `und`,
+        // `und1`, `und2`, … and Media3 may surface those same renditions as
+        // `audio_1`, `audio_2`, … . Those are transport identifiers, not
+        // labels a viewer should see; retain the numbered Audio N fallback.
+        && !(normalized.startsWith("und") && normalized.drop(3).all(Char::isDigit))
+        && !Regex("audio[_ -]?\\d+").matches(normalized)
+}
 
 internal fun isEnglishAudioLabel(value: String): Boolean =
     value.trim().lowercase().split(Regex("[^a-z]+"))
@@ -1415,6 +1429,25 @@ private fun languageDisplayName(code: String): String {
 
 internal fun List<TrackChoice>.distinctByLabel(): List<TrackChoice> =
     distinctBy { it.label.trim().lowercase() }
+
+/** Preserve every real audio stream while making repeated display labels
+ * distinguishable. Two tracks called "English" are not necessarily duplicate
+ * streams (commentary, alternate mix, different codec), so label equality can
+ * never be used to discard one. */
+internal fun List<TrackChoice>.withDistinctAudioLabels(): List<TrackChoice> {
+    val totals = groupingBy { it.label.trim().lowercase() }.eachCount()
+    val seen = mutableMapOf<String, Int>()
+    return map { choice ->
+        val key = choice.label.trim().lowercase()
+        if (totals[key] == 1) {
+            choice
+        } else {
+            val number = (seen[key] ?: 0) + 1
+            seen[key] = number
+            choice.copy(label = "${choice.label} $number")
+        }
+    }
+}
 
 /** Applies [choice] as the sole override for its track type, so picking a
  * new audio track deselects whichever one was previously playing. */

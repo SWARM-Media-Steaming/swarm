@@ -1,6 +1,5 @@
 package app.swarm.tv.app.ui.screens
 
-import androidx.media3.common.Format
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Test
@@ -13,13 +12,10 @@ import org.junit.jupiter.api.Test
  * reached the pause-screen picker.
  */
 class AudioTrackAvailabilityTest {
-    private fun formatWith(language: String? = null, label: String? = null): Format =
-        Format.Builder().setLanguage(language).setLabel(label).build()
-
     @Test
     fun `untagged audio tracks get distinct numbered labels instead of colliding`() {
-        val first = audioTrackLabel(formatWith(), index = 0)
-        val second = audioTrackLabel(formatWith(), index = 1)
+        val first = audioTrackLabel(language = null, label = null, index = 0)
+        val second = audioTrackLabel(language = null, label = null, index = 1)
 
         assertEquals("Audio 1", first)
         assertEquals("Audio 2", second)
@@ -28,8 +24,8 @@ class AudioTrackAvailabilityTest {
     @Test
     fun `numbered fallback labels survive distinctByLabel so both tracks stay selectable`() {
         val choices = listOf(
-            TrackChoice(label = audioTrackLabel(formatWith(), 0), group = null, trackIndex = 0, isSelected = true),
-            TrackChoice(label = audioTrackLabel(formatWith(), 1), group = null, trackIndex = 1, isSelected = false),
+            TrackChoice(label = audioTrackLabel(null, null, 0), group = null, trackIndex = 0, isSelected = true),
+            TrackChoice(label = audioTrackLabel(null, null, 1), group = null, trackIndex = 1, isSelected = false),
         )
 
         assertEquals(2, choices.distinctByLabel().size)
@@ -47,9 +43,25 @@ class AudioTrackAvailabilityTest {
 
     @Test
     fun `an explicit track name wins over the numbered fallback`() {
-        // Format's language path routes through android.text.TextUtils, which
-        // this plain-JVM unit test can't instantiate (no Robolectric) — the
-        // label path exercises the same precedence rule without it.
-        assertNotEquals("Audio 2", audioTrackLabel(formatWith(label = "Director's Commentary"), index = 1))
+        assertNotEquals("Audio 2", audioTrackLabel(null, "Director's Commentary", index = 1))
+    }
+
+    @Test
+    fun `und language sentinel does not hide meaningful track names`() {
+        assertEquals("Spanish", audioTrackLabel("und", "Spanish", index = 0))
+        assertEquals("English", audioTrackLabel("und", "English", index = 1))
+    }
+
+    @Test
+    fun `und language and labels receive distinct numbered fallbacks`() {
+        assertEquals("Audio 1", audioTrackLabel("und", "UND", index = 0))
+        assertEquals("Audio 2", audioTrackLabel("und", "unknown", index = 1))
+    }
+
+    @Test
+    fun `english labels are recognized for initial selection`() {
+        assertEquals(true, isEnglishAudioLabel("English"))
+        assertEquals(true, isEnglishAudioLabel("English 5.1"))
+        assertEquals(false, isEnglishAudioLabel("Spanish"))
     }
 }

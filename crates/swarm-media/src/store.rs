@@ -2559,6 +2559,46 @@ impl Library {
         Ok(row.and_then(|(path, version)| path.map(|p| (p, version as u32))))
     }
 
+    /// The artist photo for this entry, falling back to the cover art of the
+    /// artist's first album (ordered by album, then relative path — the
+    /// query result is deterministic even though scrape grouping order is
+    /// not) when no photo was ever scraped for that artist. This lets
+    /// `/art/{entry_key}/artist` always answer with *some* image whenever the
+    /// artist has any album art, so clients never need their own "pick a
+    /// stand-in album cover" fallback (#277). The returned version is the
+    /// artwork_version of whichever row's image is actually being served, so
+    /// the etag still tracks the bytes on the wire.
+    pub async fn artist_photo_or_fallback(
+        &self,
+        entry_key: &str,
+    ) -> sqlx::Result<Option<(String, u32)>> {
+        let row: Option<(Option<String>, Option<String>, i64)> = sqlx::query_as(
+            "SELECT artist_art_relative_path, artist, artwork_version \
+             FROM library_entries WHERE entry_key = ?",
+        )
+        .bind(entry_key)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some((artist_art, artist, version)) = row else {
+            return Ok(None);
+        };
+        if let Some(path) = artist_art {
+            return Ok(Some((path, version as u32)));
+        }
+        let Some(artist) = artist.filter(|a| !a.is_empty()) else {
+            return Ok(None);
+        };
+        let fallback: Option<(String, i64)> = sqlx::query_as(
+            "SELECT cover_relative_path, artwork_version FROM library_entries \
+             WHERE available = 1 AND artist = ? AND cover_relative_path IS NOT NULL \
+             ORDER BY album, relative_path LIMIT 1",
+        )
+        .bind(&artist)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(fallback.map(|(path, version)| (path, version as u32)))
+    }
+
     /// Reverts a bad scrape: clears the display-overlay `scraped_title`/
     /// `genres`/`cast` and every artwork slot back to unscraped, so the
     /// entry becomes eligible for `missing_scrape` again (the same `IS NULL`

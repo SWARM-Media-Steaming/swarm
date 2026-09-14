@@ -1022,6 +1022,15 @@ impl TranscodeManager {
         if options.len() <= 1 {
             return true;
         }
+        // With multiple anonymous tracks the client cannot express an
+        // English preference and container/default ordering is not useful
+        // evidence (the reported Daria files are Spanish first/default and
+        // English second, with neither track tagged). Force HLS so every
+        // stream becomes an explicit selectable rendition instead of relying
+        // on the device demuxer's treatment of anonymous tracks.
+        if options.iter().any(|option| option.language.is_none()) {
+            return false;
+        }
         let all_tracks_decodable = options.iter().all(|option| {
             !option.codec.is_empty()
                 && client_audio_codecs
@@ -3667,6 +3676,112 @@ mod tests {
             "English is already the first audio track — direct play is safe"
         );
 
+        drop(manager);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Exact #278 shape: two supported audio streams with no language or
+    /// title metadata. Even when the container is otherwise direct-playable,
+    /// route it through HLS and prove both anonymous streams become distinct
+    /// renditions. The TV labels these `Audio 1` and `Audio 2`.
+    #[tokio::test]
+    async fn untagged_multi_audio_is_hls_with_every_track_exposed() {
+        if Command::new("ffprobe")
+            .arg("-version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await
+            .is_err()
+        {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("swarm-untagged-audio-{}", session_id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("episode.mp4");
+        let status = std::process::Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=320x180:rate=30:duration=1",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=1",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=220:duration=1",
+                "-map",
+                "0:v",
+                "-map",
+                "1:a",
+                "-map",
+                "2:a",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-disposition:a:0",
+                "default",
+                "-disposition:a:1",
+                "0",
+                "-shortest",
+                "-y",
+            ])
+            .arg(&path)
+            .status()
+            .unwrap();
+        if !status.success() {
+            let _ = std::fs::remove_dir_all(&root);
+            return;
+        }
+
+        let manager = TranscodeManager::new(TranscodeConfig {
+            enabled: true,
+            ffmpeg_path: "ffmpeg".into(),
+            session_dir: root.join("sessions"),
+            max_upload_bps: 100_000_000,
+            reserve_percent: 0,
+            max_sessions: 2,
+            idle_timeout: Duration::from_secs(300),
+            segment_duration_secs: 4,
+            ..Default::default()
+        });
+        let mut source_entry = entry();
+        source_entry.relative_path = "episode.mp4".into();
+        source_entry.duration_secs = Some(1.0);
+        source_entry.video.as_mut().unwrap().width = 320;
+        source_entry.video.as_mut().unwrap().height = 180;
+        source_entry.video.as_mut().unwrap().bitrate = Some(200_000);
+        source_entry.audio.as_mut().unwrap().bitrate = Some(96_000);
+        source_entry.size = path.metadata().unwrap().len();
+
+        let plan = manager
+            .plan(&source_entry, &path, &preferences(), true, None)
+            .await
+            .unwrap();
+        assert_eq!(plan.mode, PlaybackMode::Hls);
+        let relative = plan.path.splitn(4, '/').nth(3).unwrap();
+        let master_file = manager.open_hls(&plan.session_id, relative).unwrap();
+        let master = std::fs::read_to_string(master_file.path).unwrap();
+        assert_eq!(
+            master.matches("#EXT-X-MEDIA:TYPE=AUDIO").count(),
+            2,
+            "both anonymous audio streams must reach the player: {master}"
+        );
+        assert!(master.contains("NAME=\"audio_1\""), "{master}");
+        assert!(master.contains("NAME=\"audio_2\""), "{master}");
+        assert!(master.contains("URI=\"vund/index.m3u8\""), "{master}");
+        assert!(master.contains("URI=\"vund1/index.m3u8\""), "{master}");
+
+        manager.finish_use(&plan.session_id);
         drop(manager);
         let _ = std::fs::remove_dir_all(&root);
     }

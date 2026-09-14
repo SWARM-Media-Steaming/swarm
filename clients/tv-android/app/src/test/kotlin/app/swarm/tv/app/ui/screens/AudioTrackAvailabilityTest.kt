@@ -32,13 +32,15 @@ class AudioTrackAvailabilityTest {
     }
 
     @Test
-    fun `genuinely duplicate labels still collapse to one choice`() {
+    fun `duplicate labels must not imply duplicate audio streams`() {
         val choices = listOf(
             TrackChoice(label = "English", group = null, trackIndex = 0, isSelected = true),
             TrackChoice(label = "English", group = null, trackIndex = 1, isSelected = false),
         )
 
-        assertEquals(1, choices.distinctByLabel().size)
+        val visible = choices.withDistinctAudioLabels()
+        assertEquals(2, visible.size)
+        assertEquals(listOf("English 1", "English 2"), visible.map { it.label })
     }
 
     @Test
@@ -56,6 +58,8 @@ class AudioTrackAvailabilityTest {
     fun `und language and labels receive distinct numbered fallbacks`() {
         assertEquals("Audio 1", audioTrackLabel("und", "UND", index = 0))
         assertEquals("Audio 2", audioTrackLabel("und", "unknown", index = 1))
+        assertEquals("Audio 2", audioTrackLabel(null, "und1", index = 1))
+        assertEquals("Audio 2", audioTrackLabel(null, "audio_2", index = 1))
     }
 
     @Test

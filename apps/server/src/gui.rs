@@ -2376,12 +2376,17 @@ async fn get_artwork_bytes<R: tauri::Runtime>(
     let core = state.core(&app).await?;
     let artwork_kind = swarm_media::store::ArtworkKind::parse(&kind)
         .ok_or_else(|| format!("unknown artwork kind \"{kind}\""))?;
-    let Some((relative_path, _version)) = core
-        .library
-        .artwork(&entry_key, artwork_kind)
-        .await
-        .map_err(|e| e.to_string())?
-    else {
+    // Mirrors `MediaService::art`'s HTTP handler: an artist photo falls back
+    // to the artist's first album cover when none was scraped (#277), so the
+    // dashboard's own browse grid doesn't show a blank circle for an artist
+    // this app's other surface (TV clients, over HTTP) already has a picture
+    // for.
+    let lookup = if artwork_kind == swarm_media::store::ArtworkKind::ArtistPhoto {
+        core.library.artist_photo_or_fallback(&entry_key).await
+    } else {
+        core.library.artwork(&entry_key, artwork_kind).await
+    };
+    let Some((relative_path, _version)) = lookup.map_err(|e| e.to_string())? else {
         return Ok(None);
     };
     let path = core.media_roots.resolve(&relative_path);

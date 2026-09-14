@@ -3513,13 +3513,14 @@ mod tests {
         let root = std::env::temp_dir().join(format!("swarm-direct-en-{}", session_id()));
         std::fs::create_dir_all(&root).unwrap();
 
-        // Two audio tracks. `english_first` controls their container order.
+        // Two title-tagged audio tracks whose formal language is `und`, like
+        // the Daria files from #278. `english_first` controls container order.
         let build_source = |name: &str, english_first: bool| {
             let path = root.join(name);
-            let (lang0, lang1) = if english_first {
-                ("eng", "jpn")
+            let (title0, title1) = if english_first {
+                ("English", "Spanish")
             } else {
-                ("jpn", "eng")
+                ("Spanish", "English")
             };
             let status = std::process::Command::new("ffmpeg")
                 .args([
@@ -3551,9 +3552,13 @@ mod tests {
                     "-c:a",
                     "aac",
                     "-metadata:s:a:0",
-                    &format!("language={lang0}"),
+                    "language=und",
                     "-metadata:s:a:1",
-                    &format!("language={lang1}"),
+                    "language=und",
+                    "-metadata:s:a:0",
+                    &format!("title={title0}"),
+                    "-metadata:s:a:1",
+                    &format!("title={title1}"),
                     "-shortest",
                     "-y",
                 ])
@@ -3601,7 +3606,22 @@ mod tests {
         assert_eq!(
             declined.mode,
             PlaybackMode::Hls,
-            "English is the second audio track — direct play would start in Japanese"
+            "English is the second audio track — direct play would start in Spanish"
+        );
+        let declined_relative = declined.path.splitn(4, '/').nth(3).unwrap();
+        let declined_file = manager
+            .open_hls(&declined.session_id, declined_relative)
+            .unwrap();
+        let declined_master = std::fs::read_to_string(declined_file.path).unwrap();
+        assert_eq!(declined_master.matches("#EXT-X-MEDIA:TYPE=AUDIO").count(), 2);
+        let english = declined_master
+            .lines()
+            .find(|line| line.contains("LANGUAGE=\"eng\""))
+            .expect("title-tagged English audio missing from HLS master");
+        assert!(english.contains("DEFAULT=YES"), "{english}");
+        assert!(
+            declined_master.lines().any(|line| line.contains("LANGUAGE=\"spa\"")),
+            "title-tagged Spanish audio missing from HLS master: {declined_master}"
         );
 
         source_entry.size = english_first.metadata().unwrap().len();

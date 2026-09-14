@@ -143,8 +143,9 @@ fun MovieShelfScreen(
                                 }
                             },
                     ) {
+                        val previewAspectRatio = rememberBrowsePreviewAspectRatio(isPreviewExpanded)
                         Box(
-                            modifier = Modifier.fillMaxWidth().aspectRatio(2f / 3f).clip(RoundedCornerShape(4.dp)),
+                            modifier = Modifier.fillMaxWidth().aspectRatio(previewAspectRatio).clip(RoundedCornerShape(4.dp)),
                         ) {
                             ArtworkImage(
                                 label = movie.entry.scrapedTitle ?: movie.entry.title,

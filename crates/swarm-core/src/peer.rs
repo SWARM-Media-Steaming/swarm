@@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
 /// `/errors/report` (client-observed error triage — see
 /// [`ClientErrorReport`]), `/notifications/{device_id}[/{error_id}/dismiss]`
 /// (resolved-problem delivery), and `/likes/toggle` (see [`LikeToggle`]).
+/// Buzz transitions use `/buzz?payload={hex-json}`; the peer certificate is
+/// the history owner and the payload is a [`BuzzRequest`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PeerRequest {
@@ -36,6 +38,53 @@ pub struct PeerRequest {
     /// Present only on `/likes/toggle`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub like: Option<LikeToggle>,
+}
+
+/// A state transition in Buzz's server-owned discovery session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuzzRequest {
+    /// `start`, `answer`, `try_again`, `not_interested`, `play`, or
+    /// `playback_outcome`.
+    pub action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<String>,
+    /// Start mode, question choice, or playback outcome depending on action.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuzzChoice {
+    pub id: String,
+    pub label: String,
+}
+
+/// Complete render model for a Buzz screen. Optional recommendation fields
+/// are absent on question screens, keeping the TV client purely presentational.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuzzResponse {
+    pub session_id: String,
+    pub screen: String,
+    pub buzz_text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice_asset: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub choices: Vec<BuzzChoice>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasons: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<String>,
 }
 
 /// A device's like/unlike of one asset, reported over the same authenticated

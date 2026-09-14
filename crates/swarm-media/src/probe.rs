@@ -83,6 +83,9 @@ fn is_hdr_transfer(color_transfer: &str) -> bool {
 #[derive(Default, Deserialize)]
 struct FfprobeTags {
     language: Option<String>,
+    title: Option<String>,
+    name: Option<String>,
+    handler_name: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
@@ -199,7 +202,7 @@ pub async fn list_audio_streams(ffmpeg_path: &Path, media_path: &Path) -> Vec<Au
             "-select_streams",
             "a",
             "-show_entries",
-            "stream=index,codec_type,codec_name,channels:stream_tags=language:stream_disposition=default",
+            "stream=index,codec_type,codec_name,channels:stream_tags=language,title,name,handler_name:stream_disposition=default",
         ])
         .arg(media_path)
         .output()
@@ -222,7 +225,7 @@ pub async fn list_audio_streams(ffmpeg_path: &Path, media_path: &Path) -> Vec<Au
             let index = stream.index?;
             Some(AudioStreamOption {
                 index,
-                language: stream.tags.language.clone(),
+                language: audio_stream_language(&stream.tags),
                 is_preferred: Some(index) == preferred,
                 codec: stream.codec_name.clone().unwrap_or_default(),
                 channels: stream.channels.unwrap_or(0),
@@ -387,7 +390,11 @@ fn select_preferred_audio_stream(streams: &[FfprobeStream]) -> Option<usize> {
         .filter(|stream| stream.codec_type.as_deref() == Some("audio"));
     audio
         .clone()
-        .filter(|stream| stream.tags.language.as_deref().is_some_and(is_english))
+        .filter(|stream| {
+            audio_stream_language(&stream.tags)
+                .as_deref()
+                .is_some_and(is_english)
+        })
         .max_by_key(|stream| stream.disposition.default.unwrap_or(0))
         .and_then(|stream| stream.index)
         .or_else(|| {
@@ -397,6 +404,47 @@ fn select_preferred_audio_stream(streams: &[FfprobeStream]) -> Option<usize> {
                 .and_then(|stream| stream.index)
         })
         .or_else(|| audio.filter_map(|stream| stream.index).next())
+}
+
+/// Containers commonly store the human-facing audio name ("English",
+/// "Spanish") but leave the ISO language tag as `und`. Promote the two names
+/// involved in #278 to proper HLS language codes so clients can both display
+/// and select them. A real language tag always wins.
+fn audio_stream_language(tags: &FfprobeTags) -> Option<String> {
+    let language = tags.language.as_deref().map(str::trim).filter(|value| {
+        !value.is_empty()
+            && !matches!(
+                value.to_ascii_lowercase().as_str(),
+                "und" | "undefined" | "undetermined" | "unknown"
+            )
+    });
+    if let Some(language) = language {
+        return Some(language.to_string());
+    }
+    let names = [
+        tags.title.as_deref(),
+        tags.name.as_deref(),
+        tags.handler_name.as_deref(),
+    ];
+    if names
+        .iter()
+        .flatten()
+        .any(|name| audio_title_has_language(name, "english"))
+    {
+        Some("eng".to_string())
+    } else if names.iter().flatten().any(|name| {
+        audio_title_has_language(name, "spanish") || audio_title_has_language(name, "español")
+    }) {
+        Some("spa".to_string())
+    } else {
+        None
+    }
+}
+
+fn audio_title_has_language(title: &str, language: &str) -> bool {
+    title
+        .split(|character: char| !character.is_alphabetic())
+        .any(|word| word.eq_ignore_ascii_case(language))
 }
 
 pub(crate) fn is_english(language: &str) -> bool {
@@ -448,6 +496,25 @@ mod tests {
             assert!(is_english(language), "did not recognize {language}");
         }
         assert!(!is_english("spa"));
+    }
+
+    #[test]
+    fn infers_english_and_spanish_from_titles_when_language_is_und() {
+        let parsed = streams(
+            r#"{"streams":[
+                {"index":1,"codec_type":"audio","tags":{"language":"und","title":"Spanish Stereo"},"disposition":{"default":1}},
+                {"index":2,"codec_type":"audio","tags":{"language":"und","title":"English 5.1"},"disposition":{"default":0}}
+            ]}"#,
+        );
+        assert_eq!(
+            audio_stream_language(&parsed[0].tags).as_deref(),
+            Some("spa")
+        );
+        assert_eq!(
+            audio_stream_language(&parsed[1].tags).as_deref(),
+            Some("eng")
+        );
+        assert_eq!(select_preferred_audio_stream(&parsed), Some(2));
     }
 
     #[test]

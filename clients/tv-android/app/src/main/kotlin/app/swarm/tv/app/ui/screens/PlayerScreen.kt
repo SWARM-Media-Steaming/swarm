@@ -720,6 +720,15 @@ fun PlayerScreen(
     var trackAvailability by remember(sessionId) {
         mutableStateOf(trackAvailability(player.currentTracks))
     }
+    var initialAudioPreferenceApplied by remember(sessionId) { mutableStateOf(false) }
+    LaunchedEffect(player, trackAvailability.audioTracks) {
+        if (!initialAudioPreferenceApplied) {
+            trackAvailability.audioTracks.firstOrNull { isEnglishAudioLabel(it.label) }?.let { english ->
+                initialAudioPreferenceApplied = true
+                if (!english.isSelected) selectAudioTrack(player, english)
+            }
+        }
+    }
     val normalMaxVideoBitrate = remember(player) { player.trackSelectionParameters.maxVideoBitrate }
     var bufferingQualityRecoveryGeneration by remember(sessionId) { mutableStateOf(0L) }
 
@@ -1272,7 +1281,10 @@ fun PlayerScreen(
                 onResume = player::play,
                 onNextEpisode = onContinue,
                 onPlayRecommendation = onPlayRecommendation,
-                onSelectAudioTrack = { choice -> selectAudioTrack(player, choice) },
+                onSelectAudioTrack = { choice ->
+                    initialAudioPreferenceApplied = true
+                    selectAudioTrack(player, choice)
+                },
                 onSelectSubtitleTrack = { choice -> selectSubtitleTrack(player, choice) },
             )
         }
@@ -1374,9 +1386,19 @@ private fun trackAvailability(tracks: Tracks): TrackAvailability {
 /// silently hiding the rest of a multi-track file's audio from the picker
 /// (#278: an untagged Spanish+English MKV only ever exposed one track).
 internal fun audioTrackLabel(format: Format, index: Int): String =
-    format.language?.takeIf(String::isNotBlank)?.let(::languageDisplayName)
-        ?: format.label?.takeIf(String::isNotBlank)
+    audioTrackLabel(format.language, format.label, index)
+
+internal fun audioTrackLabel(language: String?, label: String?, index: Int): String =
+    language?.takeIf(::isMeaningfulTrackMetadata)?.let(::languageDisplayName)
+        ?: label?.takeIf(::isMeaningfulTrackMetadata)
         ?: "Audio ${index + 1}"
+
+private fun isMeaningfulTrackMetadata(value: String): Boolean =
+    value.isNotBlank() && value.trim().lowercase() !in setOf("und", "undefined", "undetermined", "unknown")
+
+internal fun isEnglishAudioLabel(value: String): Boolean =
+    value.trim().lowercase().split(Regex("[^a-z]+"))
+        .any { it == "en" || it == "eng" || it == "english" }
 
 private fun subtitleTrackLabel(format: Format, index: Int): String =
     format.label?.takeIf(String::isNotBlank)

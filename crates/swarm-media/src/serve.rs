@@ -1234,7 +1234,9 @@ impl MediaService {
     /// `GET /art/{entry_key}/{poster|season|backdrop|cover|artist}` — the artwork a
     /// scrape wrote, served the same way as media bytes (Range + etag), with
     /// `if_none_match` short-circuiting to 304 when the client already has
-    /// the current version.
+    /// the current version. `artist` falls back to the artist's first album
+    /// cover when no artist photo was ever scraped (#277), so clients can
+    /// treat this route as always answerable without their own fallback.
     async fn art(
         &self,
         entry_key: &str,
@@ -1248,7 +1250,12 @@ impl MediaService {
         let Some(kind) = ArtworkKind::parse(kind_segment) else {
             return status(404);
         };
-        let Ok(Some((relative_path, version))) = self.library.artwork(entry_key, kind).await else {
+        let lookup = if kind == ArtworkKind::ArtistPhoto {
+            self.library.artist_photo_or_fallback(entry_key).await
+        } else {
+            self.library.artwork(entry_key, kind).await
+        };
+        let Ok(Some((relative_path, version))) = lookup else {
             return status(404);
         };
         let requested_width = artwork_thumbnail_width(&request.path);

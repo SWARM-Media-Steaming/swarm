@@ -16,6 +16,13 @@ namespace Swarm.Artwork
         return url(baseUrl, entry, "backdrop", width)
     end function
 
+    ' Server serves the artist's own photo when scraped, otherwise falls
+    ' back to the artist's first album cover (#277) -- no client-side
+    ' fallback needed, unlike Poster()'s track->cover remap above.
+    function Artist(baseUrl as string, entry as object, width as integer) as dynamic
+        return url(baseUrl, entry, "artist", width)
+    end function
+
     function FullPoster(baseUrl as string, entry as object) as dynamic
         kind = "poster"
         if entry.kind = "track"

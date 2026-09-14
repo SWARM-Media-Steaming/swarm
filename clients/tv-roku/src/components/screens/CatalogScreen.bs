@@ -113,7 +113,7 @@ sub buildShelf(shelfIndex as integer, items as object, kind as string)
             tile.caption = item.artist
             firstTrack = Swarm.CatalogGrouping.FirstTrack(item.tracks)
             if firstTrack <> invalid
-                tile.entryUrl = artworkUrlFor(firstTrack)
+                tile.entryUrl = Swarm.Artwork.Artist(m.appState.serverBaseUrl, firstTrack, 320)
             end if
             actions.Push({ kind: "artist", artist: item })
         end if

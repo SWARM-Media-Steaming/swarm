@@ -821,7 +821,13 @@ impl TranscodeManager {
             if let Some(source_peak) = direct_peak_bps(entry) {
                 if source_peak <= client_limit
                     && direct_compatible(entry, preferences)
-                    && self.direct_play_keeps_english_default(media_path, entry).await
+                    && self
+                        .direct_play_audio_is_viable(
+                            media_path,
+                            entry,
+                            &preferences.capabilities.audio_codecs,
+                        )
+                        .await
                 {
                     let id = self.reserve(
                         SessionKind::Direct {
@@ -969,23 +975,40 @@ impl TranscodeManager {
     }
 
     /// Direct play hands the raw container to the client, which then selects an
-    /// audio track on its own. Previews and full playback are both meant to
-    /// start in English whenever the source has an English track (regression
-    /// #191). The client asks Media3 for English, but with several embedded
-    /// audio streams a player still falls back to the container-order/default
-    /// track when nothing is a language match — so an English track that is
-    /// tagged but not first would play in the wrong language.
+    /// audio track on its own — so both language *and* codec support have to
+    /// hold for every embedded track, not just the one [direct_compatible]
+    /// already checked (that only inspects the scan-time summary's single
+    /// first-track codec).
     ///
-    /// Returns `false` in exactly that case, so planning falls through to the
-    /// remux/transcode path where the server pins the English track as the HLS
-    /// `DEFAULT=YES` rendition (see `var_stream_map` in `spawn_ffmpeg_attempt`).
-    /// A single audio stream, an English track that is already first, no
-    /// English track at all, or any probe failure (ffprobe missing, slow
-    /// share) all return `true` — direct play behaves as before.
-    async fn direct_play_keeps_english_default(
+    /// Codec check: a second track in a codec the client can't decode (DTS,
+    /// MP2, …) is never re-validated, so direct play would silently serve a
+    /// file whose non-default track the client's `Tracks` API reports
+    /// unsupported and drops from the switcher entirely — no error, just a
+    /// missing option (#278: a Fire TV played an untagged Spanish/English
+    /// MKV's Spanish default fine but had no way to reach the English track
+    /// because it decoded in a codec direct play never checked).
+    ///
+    /// Language check: previews and full playback are both meant to start in
+    /// English whenever the source has an English track (regression #191).
+    /// The client asks Media3 for English, but with several embedded audio
+    /// streams a player still falls back to the container-order/default track
+    /// when nothing is a language match — so an English track that is tagged
+    /// but not first would play in the wrong language.
+    ///
+    /// Returns `false` when either check fails, so planning falls through to
+    /// the remux/transcode path: HLS re-encodes every track into something
+    /// the client's advertised codecs can always take
+    /// (`choose_audio_delivery`) and pins the English track as the
+    /// `DEFAULT=YES` rendition (see `var_stream_map` in
+    /// `spawn_ffmpeg_attempt`). A single audio stream, all tracks already
+    /// client-decodable with an English track that's first or absent, or any
+    /// probe failure (ffprobe missing, slow share) all return `true` — direct
+    /// play behaves as before.
+    async fn direct_play_audio_is_viable(
         &self,
         media_path: &Path,
         entry: &EntryRecord,
+        client_audio_codecs: &[String],
     ) -> bool {
         if entry.kind == MediaKind::Track {
             return true;
@@ -998,6 +1021,15 @@ impl TranscodeManager {
         .unwrap_or_default();
         if options.len() <= 1 {
             return true;
+        }
+        let all_tracks_decodable = options.iter().all(|option| {
+            !option.codec.is_empty()
+                && client_audio_codecs
+                    .iter()
+                    .any(|token| codec_matches(token, &canonical_audio_codec(&option.codec)))
+        });
+        if !all_tracks_decodable {
+            return false;
         }
         let preferred_is_tagged_english = options
             .iter()
@@ -3633,6 +3665,116 @@ mod tests {
             direct.mode,
             PlaybackMode::Direct,
             "English is already the first audio track — direct play is safe"
+        );
+
+        drop(manager);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Direct play must also fall back to HLS when a *secondary* audio track
+    /// uses a codec the client cannot decode at all. [direct_compatible] only
+    /// checks the scan-time summary's single first-track codec, so an English
+    /// track that is first (passing the language gate above) but encoded in a
+    /// codec the client never advertises would otherwise reach the client's
+    /// own demuxer, get marked unsupported by its `Tracks` API, and vanish
+    /// from the audio picker with no error — the exact "Audio 1 shows, Audio
+    /// 2 doesn't" follow-up reported for a Daria rip after #278's first pass
+    /// only fixed language tagging, not codec support.
+    #[tokio::test]
+    async fn direct_play_is_declined_when_a_secondary_audio_track_codec_is_unsupported() {
+        if Command::new("ffprobe")
+            .arg("-version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await
+            .is_err()
+        {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("swarm-direct-codec-{}", session_id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("movie.mp4");
+        // Track 0 (English, first, default) is AAC — the language gate alone
+        // would call this file safe for direct play. Track 1 (Spanish) is
+        // FLAC, a codec `CapabilityProfile::fire_tv_baseline` never lists.
+        let status = std::process::Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=320x180:rate=30:duration=1",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=1",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=220:duration=1",
+                "-map",
+                "0:v",
+                "-map",
+                "1:a",
+                "-map",
+                "2:a",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a:0",
+                "aac",
+                "-c:a:1",
+                "flac",
+                "-metadata:s:a:0",
+                "language=eng",
+                "-metadata:s:a:1",
+                "language=spa",
+                "-shortest",
+                "-y",
+            ])
+            .arg(&path)
+            .status()
+            .unwrap();
+        if !status.success() {
+            let _ = std::fs::remove_dir_all(&root);
+            return;
+        }
+
+        let config = TranscodeConfig {
+            enabled: true,
+            ffmpeg_path: "ffmpeg".into(),
+            session_dir: root.join("sessions"),
+            max_upload_bps: 100_000_000,
+            reserve_percent: 0,
+            max_sessions: 2,
+            idle_timeout: Duration::from_secs(300),
+            segment_duration_secs: 4,
+            ..Default::default()
+        };
+        let manager = TranscodeManager::new(config);
+
+        let mut source_entry = entry();
+        source_entry.relative_path = "movie.mp4".into();
+        source_entry.duration_secs = Some(1.0);
+        source_entry.video.as_mut().unwrap().width = 320;
+        source_entry.video.as_mut().unwrap().height = 180;
+        source_entry.video.as_mut().unwrap().bitrate = Some(200_000);
+        source_entry.audio.as_mut().unwrap().bitrate = Some(96_000);
+        source_entry.size = path.metadata().unwrap().len();
+        let prefs = preferences(); // prefer_direct = true, fire_tv_baseline codecs
+
+        let plan = manager
+            .plan(&source_entry, &path, &prefs, true, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            plan.mode,
+            PlaybackMode::Hls,
+            "second track is FLAC, which the client's capability profile can't decode — direct play would hide it from the picker"
         );
 
         drop(manager);

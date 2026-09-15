@@ -1074,6 +1074,19 @@ async fn set_scan_music_tracks<R: tauri::Runtime>(
 }
 
 // ----- Software update ---------------------------------------------------
+//
+// Issue #309: the release pipeline publishes tagged GitHub Releases named
+// `{RELEASE_TAG_PREFIX}{version}` (e.g. `server-v0.1.0-beta.42`), each
+// carrying the standard Tauri `latest.json` update manifest as one of its
+// own release assets (`.../releases/download/<tag>/latest.json`) alongside
+// the one the fixed `.../releases/latest/download/latest.json` endpoint in
+// `tauri.conf.json` always points at. "Check now" lists candidates straight
+// from the GitHub Releases API and installs a *specific* one by pointing a
+// fresh `Updater` at that release's own manifest URL — the fixed endpoint
+// only ever answers for whichever release GitHub currently calls "latest".
+
+const GITHUB_REPO: &str = "SWARM-Media-Steaming/swarm";
+const RELEASE_TAG_PREFIX: &str = "server-v";
 
 #[derive(serde::Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -1095,15 +1108,50 @@ impl UpdateSummary {
     }
 }
 
+/// The `semver` crate (which the updater plugin uses for comparison)
+/// deliberately ignores build metadata when ordering two versions — see
+/// <https://semver.org/#spec-item-10> — so two releases differing only in
+/// the `+main.<run_number>` suffix this repo's release workflow appends to
+/// an unchanged-version `main` publish compare as *equal*, and the plugin's
+/// default `release.version > current_version` check would never fire
+/// between them. Treat an equal-except-build-metadata release as newer too,
+/// so consecutive unchanged-version `main` publishes still get noticed.
+fn release_is_newer(current: semver::Version, release: tauri_plugin_updater::RemoteRelease) -> bool {
+    match release.version.cmp(&current) {
+        std::cmp::Ordering::Greater => true,
+        std::cmp::Ordering::Less => false,
+        std::cmp::Ordering::Equal => release.version.build != current.build,
+    }
+}
+
+/// Checks the fixed "latest" endpoint from `tauri.conf.json` — used by the
+/// startup check and the "notify"/"Automatically" flows, never by "Check
+/// now" (see [`check_for_update`]).
 async fn pending_update<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<Option<tauri_plugin_updater::Update>, String> {
     use tauri_plugin_updater::UpdaterExt;
-    app.updater()
+    app.updater_builder()
+        .version_comparator(release_is_newer)
+        .build()
         .map_err(|e| e.to_string())?
         .check()
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Zero when no `ServerCore` has started yet (unconfigured, or simply not
+/// built yet) — no core running means nothing could possibly be playing.
+/// Reuses the exact session count the Metrics tab already shows (issue
+/// #309 explicitly calls out not inventing a second "busy" concept).
+async fn active_playback_sessions<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> usize {
+    let Some(state) = app.try_state::<AppState>() else {
+        return 0;
+    };
+    match state.core(app).await {
+        Ok(core) => core.active_playback_sessions(),
+        Err(_) => 0,
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1126,7 +1174,10 @@ async fn set_auto_update<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     mode: String,
 ) -> Result<(), String> {
-    if !matches!(mode.as_str(), "off" | "notify" | "auto") {
+    // "off" was removed in issue #309 — every existing settings.json is
+    // upgraded to "notify" on load (see settings::load), so it's rejected
+    // here too rather than letting a stale UI resurrect it.
+    if !matches!(mode.as_str(), "notify" | "auto") {
         return Err(format!("unknown update mode: {mode}"));
     }
     let dir = app_data_dir(&app)?;
@@ -1135,20 +1186,123 @@ async fn set_auto_update<R: tauri::Runtime>(
     settings::save(&dir, &settings).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-async fn check_for_update<R: tauri::Runtime>(
-    app: tauri::AppHandle<R>,
-) -> Result<Option<UpdateSummary>, String> {
-    Ok(pending_update(&app)
-        .await?
-        .map(|update| UpdateSummary::from_update(&update)))
+#[derive(serde::Deserialize, Debug, Clone)]
+struct GithubRelease {
+    tag_name: String,
+    body: Option<String>,
+    draft: bool,
+    prerelease: bool,
+    published_at: Option<String>,
 }
 
-/// Downloads and applies the update, then relaunches. The caller is expected
-/// to warn the user first — this drops any live playback connection.
+/// One of the six versions "Check now" offers: the 3 most recent stable
+/// releases plus the 3 most recent beta (`ai-main`) releases.
+#[derive(serde::Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+struct UpdateCandidate {
+    version: String,
+    tag: String,
+    prerelease: bool,
+    published_at: String,
+    notes: String,
+    is_current: bool,
+    /// False for anything older than the running version — the updater
+    /// plugin has no built-in downgrade support (issue #309 deliberately
+    /// leaves true downgrade out of scope). The UI greys these out with an
+    /// explanation rather than hiding them, so older releases stay visible
+    /// for context.
+    installable: bool,
+}
+
+/// Pure transform from the GitHub Releases API's newest-first list to the
+/// "last 3 stable + last 3 beta" set `check_for_update` returns — kept free
+/// of I/O so it's unit-testable without a live GitHub call.
+fn update_candidates(releases: &[GithubRelease], current_version: &semver::Version) -> Vec<UpdateCandidate> {
+    let (prereleases, stable): (Vec<_>, Vec<_>) = releases
+        .iter()
+        .filter(|r| !r.draft && r.tag_name.starts_with(RELEASE_TAG_PREFIX))
+        .partition(|r| r.prerelease);
+    stable
+        .into_iter()
+        .take(3)
+        .chain(prereleases.into_iter().take(3))
+        .map(|r| {
+            let version = r.tag_name.trim_start_matches(RELEASE_TAG_PREFIX).to_string();
+            let parsed = semver::Version::parse(&version).ok();
+            UpdateCandidate {
+                version: version.clone(),
+                tag: r.tag_name.clone(),
+                prerelease: r.prerelease,
+                published_at: r.published_at.clone().unwrap_or_default(),
+                notes: r.body.clone().unwrap_or_default(),
+                is_current: parsed.as_ref() == Some(current_version),
+                installable: parsed.as_ref().is_some_and(|v| v >= current_version),
+            }
+        })
+        .collect()
+}
+
+/// "Check now": unlike [`pending_update`] (which only ever sees whichever
+/// release GitHub currently calls "latest"), this lists real candidates
+/// straight from the Releases API so the user can pick any of the last 3
+/// stable or last 3 beta builds — see [`install_update`] for how a specific
+/// pick is actually installed.
 #[tauri::command]
-async fn install_update<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<(), String> {
-    let Some(update) = pending_update(&app).await? else {
+async fn check_for_update<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<Vec<UpdateCandidate>, String> {
+    let current_version = app.package_info().version.clone();
+    let client = reqwest::Client::builder()
+        .user_agent("swarm-server-updater")
+        .build()
+        .map_err(|e| e.to_string())?;
+    let releases: Vec<GithubRelease> = client
+        .get(format!("https://api.github.com/repos/{GITHUB_REPO}/releases?per_page=30"))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .error_for_status()
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(update_candidates(&releases, &current_version))
+}
+
+/// Builds an `Updater` pointed at one specific release's own manifest —
+/// always "an update", regardless of version ordering, since the UI already
+/// enforces "not older than what's running" before this is ever called.
+async fn release_update<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    tag: &str,
+) -> Result<Option<tauri_plugin_updater::Update>, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let endpoint = reqwest::Url::parse(&format!(
+        "https://github.com/{GITHUB_REPO}/releases/download/{tag}/latest.json"
+    ))
+    .map_err(|e| e.to_string())?;
+    app.updater_builder()
+        .endpoints(vec![endpoint])
+        .map_err(|e| e.to_string())?
+        .version_comparator(|_, _| true)
+        .build()
+        .map_err(|e| e.to_string())?
+        .check()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Downloads and applies the update, then relaunches. `tag` selects a
+/// specific "Check now" candidate; omitted, this installs whatever the
+/// fixed "latest" endpoint currently answers with (the plain "Install &
+/// restart" button on a "notify"-mode banner). The caller is expected to
+/// warn the user first — this drops any live playback connection, unlike
+/// the "Automatically" path in `install_when_idle`, which waits one out.
+#[tauri::command]
+async fn install_update<R: tauri::Runtime>(app: tauri::AppHandle<R>, tag: Option<String>) -> Result<(), String> {
+    let update = match &tag {
+        Some(tag) => release_update(&app, tag).await?,
+        None => pending_update(&app).await?,
+    };
+    let Some(update) = update else {
         return Err("No update is available.".into());
     };
     update
@@ -1159,34 +1313,176 @@ async fn install_update<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<(
     app.restart()
 }
 
+/// Never install "Automatically" over a live client stream/transcode: wait
+/// for zero active sessions, then re-check immediately before the actual
+/// install — not just once at the top of the wait — since a session can
+/// start during the (potentially slow) download itself. A session starting
+/// in that gap sends this back to waiting rather than installing.
+async fn install_when_idle<R: tauri::Runtime>(app: tauri::AppHandle<R>, update: tauri_plugin_updater::Update) {
+    loop {
+        while active_playback_sessions(&app).await > 0 {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        }
+        let Ok(bytes) = update.download(|_, _| {}, || {}).await else {
+            return;
+        };
+        if active_playback_sessions(&app).await == 0 {
+            if update.install(&bytes).is_ok() {
+                strip_quarantine();
+                let _ = app.emit("update-staged", UpdateSummary::from_update(&update));
+            }
+            return;
+        }
+        // A session started during the download above — drop these bytes
+        // and go back to waiting instead of installing over it.
+    }
+}
+
 /// Honour `auto_update` once at startup, off the main thread. `"auto"`
-/// downloads now and installs on the next quit (never mid-session — the
-/// server holds live connections); `"notify"` emits `update-available`.
+/// ("Automatically" in the UI) waits for playback to go idle before
+/// installing (see `install_when_idle`); `"notify"` just emits
+/// `update-available` and lets the user install from the banner.
 fn spawn_startup_update_check<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
     tauri::async_runtime::spawn(async move {
         let mode = match app_data_dir(&app) {
             Ok(dir) => settings::load(&dir).auto_update,
             Err(_) => return,
         };
-        if mode == "off" {
-            return;
-        }
         let Ok(Some(update)) = pending_update(&app).await else {
             return;
         };
         if mode == "auto" {
-            // Swap the bundle in place now but do NOT restart: the running
-            // server keeps its mapped binary and any live playback, and the
-            // new version takes effect the next time the user quits and
-            // relaunches. `notify` mode still gets the last word if the user
-            // opens the window before quitting.
-            let _ = update.download_and_install(|_, _| {}, || {}).await;
-            strip_quarantine();
-            let _ = app.emit("update-staged", UpdateSummary::from_update(&update));
+            install_when_idle(app, update).await;
         } else {
             let _ = app.emit("update-available", UpdateSummary::from_update(&update));
         }
     });
+}
+
+#[cfg(test)]
+mod software_update_tests {
+    use super::{release_is_newer, update_candidates, GithubRelease};
+
+    fn v(s: &str) -> semver::Version {
+        semver::Version::parse(s).unwrap()
+    }
+
+    fn release(tag: &str, prerelease: bool, draft: bool) -> GithubRelease {
+        GithubRelease {
+            tag_name: tag.to_string(),
+            body: Some(format!("notes for {tag}")),
+            draft,
+            prerelease,
+            published_at: Some("2026-01-01T00:00:00Z".to_string()),
+        }
+    }
+
+    #[test]
+    fn release_is_newer_treats_strictly_greater_as_newer() {
+        assert!(release_is_newer(
+            v("0.1.0"),
+            remote_release(v("0.2.0"))
+        ));
+        assert!(!release_is_newer(
+            v("0.2.0"),
+            remote_release(v("0.1.0"))
+        ));
+    }
+
+    #[test]
+    fn release_is_newer_treats_prerelease_ordering_normally() {
+        assert!(release_is_newer(
+            v("0.1.0-beta.1"),
+            remote_release(v("0.1.0-beta.2"))
+        ));
+        assert!(!release_is_newer(
+            v("0.1.0-beta.2"),
+            remote_release(v("0.1.0-beta.1"))
+        ));
+    }
+
+    /// The real bug this issue flagged: `semver` ignores build metadata for
+    /// ordering, so two `main` publishes that only differ in
+    /// `+main.<run_number>` compare as *equal* under plain `>`. Without the
+    /// explicit build-metadata check, this would never detect the newer one.
+    #[test]
+    fn release_is_newer_detects_build_metadata_only_changes() {
+        assert!(release_is_newer(
+            v("0.1.0+main.4"),
+            remote_release(v("0.1.0+main.5"))
+        ));
+        assert!(!release_is_newer(
+            v("0.1.0+main.5"),
+            remote_release(v("0.1.0+main.5"))
+        ));
+        assert!(!release_is_newer(
+            v("0.1.0+main.5"),
+            remote_release(v("0.1.0+main.4"))
+        ));
+    }
+
+    fn remote_release(version: semver::Version) -> tauri_plugin_updater::RemoteRelease {
+        // `RemoteRelease` only exposes a `Deserialize` impl, so build one the
+        // same way the plugin does: from the exact JSON shape a `latest.json`
+        // manifest has for one platform target.
+        let json = serde_json::json!({
+            "version": version.to_string(),
+            "notes": "",
+            "pub_date": null,
+            "platforms": {
+                "unused-target": { "signature": "sig", "url": "https://example.com/pkg" }
+            }
+        });
+        serde_json::from_value(json).expect("valid RemoteRelease JSON")
+    }
+
+    #[test]
+    fn update_candidates_takes_last_three_of_each_channel_newest_first() {
+        let releases = vec![
+            release("server-v0.3.0", false, false),
+            release("server-v0.2.0", false, false),
+            release("server-v0.1.0", false, false),
+            release("server-v0.0.9", false, false), // dropped: 4th stable
+            release("server-v0.3.0-beta.9", true, false),
+            release("server-v0.3.0-beta.8", true, false),
+            release("server-v0.3.0-beta.7", true, false),
+            release("server-v0.3.0-beta.6", true, false), // dropped: 4th beta
+        ];
+        let candidates = update_candidates(&releases, &v("0.2.0"));
+        let versions: Vec<&str> = candidates.iter().map(|c| c.version.as_str()).collect();
+        assert_eq!(
+            versions,
+            vec!["0.3.0", "0.2.0", "0.1.0", "0.3.0-beta.9", "0.3.0-beta.8", "0.3.0-beta.7"]
+        );
+    }
+
+    #[test]
+    fn update_candidates_ignores_drafts_and_foreign_tags() {
+        let releases = vec![
+            release("server-v0.2.0", false, true), // draft — excluded
+            release("some-other-app-v9.9.9", false, false), // wrong prefix — excluded
+            release("server-v0.1.0", false, false),
+        ];
+        let candidates = update_candidates(&releases, &v("0.1.0"));
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].version, "0.1.0");
+    }
+
+    #[test]
+    fn update_candidates_blocks_installing_older_than_current_but_still_lists_it() {
+        let releases = vec![
+            release("server-v0.3.0", false, false),
+            release("server-v0.2.0", false, false),
+            release("server-v0.1.0", false, false),
+        ];
+        let candidates = update_candidates(&releases, &v("0.2.0"));
+        let by_version = |v: &str| candidates.iter().find(|c| c.version == v).unwrap();
+        assert!(by_version("0.3.0").installable);
+        assert!(by_version("0.2.0").installable);
+        assert!(by_version("0.2.0").is_current);
+        assert!(!by_version("0.1.0").installable);
+        assert!(!by_version("0.1.0").is_current);
+    }
 }
 
 /// Does not initialize `ServerCore`, so the warning can render even when a

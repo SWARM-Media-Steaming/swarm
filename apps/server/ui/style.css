@@ -141,6 +141,10 @@ td.mono {
 }
 .sidebar-foot { margin-top: auto; padding: 16px 8px 0; border-top: 1px solid var(--line-soft); }
 .machine-state { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: .66rem; margin-bottom: 12px; }
+/* Issue #309: the exact published version (including a -beta.<n>/+main.<n>
+   suffix when present) stays visible on every tab without opening Settings. */
+.sidebar-version { font-size: .62rem; letter-spacing: .02em; margin-top: 10px; opacity: .75; }
+.sidebar-collapsed .sidebar-version { font-size: 0; }
 .pulse-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 4px color-mix(in srgb, var(--green) 10%, transparent); flex: 0 0 auto; }
 .workspace {
   min-width: 0; overflow: auto;
@@ -264,6 +268,26 @@ td.mono {
   border-radius: 999px; color: var(--muted); font-size: .65rem; letter-spacing: .04em; vertical-align: 1px;
 }
 .media-roots-add { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); }
+
+/* "Check now" version picker (issue #309) — same delineated-row shape as
+   .media-root-row above: one bordered card per candidate release so six
+   stacked entries read as distinct picks, not a wall of text. */
+.update-candidates { margin-top: 12px; }
+.update-candidate-row {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface-muted); margin-bottom: 8px;
+}
+.update-candidate-row:last-child { margin-bottom: 0; }
+.update-candidate-info { flex: 1; min-width: 0; }
+.update-candidate-version { font-size: .85rem; font-weight: 700; }
+.update-candidate-channel {
+  display: inline-block; margin-left: 7px; padding: 1px 6px; border: 1px solid var(--border);
+  border-radius: 999px; color: var(--muted); font-size: .65rem; letter-spacing: .04em; vertical-align: 1px;
+}
+.update-candidate-channel.beta { color: var(--cyan); }
+.update-candidate-current { margin-left: 7px; color: var(--green); font-size: .68rem; font-weight: 600; }
+.update-candidate-notes, .update-candidate-blocked-reason { font-size: .78rem; color: var(--muted); margin-top: 2px; }
 
 /* Add-media-root modal (issue #252) — browse-only: choose a folder, pick an
    asset type, Add root / Cancel. Same modal shell as the SMB connect modal. */

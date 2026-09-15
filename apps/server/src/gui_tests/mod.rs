@@ -35,3 +35,4 @@ mod metadata_editing;
 mod mcp_tokens;
 mod transcoding_settings;
 mod ai_integration;
+mod software_update;

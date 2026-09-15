@@ -93,18 +93,6 @@ services:
     volumes:
       - /var/lib/swarm/stun-data:/data
 
-  relay-server:
-    image: ${relay_image}:${image_tag}
-    restart: unless-stopped
-    init: true
-    environment:
-      RELAY_BIND: 0.0.0.0:${relay_port}
-      RELAY_PUBLIC_HOST: ${stun_domain}
-      RELAY_PUBLIC_PORT: ${relay_port}
-    ports:
-      - "${relay_port}:${relay_port}/tcp"
-      - "${relay_port}:${relay_port}/udp"
-
   prompt-web:
     image: ${web_app_image}:${image_tag}
     restart: unless-stopped
@@ -137,7 +125,6 @@ deploy_if_available() {
 }
 
 deploy_if_available stun-server ${stun_repository}
-deploy_if_available relay-server ${relay_repository}
 deploy_if_available prompt-web ${web_app_repository}
 SCRIPT
 chmod 0755 /usr/local/bin/swarm-deploy

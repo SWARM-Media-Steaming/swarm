@@ -6,7 +6,9 @@ models:
 - [`stun-server/`](stun-server/) contains the production container and Compose
   deployment for the public rendezvous service.
 - [`terraform/`](terraform/) provisions the AWS EC2/container, ECR, S3,
-  CloudFront, Route 53, and HTTPS infrastructure for a hosted deployment.
+  CloudFront, Route 53, and HTTPS infrastructure for a hosted deployment. The
+  fallback relay is the one exception: it deploys to an Oracle Cloud Always
+  Free instance instead, to keep it off the AWS bill.
 - `apps/server` is the end-user media server. Its Tauri GUI is packaged as a
   native desktop application rather than a container.
 

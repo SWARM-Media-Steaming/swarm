@@ -26,7 +26,8 @@ output "web_app_url" {
 }
 
 output "relay_endpoint" {
-  value = "${local.stun_domain}:${var.relay_port}"
+  description = "The Oracle-hosted fallback relay's address."
+  value       = "${local.relay_domain}:${var.relay_port}"
 }
 
 output "ec2_public_ip" {
@@ -34,6 +35,27 @@ output "ec2_public_ip" {
 }
 
 output "ecr_repository_urls" {
-  description = "Push the stun-server, relay-server, and prompt-web images to these repositories."
+  description = "Push the stun-server and prompt-web images to these repositories."
   value       = { for name, repository in aws_ecr_repository.containers : name => repository.repository_url }
+}
+
+output "relay_public_ip" {
+  description = "Reserved public IP of the Oracle Cloud relay instance."
+  value       = oci_core_public_ip.relay.ip_address
+}
+
+output "relay_registry_image" {
+  description = "Push the relay-server image to this OCI Container Registry repository (tag it with relay_image_tag)."
+  value       = "${local.relay_registry_host}/${local.relay_registry_repository}"
+}
+
+output "relay_registry_username" {
+  description = "Docker login username for the OCIR relay repository."
+  value       = "${data.oci_objectstorage_namespace.relay.namespace}/${var.oci_username}"
+}
+
+output "relay_registry_token" {
+  description = "Docker login password (OCI auth token) for the OCIR relay repository. Also used by the relay instance itself to pull images."
+  value       = oci_identity_auth_token.relay_registry.token
+  sensitive   = true
 }

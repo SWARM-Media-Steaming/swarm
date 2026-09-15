@@ -103,11 +103,7 @@ fun SwarmDashboardScreen(
         selectedKnownLanServer != null || showAddServer
     val isConnectionSetup = swarm.id == CONNECTION_SETUP_SWARM_ID
 
-    val serversInSwarm = if (swarm.id == "lan") {
-        emptyList()
-    } else {
-        devices.filter { it.deviceType == DeviceType.SERVER || it.deviceType == DeviceType.BOTH }
-    }
+    val serversInSwarm = if (swarm.id == "lan") emptyList() else visibleSwarmServers(devices)
     val lanFingerprints = lanServers.mapTo(mutableSetOf()) { normalized(it.certFingerprint) }
     val swarmFingerprints = serversInSwarm.mapTo(mutableSetOf()) { normalized(it.certFingerprint) }
     val paired = pairedLanFingerprints.mapTo(mutableSetOf(), ::normalized)
@@ -455,6 +451,15 @@ private fun LanServerRow(
 }
 
 internal data class LanServerRowState(val server: LanServer, val online: Boolean)
+
+/** The rendezvous roster retains historical device registrations. Offline
+ * servers are not usable connection targets, so keep them out of the TV's
+ * server picker; a current mDNS route promotes a reachable roster entry to
+ * online before the dashboard is rendered. */
+internal fun visibleSwarmServers(devices: List<SwarmDevice>): List<SwarmDevice> =
+    devices.filter {
+        it.online && (it.deviceType == DeviceType.SERVER || it.deviceType == DeviceType.BOTH)
+    }
 
 /** Keeps paired servers visible after their mDNS advertisement disappears,
  * while preferring the current address and ports for servers still online. */

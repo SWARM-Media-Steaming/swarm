@@ -12,10 +12,14 @@
 //! already exists, cross-device rename) is skipped and reported, never
 //! forced past.
 //!
-//! Scope: movies and TV episodes only. Music libraries already have their
-//! own artist/album folder convention (recovered from flat filenames when
-//! needed — see the "Recover artist/album from filenames in flat music
-//! libraries" work) and aren't touched here.
+//! Movies, TV episodes, and music tracks (issue #300) are all covered.
+//! Tracks never go through AI or TMDb — `swarm_media::classify` already
+//! recognizes and flattens the intermediate "category" grouping folders
+//! (`Album`, `Compilation`, …) some libraries insert between artist and
+//! album, and the rare loose track with no album folder at all falls back
+//! to the file's own embedded tags (the same `swarm_media::tags::read_tags`
+//! the scanner's cataloging path already uses) rather than a guess; a track
+//! with no album either way is left out of the plan.
 
 use crate::ai::AiClient;
 use std::collections::HashSet;
@@ -55,13 +59,15 @@ pub struct ReorgItem {
     /// Path relative to the scanned root, forward-slashed.
     pub from: String,
     pub to: String,
-    /// `"video"`, `"subtitle"` (a sidecar riding along with its video),
-    /// `"orphan"` (issue #298: a subtitle/artwork leftover with no matching
-    /// video anywhere in the root, proposed for a move into `_orphaned/`
-    /// rather than a rename), or `"duplicate"` (issue #299: the file
-    /// already at the proposed destination is byte-identical — this item
-    /// is proposed for a move into `_duplicates/` instead, and the
-    /// already-canonical file at the original destination is left alone).
+    /// `"video"`, `"track"` (issue #300: a music file proposed for a move
+    /// to its canonical `Artist/Album/Track.ext` path), `"subtitle"` (a
+    /// sidecar riding along with its video), `"orphan"` (issue #298: a
+    /// subtitle/artwork leftover with no matching video anywhere in the
+    /// root, proposed for a move into `_orphaned/` rather than a rename),
+    /// or `"duplicate"` (issue #299: the file already at the proposed
+    /// destination is byte-identical — this item is proposed for a move
+    /// into `_duplicates/` instead, and the already-canonical file at the
+    /// original destination is left alone).
     pub kind: &'static str,
     pub ai_assisted: bool,
     /// `Some("tmdb")` when `classify` found a movie title but no year in the
@@ -126,9 +132,16 @@ pub async fn scan_root(
 
     for relative in &video_files {
         let unix_relative = to_unix(relative);
-        let Some((ext, false)) = classify::media_extension(&unix_relative) else {
+        let Some((ext, is_audio)) = classify::media_extension(&unix_relative) else {
             continue;
         };
+
+        if is_audio {
+            if let Some(item) = plan_track(root, &unix_relative, ext, &mut planned_targets).await {
+                items.push(item);
+            }
+            continue;
+        }
 
         // `classify` deliberately has a best-effort movie fallback for every
         // recognized video extension. Keep that result even when it lacks a
@@ -347,6 +360,84 @@ async fn fill_missing_movie_year(
         ),
         _ => (classified, None),
     }
+}
+
+/// Proposes a canonical `Artist/Album/NN - Track.ext` move for one audio
+/// file (issue #300). No AI and no TMDb here: `classify` already resolves
+/// artist/album from the folder chain, seeing straight through the
+/// intermediate "category" grouping folders (`Album`, `Compilation`, …)
+/// some libraries insert one level below the artist — the only gap left is
+/// a track sitting loose directly under the artist folder with no album
+/// folder at all, which `fill_missing_track_album` closes from the file's
+/// own embedded tags. Returns `None` when the file is already at its
+/// canonical path, or when no album can be determined either way — this
+/// case is genuinely ambiguous, so the file is left out of the plan rather
+/// than the album being guessed at.
+async fn plan_track(
+    root: &Path,
+    relative: &str,
+    ext: &'static str,
+    planned_targets: &mut HashSet<String>,
+) -> Option<ReorgItem> {
+    let classified = classify::classify(relative)?;
+    let classified = fill_missing_track_album(root, relative, classified).await;
+    let canonical = canonical_track_path(&classified, ext)?;
+    if canonical == relative {
+        return None;
+    }
+    let (to, kind, conflict) = resolve_destination(root, relative, &canonical, "track", planned_targets).await;
+    Some(ReorgItem {
+        from: relative.to_string(),
+        to,
+        kind,
+        ai_assisted: false,
+        year_source: None,
+        conflict,
+    })
+}
+
+/// Fills in a loose track's missing album from its own embedded tags (issue
+/// #300) — the same `swarm_media::tags::read_tags` the scanner's cataloging
+/// path (`swarm_media::scan`) already reads for the exact same purpose, run
+/// in `spawn_blocking` for the same reason every other tag/fingerprint read
+/// in this codebase is: synchronous std::fs I/O that can be a slow SMB/NFS
+/// round trip sharing a worker thread with request handling. Only ever
+/// touches a `Classified` that has no album at all; a track that already
+/// has one (from an `Artist/Album/...` folder chain) passes through
+/// untouched. No usable tag, or no tags at all, leaves the album unset —
+/// `canonical_track_path` then refuses to propose a move for it.
+async fn fill_missing_track_album(root: &Path, relative: &str, classified: Classified) -> Classified {
+    if classified.kind != MediaKind::Track || classified.album.as_deref().is_some_and(|a| !a.trim().is_empty()) {
+        return classified;
+    }
+    let path = root.join(relative);
+    let tag = tokio::task::spawn_blocking(move || swarm_media::tags::read_tags(&path))
+        .await
+        .unwrap_or(None);
+    match tag.and_then(|t| t.album) {
+        Some(album) if !album.trim().is_empty() => Classified {
+            album: Some(album),
+            ..classified
+        },
+        _ => classified,
+    }
+}
+
+/// The canonical on-disk shape for a track — `Artist/Album/NN - Track.ext`,
+/// matching the naming `crate::plex::validate_media_file` already expects
+/// for `MediaKind::Track` and the `Artist/Album/Track` convention
+/// `docs/PLEX_COMPATIBILITY_AUDIT.md` checks against. `None` when either
+/// artist or album is still missing after `fill_missing_track_album` — see
+/// `plan_track`.
+fn canonical_track_path(c: &Classified, ext: &str) -> Option<String> {
+    let artist = c.artist.as_deref().map(str::trim).filter(|s| !s.is_empty())?;
+    let album = c.album.as_deref().map(str::trim).filter(|s| !s.is_empty())?;
+    let title = sanitize(&c.title);
+    let file_name = match c.track_number {
+        Some(n) => format!("{n:02} - {title}.{ext}"),
+        None => format!("{title}.{ext}"),
+    };
+    Some(format!("{}/{}/{file_name}", sanitize(artist), sanitize(album)))
 }
 
 /// Resolves what a proposed `source -> target` move should actually become
@@ -674,6 +765,54 @@ mod tests {
         fs::write(path, contents).unwrap();
     }
 
+    /// Writes the smallest valid FLAC lofty will parse — a `STREAMINFO`
+    /// block (mandatory, fixed 34 bytes) followed by a `VORBIS_COMMENT`
+    /// block carrying `artist`/`album` — with no audio frames at all, so
+    /// tests can exercise `swarm_media::tags::read_tags` without a real
+    /// audio encoder. See the FLAC format spec's metadata block layout
+    /// (`https://xiph.org/flac/format.html`).
+    fn write_flac_with_tags(root: &Path, relative: &str, artist: &str, album: &str) {
+        let path = root.join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+
+        let mut data = Vec::new();
+        data.extend_from_slice(b"fLaC");
+
+        let mut stream_info = Vec::new();
+        stream_info.extend_from_slice(&4096u16.to_be_bytes()); // min block size
+        stream_info.extend_from_slice(&4096u16.to_be_bytes()); // max block size
+        stream_info.extend_from_slice(&[0, 0, 0]); // min frame size
+        stream_info.extend_from_slice(&[0, 0, 0]); // max frame size
+        let sample_rate: u32 = 44100;
+        let channels_minus_one: u32 = 1;
+        let bits_per_sample_minus_one: u32 = 15;
+        let info = (sample_rate << 12) | (channels_minus_one << 9) | (bits_per_sample_minus_one << 4);
+        stream_info.extend_from_slice(&info.to_be_bytes()); // sample rate/channels/bits/high total-samples bits
+        stream_info.extend_from_slice(&0u32.to_be_bytes()); // remaining total-samples bits
+        stream_info.extend_from_slice(&[0u8; 16]); // MD5 signature
+        assert_eq!(stream_info.len(), 34);
+        data.push(0x00); // block type 0 (STREAMINFO), not the last metadata block
+        data.extend_from_slice(&(stream_info.len() as u32).to_be_bytes()[1..]);
+        data.extend_from_slice(&stream_info);
+
+        let vendor = b"swarm-test";
+        let fields = [format!("ARTIST={artist}"), format!("ALBUM={album}")];
+        let mut comments = Vec::new();
+        comments.extend_from_slice(&(vendor.len() as u32).to_le_bytes());
+        comments.extend_from_slice(vendor);
+        comments.extend_from_slice(&(fields.len() as u32).to_le_bytes());
+        for field in &fields {
+            let bytes = field.as_bytes();
+            comments.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+            comments.extend_from_slice(bytes);
+        }
+        data.push(0x84); // block type 4 (VORBIS_COMMENT), last metadata block
+        data.extend_from_slice(&(comments.len() as u32).to_be_bytes()[1..]);
+        data.extend_from_slice(&comments);
+
+        fs::write(path, data).unwrap();
+    }
+
     #[tokio::test]
     async fn proposes_a_canonical_movie_folder_for_a_scene_release_name() {
         let dir = tempfile::tempdir().unwrap();
@@ -958,5 +1097,61 @@ mod tests {
             fs::read_to_string(dir.path().join("Heat (1995)/Heat (1995).mkv")).unwrap(),
             "unrelated existing file"
         );
+    }
+
+    // --- Music library reorganization (issue #300) ---
+
+    #[tokio::test]
+    async fn flattens_an_intermediate_grouping_folder_between_artist_and_album() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "Artist/Album/2003 - Some Album/01 - Track.mp3", "x");
+
+        let plan = scan_root("local", dir.path(), None, None).await.unwrap();
+
+        let track = plan.items.iter().find(|i| i.kind == "track").expect("track item");
+        assert_eq!(track.from, "Artist/Album/2003 - Some Album/01 - Track.mp3");
+        assert_eq!(track.to, "Artist/2003 - Some Album/01 - Track.mp3");
+        assert!(track.conflict.is_none());
+        assert!(!track.ai_assisted);
+    }
+
+    #[tokio::test]
+    async fn a_loose_track_with_a_readable_album_tag_moves_under_that_album() {
+        let dir = tempfile::tempdir().unwrap();
+        write_flac_with_tags(
+            dir.path(),
+            "Armin van Buuren/01 - Blank State.flac",
+            "Armin van Buuren",
+            "A State Of Trance",
+        );
+
+        let plan = scan_root("local", dir.path(), None, None).await.unwrap();
+
+        let track = plan.items.iter().find(|i| i.kind == "track").expect("track item");
+        assert_eq!(track.from, "Armin van Buuren/01 - Blank State.flac");
+        assert_eq!(track.to, "Armin van Buuren/A State Of Trance/01 - Blank State.flac");
+        assert!(track.conflict.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_loose_track_with_no_usable_album_tag_is_left_out_of_the_plan() {
+        let dir = tempfile::tempdir().unwrap();
+        // Not a real, tag-readable audio file, so `read_tags` finds nothing —
+        // same as a genuinely untagged loose track.
+        write(dir.path(), "Paul Oakenfold/Essential Mix 2001-03-04.mp3", "x");
+
+        let plan = scan_root("local", dir.path(), None, None).await.unwrap();
+
+        assert!(plan.items.iter().all(|i| i.from != "Paul Oakenfold/Essential Mix 2001-03-04.mp3"));
+    }
+
+    #[tokio::test]
+    async fn leaves_an_already_canonical_track_out_of_the_plan() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "Pink Floyd/The Wall/05 - Hey You.flac", "x");
+
+        let plan = scan_root("local", dir.path(), None, None).await.unwrap();
+
+        assert!(plan.items.iter().all(|i| i.kind != "track"));
     }
 }

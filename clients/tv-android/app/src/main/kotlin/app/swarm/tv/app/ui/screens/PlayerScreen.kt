@@ -114,6 +114,7 @@ import androidx.tv.material3.Button
 import androidx.tv.material3.Card
 import androidx.tv.material3.CardDefaults
 import app.swarm.tv.app.PausePlayerWhenAppBackgrounded
+import app.swarm.tv.app.data.AndroidAudioLanguagePreferenceStore
 import app.swarm.tv.app.data.episodeNumberLabel
 import app.swarm.tv.app.data.pauseRecommendationTitle
 import app.swarm.tv.app.data.PreparedEpisodePlayback
@@ -670,6 +671,14 @@ fun PlayerScreen(
     onPlaybackQualityReduced: () -> Unit,
 ) {
     val context = LocalContext.current
+    val audioLanguagePreferences = remember(context) {
+        AndroidAudioLanguagePreferenceStore(context)
+    }
+    val episodeShowTitle = remember(entry.entry.kind, entry.entry.showTitle) {
+        entry.entry.showTitle?.trim()?.takeIf {
+            entry.entry.kind == MediaKind.EPISODE && it.isNotEmpty()
+        }
+    }
     var showContinuePrompt by remember(sessionId) { mutableStateOf(false) }
     // Covers the gap between "screen opened" and "a frame is actually up" —
     // negotiation already succeeded by the time this screen exists, but the
@@ -721,11 +730,13 @@ fun PlayerScreen(
         mutableStateOf(trackAvailability(player.currentTracks))
     }
     var initialAudioPreferenceApplied by remember(sessionId) { mutableStateOf(false) }
-    LaunchedEffect(player, trackAvailability.audioTracks) {
+    LaunchedEffect(player, trackAvailability.audioTracks, episodeShowTitle) {
         if (!initialAudioPreferenceApplied) {
-            trackAvailability.audioTracks.firstOrNull { isEnglishAudioLabel(it.label) }?.let { english ->
+            val savedLanguage = episodeShowTitle?.let(audioLanguagePreferences::get)
+            val preferredTrack = preferredAudioTrack(trackAvailability.audioTracks, savedLanguage)
+            preferredTrack?.let { preferred ->
                 initialAudioPreferenceApplied = true
-                if (!english.isSelected) selectAudioTrack(player, english)
+                if (!preferred.isSelected) selectAudioTrack(player, preferred)
             }
         }
     }
@@ -1283,6 +1294,9 @@ fun PlayerScreen(
                 onPlayRecommendation = onPlayRecommendation,
                 onSelectAudioTrack = { choice ->
                     initialAudioPreferenceApplied = true
+                    if (episodeShowTitle != null && choice.audioLanguageKey != null) {
+                        audioLanguagePreferences.set(episodeShowTitle, choice.audioLanguageKey)
+                    }
                     selectAudioTrack(player, choice)
                 },
                 onSelectSubtitleTrack = { choice -> selectSubtitleTrack(player, choice) },
@@ -1330,6 +1344,8 @@ internal data class TrackChoice(
     val group: TrackGroup?,
     val trackIndex: Int,
     val isSelected: Boolean,
+    /** Stable, normalized language identity used across a show's episodes. */
+    val audioLanguageKey: String? = null,
 )
 
 private data class TrackAvailability(
@@ -1354,6 +1370,7 @@ private fun trackAvailability(tracks: Tracks): TrackAvailability {
                     group = group.mediaTrackGroup,
                     trackIndex = index,
                     isSelected = isSelected,
+                    audioLanguageKey = audioLanguageKey(format, audioTracks.size),
                 )
                 C.TRACK_TYPE_TEXT -> {
                     subtitleSelected = subtitleSelected || isSelected
@@ -1398,6 +1415,25 @@ internal fun audioTrackLabel(language: String?, label: String?, index: Int): Str
         ?: label?.takeIf(::isMeaningfulTrackMetadata)
         ?: "Audio ${index + 1}"
 
+/**
+ * Produces the cross-episode identity for an audio choice. Language codes are
+ * converted to their display language so equivalent tags such as `en`, `eng`,
+ * and `en-US` all match. Meaningful track labels cover files whose language is
+ * untagged; the numbered label is the last-resort identity for fully untagged
+ * multi-audio files.
+ */
+internal fun audioLanguageKey(language: String?, label: String?, index: Int): String =
+    (
+        language?.takeIf(::isMeaningfulTrackMetadata)?.let {
+            languageDisplayName(it, Locale.ROOT)
+        }
+            ?: label?.takeIf(::isMeaningfulTrackMetadata)
+            ?: "Audio ${index + 1}"
+    ).trim().lowercase(Locale.ROOT)
+
+private fun audioLanguageKey(format: Format, index: Int): String =
+    audioLanguageKey(format.language, format.label, index)
+
 private fun isMeaningfulTrackMetadata(value: String): Boolean {
     val normalized = value.trim().lowercase()
     return normalized.isNotBlank()
@@ -1414,15 +1450,24 @@ internal fun isEnglishAudioLabel(value: String): Boolean =
     value.trim().lowercase().split(Regex("[^a-z]+"))
         .any { it == "en" || it == "eng" || it == "english" }
 
+/** A saved show preference wins; English remains the default for shows that
+ * do not have that language available or have never stored a choice. */
+internal fun preferredAudioTrack(
+    audioTracks: List<TrackChoice>,
+    savedLanguage: String?,
+): TrackChoice? = savedLanguage?.let { language ->
+    audioTracks.firstOrNull { it.audioLanguageKey == language }
+} ?: audioTracks.firstOrNull { isEnglishAudioLabel(it.label) }
+
 private fun subtitleTrackLabel(format: Format, index: Int): String =
     format.label?.takeIf(String::isNotBlank)
         ?: format.language?.takeIf(String::isNotBlank)?.let(::languageDisplayName)
         ?: "Subtitle ${index + 1}"
 
-private fun languageDisplayName(code: String): String {
+private fun languageDisplayName(code: String, displayLocale: Locale = Locale.getDefault()): String {
     val normalized = code.trim().replace('_', '-')
     val locale = Locale.forLanguageTag(normalized)
-    return locale.getDisplayLanguage(Locale.getDefault())
+    return locale.getDisplayLanguage(displayLocale)
         .takeIf { it.isNotBlank() && !it.equals(normalized, ignoreCase = true) }
         ?: code.uppercase()
 }

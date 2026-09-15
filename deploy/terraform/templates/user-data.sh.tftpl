@@ -1,0 +1,176 @@
+#!/bin/bash
+set -euo pipefail
+
+dnf install -y docker curl
+systemctl enable --now docker
+
+volume_id="$(printf '%s' '${data_volume_id}' | tr -d '-')"
+data_device=""
+for attempt in $(seq 1 60); do
+  for candidate in \
+    "/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_$volume_id" \
+    /dev/xvdf \
+    /dev/sdf; do
+    if [ -b "$candidate" ]; then
+      data_device="$candidate"
+      break 2
+    fi
+  done
+  sleep 5
+done
+
+if [ -z "$data_device" ]; then
+  echo "Persistent EBS data volume was not attached within five minutes" >&2
+  exit 1
+fi
+
+if ! blkid "$data_device" >/dev/null 2>&1; then
+  mkfs.ext4 "$data_device"
+fi
+
+data_uuid="$(blkid -s UUID -o value "$data_device")"
+mkdir -p /var/lib/swarm
+if ! grep -q "UUID=$data_uuid " /etc/fstab; then
+  echo "UUID=$data_uuid /var/lib/swarm ext4 defaults,nofail 0 2" >>/etc/fstab
+fi
+mount /var/lib/swarm
+mkdir -p /var/lib/swarm/caddy-data /var/lib/swarm/caddy-config /var/lib/swarm/stun-data
+
+architecture="$(uname -m)"
+case "$architecture" in
+  x86_64) compose_arch="x86_64" ;;
+  aarch64) compose_arch="aarch64" ;;
+  *) echo "Unsupported architecture: $architecture" >&2; exit 1 ;;
+esac
+
+mkdir -p /usr/local/lib/docker/cli-plugins /opt/swarm
+curl --fail --location --retry 5 \
+  "https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-$compose_arch" \
+  --output /usr/local/lib/docker/cli-plugins/docker-compose
+chmod 0755 /usr/local/lib/docker/cli-plugins/docker-compose
+
+cat >/opt/swarm/Caddyfile <<'CADDY'
+${stun_domain} {
+  encode zstd gzip
+  reverse_proxy stun-server:8080
+}
+
+${web_app_domain} {
+  encode zstd gzip
+  reverse_proxy prompt-web:8080
+}
+CADDY
+
+cat >/opt/swarm/compose.yaml <<'COMPOSE'
+name: swarm-aws
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80/tcp"
+      - "443:443/tcp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - /var/lib/swarm/caddy-data:/data
+      - /var/lib/swarm/caddy-config:/config
+
+  stun-server:
+    image: ${stun_image}:${image_tag}
+    restart: unless-stopped
+    init: true
+    environment:
+      SWARM_DATABASE_PATH: /data/swarm.sqlite
+      SWARM_HTTP_BIND: 0.0.0.0:8080
+      SWARM_PUBLIC_URL: https://${stun_domain}
+      SWARM_REFLECTOR_PORTS: 9443,3478
+      SWARM_STATIC_DIR: /opt/swarm/static
+      RUST_LOG: info,sqlx=warn
+    ports:
+      - "443:9443/udp"
+      - "3478:3478/udp"
+    volumes:
+      - /var/lib/swarm/stun-data:/data
+
+  relay-server:
+    image: ${relay_image}:${image_tag}
+    restart: unless-stopped
+    init: true
+    environment:
+      RELAY_BIND: 0.0.0.0:${relay_port}
+      RELAY_PUBLIC_HOST: ${stun_domain}
+      RELAY_PUBLIC_PORT: ${relay_port}
+    ports:
+      - "${relay_port}:${relay_port}/tcp"
+      - "${relay_port}:${relay_port}/udp"
+
+  prompt-web:
+    image: ${web_app_image}:${image_tag}
+    restart: unless-stopped
+    init: true
+    environment:
+      PORT: "8080"
+
+COMPOSE
+
+cat >/usr/local/bin/swarm-deploy <<'SCRIPT'
+#!/bin/bash
+set -euo pipefail
+aws ecr get-login-password --region ${aws_region} | \
+  docker login --username AWS --password-stdin ${ecr_registry}
+
+docker compose --project-directory /opt/swarm pull caddy
+docker compose --project-directory /opt/swarm up --detach --no-deps caddy
+
+deploy_if_available() {
+  local service="$1"
+  local repository="$2"
+
+  if aws ecr describe-images \
+    --region ${aws_region} \
+    --repository-name "$repository" \
+    --image-ids imageTag=${image_tag} >/dev/null 2>&1; then
+    docker compose --project-directory /opt/swarm pull "$service"
+    docker compose --project-directory /opt/swarm up --detach --no-deps "$service"
+  fi
+}
+
+deploy_if_available stun-server ${stun_repository}
+deploy_if_available relay-server ${relay_repository}
+deploy_if_available prompt-web ${web_app_repository}
+SCRIPT
+chmod 0755 /usr/local/bin/swarm-deploy
+
+cat >/etc/systemd/system/swarm-containers.service <<'UNIT'
+[Unit]
+Description=SWARM application containers
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/swarm
+ExecStart=/usr/local/bin/swarm-deploy
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+cat >/etc/systemd/system/swarm-containers.timer <<'TIMER'
+[Unit]
+Description=Periodically reconcile SWARM application containers
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+TIMER
+
+systemctl daemon-reload
+systemctl enable --now swarm-containers.timer
+systemctl start swarm-containers.service

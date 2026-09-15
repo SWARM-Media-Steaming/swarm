@@ -287,6 +287,7 @@ function renderReorgPlans(plans) {
             item => `
         <li>
           <span class="mono">${esc(item.from)}</span> → <span class="mono">${esc(item.to)}</span>
+          ${item.kind === "orphan" ? '<br><span class="orphan-label"><i class="bi bi-exclamation-triangle"></i> Orphaned — no matching video found, moved out of the way</span>' : ""}
           ${item.ai_assisted ? '<span class="muted ai-assisted-label"> (AI-assisted)</span>' : ""}
           ${item.year_source === "tmdb" ? '<span class="muted tmdb-year-label"> (year via TMDb)</span>' : ""}
           ${item.conflict ? `<br><span class="issue-reason">${esc(item.conflict)} — left in place</span>` : ""}
@@ -307,7 +308,7 @@ function renderReorgPlans(plans) {
         <div class="service-card ai-reorg-plan">
           <div class="row plan-summary">
             <strong>${esc(plan.root_label)}</strong>
-            <span class="muted">${plan.items.length} item(s), ${plan.ai_assisted_count} AI-assisted, ${plan.tmdb_year_count} TMDb-year, ${plan.conflict_count} conflict(s) — <em>${esc(plan.status)}</em></span>
+            <span class="muted">${plan.items.length} item(s), ${plan.ai_assisted_count} AI-assisted, ${plan.tmdb_year_count} TMDb-year, ${plan.orphan_count} orphaned, ${plan.conflict_count} conflict(s) — <em>${esc(plan.status)}</em></span>
           </div>
           <ul class="issue-list plan-items">${itemsHtml}</ul>
           ${summaryHtml}

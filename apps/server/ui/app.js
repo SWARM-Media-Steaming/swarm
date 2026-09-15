@@ -223,7 +223,7 @@ const INFO_TOPICS = {
   },
   "reorganize-media": {
     icon: "bi-folder-symlink-fill", title: "Reorganize media",
-    body: "Scan a media root and propose consistent folder names and file locations (subtitles included) so both the scanner and you can read your library easily. Nothing changes until you review and approve the plan — SWARM only ever renames/moves files here, never deletes.",
+    body: "Scan a media root and propose consistent folder names and file locations (subtitles included) so both the scanner and you can read your library easily. Leftover subtitle/artwork files with no matching video anywhere in the root are proposed for a move into an _orphaned/ holding folder instead of a rename. Nothing changes until you review and approve the plan — SWARM only ever renames/moves files here, never deletes.",
   },
   "approve-tv": {
     icon: "bi-shield-check", title: "Approve a TV",

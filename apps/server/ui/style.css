@@ -184,10 +184,8 @@ td.mono {
 .count-label { font-size: .72rem; }
 .panel-description { margin-top: -7px; font-size: .76rem; }
 .issue-list-head { justify-content: space-between; align-items: center; margin-bottom: 6px; }
-.align-center { align-items: center; }
 .review-heading { margin: 14px 0 8px; font-size: .92rem; }
 .grow { flex: 1; }
-.compact-panel { padding-top: 17px; padding-bottom: 17px; }
 .code-block { background: color-mix(in srgb, var(--bg) 58%, var(--panel)); border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow-x: auto; font-size: .72rem; }
 .about-title { margin-bottom: 2px; }
 .about-summary { margin: 0; }
@@ -372,6 +370,14 @@ td.mono {
 .issue-list li:last-child { border-bottom: none; }
 .issue-list .issue-title { color: var(--text); }
 .issue-list .issue-reason { color: var(--red); }
+
+/* AI tab: "Scan & scrape assist" grid, grouped by Movies/Shows/Music
+   (issue #296) rather than one jumbled list. */
+.scrape-assist-group:last-child { margin-bottom: 0; }
+.scrape-assist-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.scrape-assist-card { display: flex; flex-direction: column; gap: 6px; }
+.scrape-assist-card-title { color: var(--text); font-size: .85rem; font-weight: 650; }
+.scrape-assist-card-reason { color: var(--red); font-size: .74rem; }
 
 .scrape-progress { margin-bottom: 14px; }
 .library-maintenance-progress {
@@ -856,7 +862,7 @@ li.info-trigger:hover { background: var(--surface-muted); }
   .topbar-actions { display: none; }
   .view-stack { padding: 22px 20px 36px; }
   #tabPanel-metrics, #tabPanel-settings, #tabPanel-swarm, #tabPanel-notifications, #tabPanel-ai { grid-template-columns: 1fr; }
-  .grid, .about-features { grid-template-columns: 1fr; }
+  .grid, .about-features, .scrape-assist-grid { grid-template-columns: 1fr; }
   .media-root-warning { align-items: flex-start; flex-wrap: wrap; }
   .media-root-warning-copy { flex-basis: calc(100% - 42px); }
   .media-root-row, .client-error-row { flex-direction: column; }

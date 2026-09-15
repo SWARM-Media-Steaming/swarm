@@ -59,6 +59,9 @@ pub struct ScrapeIssue {
     pub entry_key: String,
     pub title: String,
     pub reason: String,
+    /// Lets the AI tab's "Scan & scrape assist" panel group issues into
+    /// Movies/Shows/Music instead of one jumbled list.
+    pub kind: MediaKind,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize)]
@@ -827,6 +830,7 @@ async fn scrape_videos(
                     entry_key: entry.entry_key.clone(),
                     title: entry.title.clone(),
                     reason: reason.clone(),
+                    kind: entry.kind,
                 });
                 if let Some(p) = progress {
                     p.issue(
@@ -844,6 +848,7 @@ async fn scrape_videos(
                     entry_key: entry.entry_key.clone(),
                     title: entry.title.clone(),
                     reason: reason.clone(),
+                    kind: entry.kind,
                 });
                 if let Some(p) = progress {
                     p.issue(
@@ -1157,6 +1162,7 @@ async fn scrape_one_album_group(
                     entry_key: track.entry_key.clone(),
                     title: track.title.clone(),
                     reason: reason.clone(),
+                    kind: track.kind,
                 });
                 if let Some(p) = progress {
                     p.issue(
@@ -1285,6 +1291,7 @@ fn record_musicbrainz_failure(
             entry_key: track.entry_key.clone(),
             title: track.title.clone(),
             reason: reason.to_string(),
+            kind: track.kind,
         });
         if let Some(p) = progress {
             p.issue(

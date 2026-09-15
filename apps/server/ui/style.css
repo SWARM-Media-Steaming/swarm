@@ -198,6 +198,7 @@ td.mono {
 .ai-suggestion { margin-top: 5px; font-size: .76rem; }
 .ai-assisted-label, .tmdb-year-label { font-size: .68rem; }
 .orphan-label { font-size: .68rem; color: color-mix(in srgb, var(--amber) 78%, var(--text)); }
+.duplicate-label { font-size: .68rem; color: color-mix(in srgb, var(--cyan) 78%, var(--text)); }
 .ai-reorg-plan { margin-top: 12px; }
 .plan-summary { justify-content: space-between; align-items: center; }
 .plan-items, .plan-actions { margin-top: 8px; }

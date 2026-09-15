@@ -221,6 +221,66 @@ impl TmdbClient {
         self.details_by_id(id, "tv").await
     }
 
+    /// Looks up a bare title with no year hint and returns TMDb's release
+    /// year **only** when exactly one confidently-matched result exists —
+    /// used to backfill a canonical path's year when `classify` found a
+    /// movie title but no year in the filename (issue #297). Unlike
+    /// `search_and_fetch_movie`/`pick_best_result`, which always fall back
+    /// to *some* best guess (TMDb's own top-ranked result when nothing is an
+    /// exact title match), this never guesses: zero exact-title matches,
+    /// more than one (a remake sharing its predecessor's bare title, e.g.
+    /// two entries both literally titled "Scream"), or a lone match too
+    /// obscure to trust (near-zero vote count, the same thin/likely-wrong
+    /// community entry `pick_best_result`'s doc comment warns about) all
+    /// return `Ok(None)` rather than an unreliable year.
+    pub async fn confident_movie_year(&self, title: &str) -> Result<Option<u32>, TmdbError> {
+        let url = format!("{}/search/movie", self.api_base);
+        let response = self
+            .authed(self.http.get(&url).query(&[("query", title)]))
+            .send()
+            .await
+            .map_err(|e| TmdbError::Unavailable(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(TmdbError::Unavailable(format!(
+                "search returned {}",
+                response.status()
+            )));
+        }
+        let body: SearchResponse = response
+            .json()
+            .await
+            .map_err(|e| TmdbError::Unavailable(e.to_string()))?;
+
+        let norm_query = normalize_for_match(title);
+        let mut exact_matches = body.results.iter().filter(|hit| {
+            let candidate_title = hit.title.as_deref().or(hit.name.as_deref()).unwrap_or_default();
+            let original_title = hit
+                .original_title
+                .as_deref()
+                .or(hit.original_name.as_deref())
+                .unwrap_or_default();
+            normalize_for_match(candidate_title) == norm_query || normalize_for_match(original_title) == norm_query
+        });
+
+        let Some(hit) = exact_matches.next() else {
+            return Ok(None);
+        };
+        if exact_matches.next().is_some() {
+            return Ok(None);
+        }
+
+        const MIN_CONFIDENT_VOTE_COUNT: u64 = 20;
+        if hit.vote_count.unwrap_or(0) < MIN_CONFIDENT_VOTE_COUNT {
+            return Ok(None);
+        }
+
+        Ok(hit
+            .release_date
+            .as_deref()
+            .and_then(|d| d.get(0..4))
+            .and_then(|y| y.parse::<u32>().ok()))
+    }
+
     /// Fetches the season poster and each episode's still image from TMDB's
     /// season endpoint. Those fields are not part of `/tv/{id}`, which is
     /// why treating show details as episode details produced the same show
@@ -537,6 +597,7 @@ struct SearchHit {
     release_date: Option<String>,   // movies, "YYYY-MM-DD"
     first_air_date: Option<String>, // tv, "YYYY-MM-DD"
     popularity: Option<f64>,
+    vote_count: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -1069,6 +1130,85 @@ mod tests {
                 .title,
             "V4"
         );
+    }
+
+    // --- confident_movie_year (issue #297: backfill a missing year) ---
+
+    #[tokio::test]
+    async fn confident_movie_year_returns_the_year_for_a_single_well_known_exact_match() {
+        let router = Router::new().route(
+            "/search/movie",
+            get(|| async {
+                Json(json!({"results": [
+                    {"id": 348, "title": "Alien", "release_date": "1979-05-25", "popularity": 40.0, "vote_count": 12000}
+                ]}))
+            }),
+        );
+        let base = spawn_mock(router).await;
+        let client = TmdbClient::with_base_urls("key", &base, &base);
+        let year = client.confident_movie_year("Alien").await.unwrap();
+        assert_eq!(year, Some(1979));
+    }
+
+    #[tokio::test]
+    async fn confident_movie_year_is_none_for_multiple_exact_title_matches() {
+        // Real franchise ambiguity: a remake sharing its predecessor's bare
+        // title. Nothing in a filename-derived title alone disambiguates
+        // which release the file actually is, so this must not guess.
+        let router = Router::new().route(
+            "/search/movie",
+            get(|| async {
+                Json(json!({"results": [
+                    {"id": 1, "title": "Scream", "release_date": "1996-12-20", "popularity": 30.0, "vote_count": 8000},
+                    {"id": 2, "title": "Scream", "release_date": "2022-01-14", "popularity": 25.0, "vote_count": 4000}
+                ]}))
+            }),
+        );
+        let base = spawn_mock(router).await;
+        let client = TmdbClient::with_base_urls("key", &base, &base);
+        let year = client.confident_movie_year("Scream").await.unwrap();
+        assert_eq!(year, None);
+    }
+
+    #[tokio::test]
+    async fn confident_movie_year_is_none_when_no_result_is_an_exact_title_match() {
+        let router = Router::new().route(
+            "/search/movie",
+            get(|| async {
+                Json(json!({"results": [
+                    {"id": 1, "title": "Loosely Similar Title", "release_date": "2001-01-01", "popularity": 10.0, "vote_count": 500}
+                ]}))
+            }),
+        );
+        let base = spawn_mock(router).await;
+        let client = TmdbClient::with_base_urls("key", &base, &base);
+        let year = client.confident_movie_year("Something Else Entirely").await.unwrap();
+        assert_eq!(year, None);
+    }
+
+    #[tokio::test]
+    async fn confident_movie_year_is_none_for_an_obscure_low_vote_match() {
+        let router = Router::new().route(
+            "/search/movie",
+            get(|| async {
+                Json(json!({"results": [
+                    {"id": 1, "title": "Obscure Thing", "release_date": "2001-01-01", "popularity": 0.6, "vote_count": 1}
+                ]}))
+            }),
+        );
+        let base = spawn_mock(router).await;
+        let client = TmdbClient::with_base_urls("key", &base, &base);
+        let year = client.confident_movie_year("Obscure Thing").await.unwrap();
+        assert_eq!(year, None);
+    }
+
+    #[tokio::test]
+    async fn confident_movie_year_is_none_for_empty_search_results() {
+        let router = Router::new().route("/search/movie", get(|| async { Json(json!({"results": []})) }));
+        let base = spawn_mock(router).await;
+        let client = TmdbClient::with_base_urls("key", &base, &base);
+        let year = client.confident_movie_year("Nope").await.unwrap();
+        assert_eq!(year, None);
     }
 
     #[test]

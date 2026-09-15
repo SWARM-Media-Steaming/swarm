@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 use swarm_core::peer::MediaKind;
 use swarm_media::classify::{self, Classified};
 use swarm_media::plex::{self, PlexValidationIssue};
+use swarm_media::scrape::tmdb::TmdbClient;
 use swarm_media::subtitles::{parse_subtitle_name, subtitle_extension};
 
 /// Cap on how many AI calls one scan will make, so a folder full of
@@ -38,6 +39,13 @@ pub struct ReorgItem {
     pub to: String,
     pub kind: &'static str,
     pub ai_assisted: bool,
+    /// `Some("tmdb")` when `classify` found a movie title but no year in the
+    /// filename and a confident TMDb lookup (see
+    /// `TmdbClient::confident_movie_year`) filled it in for this canonical
+    /// path — distinct from `ai_assisted`, which is about identifying an
+    /// otherwise unclassifiable file rather than enriching one `classify`
+    /// already placed.
+    pub year_source: Option<&'static str>,
     /// `Some(reason)` when this item must not be applied (e.g. the
     /// destination already exists) — carried in the plan so the UI can show
     /// *why* an item is excluded rather than silently dropping it.
@@ -49,6 +57,9 @@ pub struct ReorgPlan {
     pub root_label: String,
     pub items: Vec<ReorgItem>,
     pub ai_assisted_count: u32,
+    /// Movie items whose `(Year)` came from a TMDb lookup rather than the
+    /// filename itself (see `ReorgItem::year_source`).
+    pub tmdb_year_count: u32,
     pub conflict_count: u32,
     /// Every deterministic Plex-conformance problem found in the root
     /// (issue #247) — the complete list, unlike the bounded best-effort
@@ -61,14 +72,22 @@ pub struct ReorgPlan {
 /// Walks `root` (a configured media root's real path) and proposes a
 /// rename/move for every video whose canonical path differs from its
 /// current one. `ai`, when given, is used only for files `classify` cannot
-/// place at all — see the module doc comment.
-pub async fn scan_root(root_label: &str, root: &Path, ai: Option<&AiClient>) -> std::io::Result<ReorgPlan> {
+/// place at all — see the module doc comment. `tmdb`, when given, is used
+/// only to backfill a missing movie year (issue #297) — never to identify a
+/// file `classify` and `ai` both failed to place.
+pub async fn scan_root(
+    root_label: &str,
+    root: &Path,
+    ai: Option<&AiClient>,
+    tmdb: Option<&TmdbClient>,
+) -> std::io::Result<ReorgPlan> {
     let mut video_files = Vec::new();
     walk(root, root, &mut video_files)?;
     video_files.sort();
 
     let mut items = Vec::new();
     let mut ai_assisted_count = 0u32;
+    let mut tmdb_year_count = 0u32;
     let mut ai_budget = MAX_AI_GUESSES;
     let mut planned_targets: HashSet<String> = HashSet::new();
 
@@ -99,6 +118,11 @@ pub async fn scan_root(root_label: &str, root: &Path, ai: Option<&AiClient>) -> 
             (deterministic, false)
         };
 
+        let (classified, year_source) = fill_missing_movie_year(classified, tmdb).await;
+        if year_source.is_some() {
+            tmdb_year_count += 1;
+        }
+
         let canonical = canonical_video_path(&classified, ext);
         if canonical == unix_relative {
             continue;
@@ -113,6 +137,7 @@ pub async fn scan_root(root_label: &str, root: &Path, ai: Option<&AiClient>) -> 
             to: canonical.clone(),
             kind: "video",
             ai_assisted,
+            year_source,
             conflict,
         });
 
@@ -123,6 +148,7 @@ pub async fn scan_root(root_label: &str, root: &Path, ai: Option<&AiClient>) -> 
                 to: sub_to,
                 kind: "subtitle",
                 ai_assisted,
+                year_source,
                 conflict,
             });
         }
@@ -148,9 +174,40 @@ pub async fn scan_root(root_label: &str, root: &Path, ai: Option<&AiClient>) -> 
         root_label: root_label.to_string(),
         items,
         ai_assisted_count,
+        tmdb_year_count,
         conflict_count,
         validation,
     })
+}
+
+/// Backfills a movie's missing release year from TMDb before the canonical
+/// path is computed (issue #297). Only ever touches a `Classified` that
+/// already has a non-empty movie title and no year — TV episodes and
+/// already-yeared movies pass through untouched. A `None` result from the
+/// lookup (no API key configured, no match, or an ambiguous/low-confidence
+/// match — see `TmdbClient::confident_movie_year`) leaves the file exactly
+/// as `classify`/AI left it, so it falls back to today's bare-title
+/// behavior rather than ever guessing a year.
+async fn fill_missing_movie_year(
+    classified: Classified,
+    tmdb: Option<&TmdbClient>,
+) -> (Classified, Option<&'static str>) {
+    if classified.kind != MediaKind::Movie || classified.year.is_some() || classified.title.trim().is_empty() {
+        return (classified, None);
+    }
+    let Some(client) = tmdb else {
+        return (classified, None);
+    };
+    match client.confident_movie_year(&classified.title).await {
+        Ok(Some(year)) => (
+            Classified {
+                year: Some(year),
+                ..classified
+            },
+            Some("tmdb"),
+        ),
+        _ => (classified, None),
+    }
 }
 
 fn conflict_reason(root: &Path, target: &str, planned_targets: &mut HashSet<String>) -> Option<String> {
@@ -419,12 +476,77 @@ mod tests {
     async fn proposes_a_canonical_movie_folder_for_a_scene_release_name() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "10.Cloverfield.Lane.2016.1080p.BluRay.x264-GROUP.mkv", "x");
-        let plan = scan_root("local", dir.path(), None).await.unwrap();
+        let plan = scan_root("local", dir.path(), None, None).await.unwrap();
         assert_eq!(plan.items.len(), 1);
         let item = &plan.items[0];
         assert_eq!(item.to, "10 Cloverfield Lane (2016)/10 Cloverfield Lane (2016).mkv");
         assert!(item.conflict.is_none());
         assert!(!item.ai_assisted);
+    }
+
+    // --- TMDb year backfill (issue #297) ---
+
+    async fn spawn_mock_tmdb(router: axum::Router) -> TmdbClient {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let base = format!("http://{addr}");
+        TmdbClient::with_base_urls("key", &base, &base)
+    }
+
+    #[tokio::test]
+    async fn a_confident_tmdb_match_fills_in_a_missing_movie_year() {
+        use axum::routing::get;
+        use axum::Json;
+        use serde_json::json;
+
+        let router = axum::Router::new().route(
+            "/search/movie",
+            get(|| async {
+                Json(json!({"results": [
+                    {"id": 348, "title": "Alien", "release_date": "1979-05-25", "popularity": 40.0, "vote_count": 12000}
+                ]}))
+            }),
+        );
+        let tmdb = spawn_mock_tmdb(router).await;
+
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "Alien.mkv", "x");
+        let plan = scan_root("local", dir.path(), None, Some(&tmdb)).await.unwrap();
+
+        assert_eq!(plan.items.len(), 1);
+        let item = &plan.items[0];
+        assert_eq!(item.to, "Alien (1979)/Alien (1979).mkv");
+        assert_eq!(item.year_source, Some("tmdb"));
+        assert_eq!(plan.tmdb_year_count, 1);
+    }
+
+    #[tokio::test]
+    async fn an_ambiguous_tmdb_match_leaves_the_year_unfilled() {
+        use axum::routing::get;
+        use axum::Json;
+        use serde_json::json;
+
+        let router = axum::Router::new().route(
+            "/search/movie",
+            get(|| async {
+                Json(json!({"results": [
+                    {"id": 1, "title": "Scream", "release_date": "1996-12-20", "popularity": 30.0, "vote_count": 8000},
+                    {"id": 2, "title": "Scream", "release_date": "2022-01-14", "popularity": 25.0, "vote_count": 4000}
+                ]}))
+            }),
+        );
+        let tmdb = spawn_mock_tmdb(router).await;
+
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "Scream.mkv", "x");
+        let plan = scan_root("local", dir.path(), None, Some(&tmdb)).await.unwrap();
+
+        assert_eq!(plan.items.len(), 1);
+        let item = &plan.items[0];
+        assert_eq!(item.to, "Scream/Scream.mkv");
+        assert_eq!(item.year_source, None);
+        assert_eq!(plan.tmdb_year_count, 0);
     }
 
     #[tokio::test]
@@ -433,7 +555,7 @@ mod tests {
         write(dir.path(), "Heat.1995.mkv", "x");
         write(dir.path(), "Heat.1995.en.srt", "x");
         write(dir.path(), "Heat.1995.es.vtt", "x");
-        let plan = scan_root("local", dir.path(), None).await.unwrap();
+        let plan = scan_root("local", dir.path(), None, None).await.unwrap();
         let subtitles: Vec<_> = plan.items.iter().filter(|i| i.kind == "subtitle").collect();
         assert_eq!(subtitles.len(), 2);
         assert!(subtitles.iter().any(|item| item.to == "Heat (1995)/Heat (1995).en.srt"));
@@ -446,7 +568,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "Heat.1995.mkv", "x");
         write(dir.path(), "Heat (1995)/Heat (1995).mkv", "already here");
-        let plan = scan_root("local", dir.path(), None).await.unwrap();
+        let plan = scan_root("local", dir.path(), None, None).await.unwrap();
         let video = plan.items.iter().find(|i| i.kind == "video").expect("video item");
         assert!(video.conflict.is_some());
         assert_eq!(plan.conflict_count, 1);
@@ -456,7 +578,7 @@ mod tests {
     async fn leaves_an_already_canonical_file_out_of_the_plan() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "Heat (1995)/Heat (1995).mkv", "x");
-        let plan = scan_root("local", dir.path(), None).await.unwrap();
+        let plan = scan_root("local", dir.path(), None, None).await.unwrap();
         assert!(plan.items.is_empty());
     }
 
@@ -464,7 +586,7 @@ mod tests {
     async fn proposes_every_video_even_when_metadata_is_incomplete_and_ai_is_unavailable() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "asdf1234.mkv", "x");
-        let plan = scan_root("local", dir.path(), None).await.unwrap();
+        let plan = scan_root("local", dir.path(), None, None).await.unwrap();
         assert_eq!(plan.items.len(), 1);
         assert_eq!(plan.items[0].to, "asdf1234/asdf1234.mkv");
         assert_eq!(plan.ai_assisted_count, 0);
@@ -475,7 +597,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "Heat.1995.mp4", "x");
         write(dir.path(), "Heat (1995).mp4", "x");
-        let plan = scan_root("local", dir.path(), None).await.unwrap();
+        let plan = scan_root("local", dir.path(), None, None).await.unwrap();
         let duplicate = plan
             .items
             .iter()
@@ -494,6 +616,7 @@ mod tests {
                 to: "Heat (1995)/Heat (1995).mkv".to_string(),
                 kind: "video",
                 ai_assisted: false,
+                year_source: None,
                 conflict: None,
             },
             ReorgItem {
@@ -501,6 +624,7 @@ mod tests {
                 to: "Heat (1995)/Heat (1995).srt".to_string(),
                 kind: "subtitle",
                 ai_assisted: false,
+                year_source: None,
                 conflict: Some("a file already exists at the destination".to_string()),
             },
         ];
@@ -524,6 +648,7 @@ mod tests {
             to: "Heat (1995)/Heat (1995).mkv".to_string(),
             kind: "video",
             ai_assisted: false,
+            year_source: None,
             conflict: None,
         }];
         let outcome = apply_plan(dir.path(), &items);

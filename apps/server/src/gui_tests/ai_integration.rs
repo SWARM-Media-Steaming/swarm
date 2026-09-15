@@ -7,13 +7,18 @@
 //! confidently, which needs no AI client at all (`ai: None` in
 //! `reorganize::scan_root`), and the provider/gating tests only exercise
 //! the settings round-trip and the "not configured yet" error paths.
+//!
+//! Issue #296 removed the separate `ai_scan_assist_enabled`/
+//! `ai_reorganize_enabled` toggles: both features are always available now,
+//! gated only by an enabled+ready AI provider (indirect permission, granted
+//! once on the "Enabled AI tools" panel) and the explicit action itself
+//! (clicking "Ask AI"/"Check now"/"Scan for cleanup" — direct permission).
 
 use super::harness::{test_app, test_app_with_media_root};
 use crate::{
     ai_reorganize_scan, ai_scrape_assist, approve_ai_reorg_plan, get_settings, list_ai_reorg_plans,
     list_scrape_issues, reject_ai_reorg_plan, run_scrape_assist_now, set_ai_provider_api_key,
-    set_ai_provider_enabled, set_ai_provider_model, set_ai_reorganize_enabled, set_ai_scan_assist_enabled,
-    test_ai_provider,
+    set_ai_provider_enabled, set_ai_provider_model, test_ai_provider,
 };
 use tauri::Manager;
 
@@ -26,8 +31,6 @@ async fn ai_providers_default_to_the_three_known_providers_disabled_and_keyless(
     let ids: Vec<&str> = settings.ai_providers.iter().map(|p| p.id.as_str()).collect();
     assert_eq!(ids, ["claude", "codex", "grok"]);
     assert!(settings.ai_providers.iter().all(|p| !p.enabled && !p.has_api_key));
-    assert!(!settings.ai_scan_assist_enabled);
-    assert!(!settings.ai_reorganize_enabled);
 }
 
 #[tokio::test]
@@ -93,23 +96,6 @@ async fn test_ai_provider_rejects_an_unknown_provider_id() {
 }
 
 #[tokio::test]
-async fn ai_scan_assist_and_reorganize_toggles_persist_and_default_off() {
-    let test_app = test_app();
-    let app = test_app.handle();
-
-    set_ai_scan_assist_enabled(app.clone(), true)
-        .await
-        .expect("set_ai_scan_assist_enabled should succeed");
-    set_ai_reorganize_enabled(app.clone(), true)
-        .await
-        .expect("set_ai_reorganize_enabled should succeed");
-
-    let settings = get_settings(app.clone()).await.expect("get_settings should succeed");
-    assert!(settings.ai_scan_assist_enabled);
-    assert!(settings.ai_reorganize_enabled);
-}
-
-#[tokio::test]
 async fn list_scrape_issues_is_empty_before_any_scrape_has_run() {
     let test_app = test_app();
     let app = test_app.handle();
@@ -119,48 +105,48 @@ async fn list_scrape_issues_is_empty_before_any_scrape_has_run() {
 }
 
 #[tokio::test]
-async fn ai_scrape_assist_refuses_to_run_until_scan_assist_is_enabled() {
+async fn ai_scrape_assist_refuses_to_run_without_an_enabled_ai_provider() {
     let test_app = test_app();
     let app = test_app.handle();
 
     let error = ai_scrape_assist(app.clone(), app.state(), "whatever-entry-key".to_string())
         .await
-        .expect_err("scan assist should refuse to run while disabled");
+        .expect_err("scan assist should refuse to run with no provider enabled");
     assert!(error.contains("Enable"));
 }
 
 #[tokio::test]
-async fn run_scrape_assist_now_refuses_to_run_until_scan_assist_is_enabled() {
-    // Same gate as the per-item command — the "Check now" button (issue:
-    // AI tab automation) must not silently no-op when disabled, it should
-    // report exactly why, same as ai_scrape_assist does.
+async fn run_scrape_assist_now_refuses_to_run_without_an_enabled_ai_provider() {
+    // Same gate as the per-item command — clicking "Check now" with no AI
+    // provider enabled must not silently no-op, it should report exactly
+    // why, same as ai_scrape_assist does.
     let test_app = test_app();
     let app = test_app.handle();
 
     let error = run_scrape_assist_now(app.clone(), app.state())
         .await
-        .expect_err("scan assist should refuse to run while disabled");
+        .expect_err("scan assist should refuse to run with no provider enabled");
     assert!(error.contains("Enable"));
 }
 
 #[tokio::test]
-async fn ai_reorganize_scan_refuses_to_run_until_reorganize_is_enabled() {
+async fn ai_reorganize_scan_rejects_an_unknown_media_root() {
+    // Reorganize has no enable gate any more (issue #296) — scanning
+    // succeeds without any AI provider configured (see the test below); the
+    // only way this command fails on a fresh app is an unresolvable root.
     let test_app = test_app();
     let app = test_app.handle();
 
     let error = ai_reorganize_scan(app.clone(), app.state(), "Movies".to_string())
         .await
-        .expect_err("reorganize should refuse to run while disabled");
-    assert!(error.contains("Enable"));
+        .expect_err("an unconfigured media root should be rejected");
+    assert!(error.contains("unknown media root"));
 }
 
 #[tokio::test]
 async fn ai_reorganize_scan_proposes_a_plan_for_a_messy_filename_with_no_ai_needed() {
     let (test_app, root_dir) = test_app_with_media_root().await;
     let app = test_app.handle();
-    set_ai_reorganize_enabled(app.clone(), true)
-        .await
-        .expect("set_ai_reorganize_enabled should succeed");
 
     std::fs::write(
         root_dir.path().join("10.Cloverfield.Lane.2016.1080p.BluRay.x264-GROUP.mkv"),
@@ -189,9 +175,6 @@ async fn ai_reorganize_scan_proposes_a_plan_for_a_messy_filename_with_no_ai_need
 async fn approve_ai_reorg_plan_moves_the_file_and_never_deletes_anything() {
     let (test_app, root_dir) = test_app_with_media_root().await;
     let app = test_app.handle();
-    set_ai_reorganize_enabled(app.clone(), true)
-        .await
-        .expect("set_ai_reorganize_enabled should succeed");
     std::fs::write(root_dir.path().join("Heat.1995.mkv"), b"fake video bytes").expect("write fixture movie file");
 
     let plan = ai_reorganize_scan(app.clone(), app.state(), "Movies".to_string())
@@ -243,9 +226,6 @@ async fn approve_ai_reorg_plan_moves_the_file_and_never_deletes_anything() {
 async fn reject_ai_reorg_plan_leaves_the_filesystem_untouched() {
     let (test_app, root_dir) = test_app_with_media_root().await;
     let app = test_app.handle();
-    set_ai_reorganize_enabled(app.clone(), true)
-        .await
-        .expect("set_ai_reorganize_enabled should succeed");
     std::fs::write(root_dir.path().join("Heat.1995.mkv"), b"fake video bytes").expect("write fixture movie file");
 
     let plan = ai_reorganize_scan(app.clone(), app.state(), "Movies".to_string())

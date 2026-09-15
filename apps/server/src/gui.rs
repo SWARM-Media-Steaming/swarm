@@ -295,17 +295,15 @@ impl AppState {
                 core.set_hls_segment_seconds(settings.hls_segment_seconds);
                 start_media_root_recovery(Arc::clone(&core), recovery_settings_dir.clone());
                 start_auto_library_watch(Arc::clone(&core), recovery_settings_dir);
-                if settings.mcp_enabled {
-                    if let Some(access_token) = settings.mcp_access_token.filter(|token| !token.is_empty()) {
-                        let mcp_core = Arc::clone(&core);
-                        tokio::spawn(async move {
-                            if let Err(err) = mcp::serve(mcp_core, settings.mcp_port, access_token).await {
-                                tracing::error!(%err, "MCP server stopped");
-                            }
-                        });
-                    } else {
-                        tracing::error!("MCP server is enabled but has no access token; create one in the AI tab");
-                    }
+                // The MCP server has no separate enable toggle — creating an
+                // access token (AI tab) is itself the enable action.
+                if let Some(access_token) = settings.mcp_access_token.filter(|token| !token.is_empty()) {
+                    let mcp_core = Arc::clone(&core);
+                    tokio::spawn(async move {
+                        if let Err(err) = mcp::serve(mcp_core, settings.mcp_port, access_token).await {
+                            tracing::error!(%err, "MCP server stopped");
+                        }
+                    });
                 }
                 Ok(core)
             })
@@ -883,7 +881,6 @@ struct SettingsView {
     local_transcription_enabled: bool,
     transcription_pause_while_streaming: bool,
     transcription_skip_if_subtitles_exist: bool,
-    mcp_enabled: bool,
     mcp_port: u16,
     mcp_access_token: Option<String>,
     auto_library_watch_enabled: bool,
@@ -895,8 +892,6 @@ struct SettingsView {
     auto_update: String,
     app_version: String,
     ai_providers: Vec<AiProviderView>,
-    ai_scan_assist_enabled: bool,
-    ai_reorganize_enabled: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -935,7 +930,6 @@ async fn get_settings<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<Set
         local_transcription_enabled: settings.local_transcription_enabled,
         transcription_pause_while_streaming: settings.transcription_pause_while_streaming,
         transcription_skip_if_subtitles_exist: settings.transcription_skip_if_subtitles_exist,
-        mcp_enabled: settings.mcp_enabled,
         mcp_port: settings.mcp_port,
         mcp_access_token: settings.mcp_access_token,
         auto_library_watch_enabled: settings.auto_library_watch_enabled,
@@ -947,8 +941,6 @@ async fn get_settings<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<Set
         auto_update: settings.auto_update,
         app_version: app.package_info().version.to_string(),
         ai_providers: ai_provider_views(&settings.ai_providers),
-        ai_scan_assist_enabled: settings.ai_scan_assist_enabled,
-        ai_reorganize_enabled: settings.ai_reorganize_enabled,
     })
 }
 
@@ -1650,17 +1642,10 @@ async fn generate_subtitles_for_entry<R: tauri::Runtime>(
     core.generate_subtitles_for_entry(&entry_key).await
 }
 
-/// Both take effect on next launch/restart, not live — see `mcp.rs`'s doc
-/// comment and `AppState::core`, which only ever starts the MCP listener
-/// once, the same time it starts `ServerCore` itself.
-#[tauri::command]
-async fn set_mcp_enabled<R: tauri::Runtime>(app: tauri::AppHandle<R>, enabled: bool) -> Result<(), String> {
-    let dir = app_data_dir(&app)?;
-    let mut settings: Settings = settings::load(&dir);
-    settings.mcp_enabled = enabled;
-    settings::save(&dir, &settings).map_err(|e| e.to_string())
-}
-
+/// Creating a token is the MCP server's enable action — there is no separate
+/// toggle. Takes effect on next launch/restart, not live — see `mcp.rs`'s
+/// doc comment and `AppState::core`, which only ever starts the MCP
+/// listener once, the same time it starts `ServerCore` itself.
 #[tauri::command]
 async fn generate_mcp_access_token<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<String, String> {
     let mut bytes = [0u8; 32];
@@ -1722,22 +1707,6 @@ async fn set_ai_provider_api_key<R: tauri::Runtime>(
     } else {
         Some(key.trim().to_string())
     };
-    settings::save(&dir, &settings).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn set_ai_scan_assist_enabled<R: tauri::Runtime>(app: tauri::AppHandle<R>, enabled: bool) -> Result<(), String> {
-    let dir = app_data_dir(&app)?;
-    let mut settings = settings::load(&dir);
-    settings.ai_scan_assist_enabled = enabled;
-    settings::save(&dir, &settings).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn set_ai_reorganize_enabled<R: tauri::Runtime>(app: tauri::AppHandle<R>, enabled: bool) -> Result<(), String> {
-    let dir = app_data_dir(&app)?;
-    let mut settings = settings::load(&dir);
-    settings.ai_reorganize_enabled = enabled;
     settings::save(&dir, &settings).map_err(|e| e.to_string())
 }
 
@@ -2017,7 +1986,8 @@ fn resolve_media_root(settings: &Settings, root_label: &str) -> Result<PathBuf, 
 
 /// Scans one configured media root and proposes a rename/move plan — pure
 /// computation, nothing on disk changes until `approve_ai_reorg_plan` runs.
-/// Gated by `ai_reorganize_enabled`; an AI provider is used only for the
+/// Always available (no separate enable toggle — the "Scan for cleanup"
+/// click itself is the permission); an AI provider is used only for the
 /// long tail of filenames `classify` can't place at all (see
 /// `reorganize::scan_root`) — if none is configured, the scan still runs,
 /// just without that fallback.
@@ -2029,9 +1999,6 @@ async fn ai_reorganize_scan<R: tauri::Runtime>(
 ) -> Result<ReorgPlanView, String> {
     let dir = app_data_dir(&app)?;
     let settings = settings::load(&dir);
-    if !settings.ai_reorganize_enabled {
-        return Err("Enable \"AI reorganize\" on the AI tab first.".to_string());
-    }
     let root_path = resolve_media_root(&settings, &root_label)?;
     let ai_client = ai_client_from_settings(&settings).await.ok();
     let plan = reorganize::scan_root(&root_label, &root_path, ai_client.as_ref())
@@ -2531,16 +2498,18 @@ async fn run_library_maintenance<R: tauri::Runtime>(
             return Err("cancelled".to_string());
         }
 
-        // AI scan assist, automatic: when enabled and a provider/TMDb key
-        // are actually ready, resolve as many of this run's unmatched
-        // titles as possible right here — no per-item approval, per the
-        // "users don't want to approve one at a time" request. A disabled
-        // feature or an unready provider/key is treated as "nothing to do"
-        // rather than a library-maintenance failure; scan/scrape/reclassify
-        // must never fail because of this best-effort addition.
+        // AI scan assist, automatic: whenever a provider/TMDb key are
+        // actually ready, resolve as many of this run's unmatched titles as
+        // possible right here — no per-item approval, per the "users don't
+        // want to approve one at a time" request. There is no separate
+        // enable toggle: enabling a provider in the "Enabled AI tools" panel
+        // is itself the permission this relies on. An unready provider/key
+        // is treated as "nothing to do" rather than a library-maintenance
+        // failure; scan/scrape/reclassify must never fail because of this
+        // best-effort addition.
         let ai_assist = if !scrape.issues.is_empty() {
             let settings = settings::load(&app_data_dir(&app)?);
-            let ready = settings.ai_scan_assist_enabled.then(|| settings.tmdb_api_key.clone()).flatten();
+            let ready = settings.tmdb_api_key.clone();
             match ready {
                 Some(tmdb_api_key) => match ai_client_from_settings(&settings).await {
                     Ok(client) => {
@@ -2780,9 +2749,6 @@ async fn ai_scrape_assist<R: tauri::Runtime>(
 ) -> Result<AiScrapeSuggestion, String> {
     let dir = app_data_dir(&app)?;
     let settings = settings::load(&dir);
-    if !settings.ai_scan_assist_enabled {
-        return Err("Enable \"AI scan & scrape assist\" on the AI tab first.".to_string());
-    }
     let client = ai_client_from_settings(&settings).await?;
     let tmdb_api_key = settings
         .tmdb_api_key
@@ -2844,7 +2810,8 @@ async fn auto_apply_ai_scrape_assist(
 /// Runs `auto_apply_ai_scrape_assist` against whatever `list_scrape_issues`
 /// currently holds — the AI tab's "Check now" button, for resolving
 /// already-known issues on demand without a full library rescan. Same
-/// settings/provider/TMDb-key gating as `ai_scrape_assist`.
+/// provider/TMDb-key gating as `ai_scrape_assist`; clicking "Check now" is
+/// itself the permission for this run.
 #[tauri::command]
 async fn run_scrape_assist_now<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
@@ -2852,9 +2819,6 @@ async fn run_scrape_assist_now<R: tauri::Runtime>(
 ) -> Result<AiAssistOutcome, String> {
     let dir = app_data_dir(&app)?;
     let settings = settings::load(&dir);
-    if !settings.ai_scan_assist_enabled {
-        return Err("Enable \"AI scan & scrape assist\" on the AI tab first.".to_string());
-    }
     let client = ai_client_from_settings(&settings).await?;
     let tmdb_api_key = settings
         .tmdb_api_key
@@ -3620,7 +3584,6 @@ fn main() {
             set_transcription_skip_if_subtitles_exist,
             generate_subtitles_for_entry,
             get_transcription_status,
-            set_mcp_enabled,
             generate_mcp_access_token,
             get_status,
             get_bandwidth_history,
@@ -3666,8 +3629,6 @@ fn main() {
             set_ai_provider_enabled,
             set_ai_provider_model,
             set_ai_provider_api_key,
-            set_ai_scan_assist_enabled,
-            set_ai_reorganize_enabled,
             test_ai_provider,
             detect_ai_tools,
             list_scrape_issues,

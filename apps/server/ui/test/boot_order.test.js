@@ -54,7 +54,6 @@ function invokeStub(command, args) {
         local_transcription_enabled: false,
         transcription_pause_while_streaming: true,
         transcription_skip_if_subtitles_exist: false,
-        mcp_enabled: false,
         mcp_port: 7890,
         mcp_access_token: null,
         auto_library_watch_enabled: true,
@@ -402,12 +401,12 @@ async function main() {
     }
   }
   testMediaRoots = [];
-  document.querySelector('[data-info="mcp-help"]').click();
+  document.querySelector('[data-info="mcp-server"]').click();
   if (document.getElementById("infoModalBackdrop").classList.contains("d-none")) {
-    failures.push("Expected clicking About MCP & the AI tools API to open its information modal.");
+    failures.push("Expected clicking the MCP Server heading to open its information modal.");
   }
   if (document.querySelectorAll("#infoModalLinks a").length !== 3) {
-    failures.push("Expected MCP help to offer the MCP spec, Codex, and Claude links.");
+    failures.push("Expected MCP Server help to offer the MCP spec, Codex, and Claude links.");
   }
 
   document.getElementById("connectNetworkRootBtn").click();

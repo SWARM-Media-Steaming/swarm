@@ -192,10 +192,17 @@ const INFO_TOPICS = {
     body: "Every stream travels straight from your server to your client over a private connection — no third-party relay ever sits in the middle.",
     link: "https://en.wikipedia.org/wiki/Peer-to-peer", linkLabel: "Learn about peer-to-peer",
   },
-  "mcp-help": {
-    icon: "bi-stars", title: "About MCP & the AI tools API",
+  "enabled-ai-tools": {
+    icon: "bi-stars", title: "Enabled AI tools",
+    body:
+      "Turn on the AI tools SWARM may call for the advanced features below (Scan & scrape assist, Reorganize media) — SWARM uses each tool's own command-line app and the sign-in already on this machine, so there's no API key to enter and nothing to save. Enabling a tool here is what makes those features usable at all; each one still asks again in its own way (a \"Check now\"/\"Ask AI\"/\"Scan for cleanup\" click) before it actually spends any usage.\n\n" +
+      "Whenever any enabled feature needs AI, SWARM tries the tools in the order they're listed above and uses the first one that's installed, signed in, and has at least 10% of its usage remaining — metered tools are skipped once they run low so a feature never gets silently blocked by one tool's quota. This list is shared by every AI feature in SWARM, including MCP-adjacent ones; it has nothing to do with the MCP Server further down this tab, which works the other way around — an AI tool connecting to SWARM, not SWARM calling out to one.",
+  },
+  "mcp-server": {
+    icon: "bi-hdd-network-fill", title: "MCP Server",
     body:
       "The Model Context Protocol is an open standard that lets an AI assistant talk directly to outside tools and data. SWARM exposes a small, read-only MCP API so an assistant like Claude can look things up in your library on your behalf — it can search and check status, but it can't change settings or touch your files.\n\n" +
+      "Creating an access token is what turns the server on — there's no separate enable switch. Your AI tool sends that token with each MCP request so only clients you configure can access your library. The port is fixed at 7890; restart SWARM after creating or changing the token for it to take effect.\n\n" +
       "Once you've added this MCP Server to an AI tool, just ask ordinary questions about your library — the tool picks the function it needs and turns the results into a conversational answer:\n" +
       "You: What comedies are in my library?\n" +
       "AI: I found 18 comedies. A few highlights are Game Night, Palm Springs, and Clue.\n\n" +
@@ -210,13 +217,9 @@ const INFO_TOPICS = {
       { href: "https://claude.ai/", label: "Open Claude" },
     ],
   },
-  "mcp-server": {
-    icon: "bi-hdd-network-fill", title: "MCP Server",
-    body: "Create a token, enable the server, save, and restart SWARM. Your AI tool sends this token with each MCP request so only clients you configure can access your library. The port is fixed at 7890.",
-  },
   "scan-scrape-assist": {
     icon: "bi-search-heart-fill", title: "Scan & scrape assist",
-    body: "When a scrape can't find a confident TMDb match, AI suggests a cleaner title from the filename and retries the lookup. When this is enabled, \"Scan and update library\" resolves what it can automatically — no per-item approval. Use \"Check now\" to resolve currently-known issues on demand without a full rescan; anything still unresolved stays listed below for manual review.",
+    body: "When a scrape can't find a confident TMDb match, AI suggests a cleaner title from the filename and retries the lookup. \"Scan and update library\" resolves what it can automatically as part of every scan — no per-item approval. Use \"Check now\" to resolve currently-known issues on demand without a full rescan; anything still unresolved stays listed below, grouped by Movies/Shows/Music, for manual review.",
   },
   "reorganize-media": {
     icon: "bi-folder-symlink-fill", title: "Reorganize media",

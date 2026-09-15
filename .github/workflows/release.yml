@@ -43,6 +43,10 @@ jobs:
           distribution: temurin
           java-version: "17"
       - uses: android-actions/setup-android@v3
+        with:
+          # The action's default also requests the retired SDK "tools"
+          # package, which makes sdkmanager fail before Gradle can run.
+          packages: platform-tools
       - uses: gradle/actions/setup-gradle@v4
       - run: ./gradlew :core:test :app:testDebugUnitTest :app:assembleDebug
 

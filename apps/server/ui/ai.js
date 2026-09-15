@@ -12,7 +12,6 @@ let aiToolsById = {};
 async function refreshAi(showDetectionProgress = false) {
   try {
     const settings = await invoke("get_settings");
-    document.getElementById("mcpEnabledCheck").checked = settings.mcp_enabled;
     const tokenInput = document.getElementById("mcpAccessTokenInput");
     tokenInput.value = settings.mcp_access_token || "";
     document.getElementById("generateMcpTokenBtn").innerHTML = settings.mcp_access_token
@@ -134,48 +133,50 @@ function renderAiProviders(settings, tools) {
 // session only). Applying a suggestion reuses the existing `rescrape_entry`
 // command with the AI-confirmed TMDb id, exactly like a manual "fix match"
 // would — this feature only ever proposes, the user always clicks Apply.
+//
+// No enable toggle (issue #296): this is always on, gated only by an
+// enabled+ready AI provider (see the "Enabled AI tools" panel above) and
+// the "Ask AI"/"Check now" click itself. Issues render as a grid grouped by
+// `issue.kind` (movie/episode/track) instead of one jumbled list.
 
-async function refreshScanAssist(settings) {
-  document.getElementById("aiScanAssistCheck").checked = settings.ai_scan_assist_enabled;
-  const status = document.getElementById("aiScanAssistStatus");
-  const hasProvider = settings.ai_providers.some(p => providerReady(settings, p.id));
-  if (settings.ai_scan_assist_enabled && !hasProvider) {
-    status.textContent = "Enabled, but no enabled AI tool is signed in with at least 10% usage remaining.";
-    status.classList.add("error");
-  } else {
-    status.textContent = settings.ai_scan_assist_enabled ? "Enabled." : "Disabled.";
-    status.classList.remove("error");
-  }
+const SCRAPE_ASSIST_GROUPS = [
+  { kind: "movie", label: "Movies" },
+  { kind: "episode", label: "Shows" },
+  { kind: "track", label: "Music" },
+];
 
+function renderScrapeAssistIssues(issues) {
   const wrap = document.getElementById("scrapeAssistWrap");
-  if (!settings.ai_scan_assist_enabled) {
-    wrap.classList.add("d-none");
-    return;
-  }
-  let issues = [];
-  try {
-    issues = await invoke("list_scrape_issues");
-  } catch (err) {
-    showToast(String(err), "error");
-  }
   wrap.classList.toggle("d-none", issues.length === 0);
-  const list = document.getElementById("scrapeAssistList");
-  list.innerHTML = issues
-    .map(
-      issue => `
-    <li data-entry-key="${esc(issue.entry_key)}">
-      <span class="issue-title">${esc(issue.title)}</span> — <span class="issue-reason">${esc(issue.reason)}</span>
-      <button class="secondary-button compact ask-ai-btn"><i class="bi bi-stars"></i>Ask AI</button>
-      <div class="ai-suggestion muted"></div>
-    </li>`
-    )
+  const groups = document.getElementById("scrapeAssistGroups");
+  groups.innerHTML = SCRAPE_ASSIST_GROUPS
+    .map(group => {
+      const groupIssues = issues.filter(issue => issue.kind === group.kind);
+      if (groupIssues.length === 0) return "";
+      const cards = groupIssues
+        .map(
+          issue => `
+      <div class="scrape-assist-card service-card" data-entry-key="${esc(issue.entry_key)}">
+        <div class="scrape-assist-card-title">${esc(issue.title)}</div>
+        <div class="scrape-assist-card-reason">${esc(issue.reason)}</div>
+        <button class="secondary-button compact ask-ai-btn"><i class="bi bi-stars"></i>Ask AI</button>
+        <div class="ai-suggestion muted"></div>
+      </div>`
+        )
+        .join("");
+      return `
+    <div class="scrape-assist-group">
+      <h3 class="review-heading">${esc(group.label)} <span class="muted">(${groupIssues.length})</span></h3>
+      <div class="scrape-assist-grid">${cards}</div>
+    </div>`;
+    })
     .join("");
 
-  list.querySelectorAll(".ask-ai-btn").forEach(btn => {
+  groups.querySelectorAll(".ask-ai-btn").forEach(btn => {
     btn.addEventListener("click", async () => {
-      const li = btn.closest("li");
-      const entryKey = li.dataset.entryKey;
-      const suggestionBox = li.querySelector(".ai-suggestion");
+      const card = btn.closest(".scrape-assist-card");
+      const entryKey = card.dataset.entryKey;
+      const suggestionBox = card.querySelector(".ai-suggestion");
       btn.disabled = true;
       suggestionBox.textContent = "Asking AI…";
       const progressToast = showToast("Asking AI for a media match…", "progress", { duration: 0 });
@@ -205,16 +206,20 @@ async function refreshScanAssist(settings) {
   });
 }
 
-document.getElementById("aiScanAssistCheck").addEventListener("change", async (event) => {
-  const enabled = event.currentTarget.checked;
+async function refreshScanAssist(settings) {
+  const status = document.getElementById("aiScanAssistStatus");
+  const hasProvider = settings.ai_providers.some(p => providerReady(settings, p.id));
+  status.textContent = "No enabled AI tool is signed in with at least 10% usage remaining.";
+  status.classList.toggle("d-none", hasProvider);
+
+  let issues = [];
   try {
-    await invoke("set_ai_scan_assist_enabled", { enabled });
-    await refreshAi();
+    issues = await invoke("list_scrape_issues");
   } catch (err) {
-    event.currentTarget.checked = !enabled;
     showToast(String(err), "error");
   }
-});
+  renderScrapeAssistIssues(issues);
+}
 
 document.getElementById("runScrapeAssistNowBtn").addEventListener("click", async () => {
   const btn = document.getElementById("runScrapeAssistNowBtn");
@@ -243,23 +248,18 @@ document.getElementById("runScrapeAssistNowBtn").addEventListener("click", async
 // `approve_ai_reorg_plan` runs (never a delete, never an overwrite — see
 // `reorganize.rs`). Plans live in memory only (`AppState::reorg_plans`), so
 // they don't survive a restart — a fresh scan is cheap enough that this
-// isn't worth persisting.
+// isn't worth persisting. No enable toggle (issue #296): clicking "Scan for
+// cleanup" is itself the permission to use AI for the filenames `classify`
+// can't place on its own.
 
 async function refreshReorganize(settings) {
-  document.getElementById("aiReorganizeCheck").checked = settings.ai_reorganize_enabled;
-  document.getElementById("aiReorganizeStatus").textContent = settings.ai_reorganize_enabled ? "Enabled." : "Disabled.";
-
-  const scanWrap = document.getElementById("aiReorganizeScanWrap");
-  scanWrap.classList.toggle("d-none", !settings.ai_reorganize_enabled);
-  if (settings.ai_reorganize_enabled) {
-    try {
-      const roots = await invoke("list_media_roots");
-      document.getElementById("aiReorganizeRootSelect").innerHTML = roots
-        .map(r => `<option value="${esc(r.label)}">${esc(r.label)}</option>`)
-        .join("");
-    } catch (err) {
-      showToast(String(err), "error");
-    }
+  try {
+    const roots = await invoke("list_media_roots");
+    document.getElementById("aiReorganizeRootSelect").innerHTML = roots
+      .map(r => `<option value="${esc(r.label)}">${esc(r.label)}</option>`)
+      .join("");
+  } catch (err) {
+    showToast(String(err), "error");
   }
 
   let plans = [];
@@ -287,11 +287,30 @@ function renderReorgPlans(plans) {
             item => `
         <li>
           <span class="mono">${esc(item.from)}</span> → <span class="mono">${esc(item.to)}</span>
+          ${item.kind === "orphan" ? '<br><span class="orphan-label"><i class="bi bi-exclamation-triangle"></i> Orphaned — no matching video found, moved out of the way</span>' : ""}
+          ${item.kind === "duplicate" ? '<br><span class="duplicate-label"><i class="bi bi-files"></i> Duplicate of an already-organized file — moved aside, original left untouched</span>' : ""}
           ${item.ai_assisted ? '<span class="muted ai-assisted-label"> (AI-assisted)</span>' : ""}
+          ${item.year_source === "tmdb" ? '<span class="muted tmdb-year-label"> (year via TMDb)</span>' : ""}
           ${item.conflict ? `<br><span class="issue-reason">${esc(item.conflict)} — left in place</span>` : ""}
         </li>`
           )
           .join("") || '<li class="muted">Nothing to reorganize — this root already looks consistent.</li>';
+      const misplacedHtml =
+        plan.misplaced && plan.misplaced.length
+          ? `
+        <h3 class="review-heading misplaced-heading"><i class="bi bi-signpost-split-fill"></i> ${plan.misplaced.length} item(s) belong in a different library</h3>
+        <ul class="issue-list misplaced-items">${plan.misplaced
+          .map(
+            item => `
+        <li>
+          <span class="mono">${esc(item.path)}</span>
+          <br><span class="muted">Classified as ${esc(item.kind)} — belongs under “<strong>${esc(
+              item.correct_root_label
+            )}</strong>”, not moved automatically</span>
+        </li>`
+          )
+          .join("")}</ul>`
+          : "";
       const summaryHtml = plan.apply_summary
         ? `<p class="muted">${plan.apply_summary.applied} moved, ${plan.apply_summary.skipped} skipped.${
             plan.apply_summary.errors.length ? `<br>${plan.apply_summary.errors.map(esc).join("<br>")}` : ""
@@ -306,9 +325,10 @@ function renderReorgPlans(plans) {
         <div class="service-card ai-reorg-plan">
           <div class="row plan-summary">
             <strong>${esc(plan.root_label)}</strong>
-            <span class="muted">${plan.items.length} item(s), ${plan.ai_assisted_count} AI-assisted, ${plan.conflict_count} conflict(s) — <em>${esc(plan.status)}</em></span>
+            <span class="muted">${plan.items.length} item(s), ${plan.ai_assisted_count} AI-assisted, ${plan.tmdb_year_count} TMDb-year, ${plan.orphan_count} orphaned, ${plan.duplicate_count} duplicate(s), ${plan.conflict_count} conflict(s) — <em>${esc(plan.status)}</em></span>
           </div>
           <ul class="issue-list plan-items">${itemsHtml}</ul>
+          ${misplacedHtml}
           ${summaryHtml}
           <div class="row plan-actions">${actionsHtml}</div>
         </div>`;
@@ -373,30 +393,17 @@ document.getElementById("aiReorganizeScanBtn").addEventListener("click", async (
   }
 });
 
-document.getElementById("aiReorganizeCheck").addEventListener("change", async (event) => {
-  const enabled = event.currentTarget.checked;
-  try {
-    await invoke("set_ai_reorganize_enabled", { enabled });
-    await refreshAi();
-  } catch (err) {
-    event.currentTarget.checked = !enabled;
-    showToast(String(err), "error");
-  }
-});
-
 function renderMcpStatus(settings) {
   const status = document.getElementById("mcpStatus");
-  status.textContent = settings.mcp_enabled
-    ? settings.mcp_access_token
-      ? `Enabled on port ${settings.mcp_port} — restart SWARM after changing the server or token.`
-      : "Access token required before the MCP Server can start."
-    : "Disabled.";
-  status.classList.toggle("error", settings.mcp_enabled && !settings.mcp_access_token);
+  status.textContent = settings.mcp_access_token
+    ? `Enabled on port ${settings.mcp_port} — restart SWARM after creating a new token.`
+    : "Create an access token to enable the MCP Server.";
+  status.classList.toggle("error", !settings.mcp_access_token);
 }
 
 function renderMcpConfigSnippet(settings) {
   const card = document.getElementById("mcpConfigCard");
-  card.classList.toggle("d-none", !settings.mcp_enabled || !settings.mcp_access_token);
+  card.classList.toggle("d-none", !settings.mcp_access_token);
   const snippet = {
     mcpServers: {
       swarm: {
@@ -413,26 +420,11 @@ function renderMcpConfigSnippet(settings) {
     "\n\n// Replace <this-machine's-LAN-IP> with this computer's network address\n// (check your OS's network settings — \"localhost\" only works if the\n// MCP client runs on this same machine).";
 }
 
-document.getElementById("saveMcpSettingsBtn").addEventListener("click", async () => {
-  try {
-    const enabled = document.getElementById("mcpEnabledCheck").checked;
-    if (enabled && !document.getElementById("mcpAccessTokenInput").value) {
-      showToast("Create an access token before enabling the MCP Server.", "error");
-      return;
-    }
-    await invoke("set_mcp_enabled", { enabled });
-    showToast("Saved. Restart the app for this to take effect.", "success");
-    await refreshAi();
-  } catch (err) {
-    showToast(String(err), "error");
-  }
-});
-
 document.getElementById("generateMcpTokenBtn").addEventListener("click", async () => {
   try {
     const token = await invoke("generate_mcp_access_token");
     document.getElementById("mcpAccessTokenInput").value = token;
-    showToast("Access token created. Restart SWARM if the MCP Server is already enabled.", "success");
+    showToast("Access token created. Restart SWARM to enable the MCP Server with it.", "success");
     await refreshAi();
   } catch (err) {
     showToast(String(err), "error");

@@ -611,15 +611,14 @@ pub struct Settings {
     /// generation always runs regardless of this setting.
     #[serde(default)]
     pub transcription_skip_if_subtitles_exist: bool,
-    /// Whether the read-only MCP server (see `mcp.rs`) starts alongside the
-    /// GUI app's core. Takes effect on next launch/restart — no hot-reload,
-    /// same posture as `media_root`'s pre-multi-root upgrade above having no
-    /// live-apply path either.
-    #[serde(default)]
-    pub mcp_enabled: bool,
     #[serde(default = "default_mcp_port")]
     pub mcp_port: u16,
-    /// Bearer token required by every MCP request.
+    /// Bearer token required by every MCP request. The MCP server (see
+    /// `mcp.rs`) starts alongside the GUI app's core whenever this is set —
+    /// there is no separate enable toggle; creating a token is the enable
+    /// action. Takes effect on next launch/restart — no hot-reload, same
+    /// posture as `media_root`'s pre-multi-root upgrade above having no
+    /// live-apply path either.
     #[serde(default)]
     pub mcp_access_token: Option<String>,
     /// Periodically re-scan every media root for added/removed/updated
@@ -665,18 +664,6 @@ pub struct Settings {
     /// extending that function, not this field's shape.
     #[serde(default = "default_ai_providers")]
     pub ai_providers: Vec<AiProviderSetting>,
-    /// Gates `ai::scrape assist` (AI-assisted TMDb matching for entries the
-    /// ordinary scrape pass couldn't match) — off until a user opts in, even
-    /// once a provider is configured, since it makes outbound calls with
-    /// filenames from the user's library.
-    #[serde(default)]
-    pub ai_scan_assist_enabled: bool,
-    /// Gates the AI reorganize feature (`reorganize.rs`): scanning a media
-    /// root and proposing a rename/move plan. The plan itself always still
-    /// requires explicit per-run approval before anything on disk changes —
-    /// this toggle only controls whether the feature is offered at all.
-    #[serde(default)]
-    pub ai_reorganize_enabled: bool,
 }
 
 fn default_streaming_upload_budget_enabled() -> bool {
@@ -738,7 +725,6 @@ impl Default for Settings {
             // missing-field default below stays `false`) — same split as
             // `streaming_upload_budget_enabled` above.
             transcription_skip_if_subtitles_exist: true,
-            mcp_enabled: false,
             mcp_port: default_mcp_port(),
             mcp_access_token: None,
             auto_library_watch_enabled: true,
@@ -749,8 +735,6 @@ impl Default for Settings {
             hls_segment_seconds: default_hls_segment_seconds(),
             auto_update: default_auto_update(),
             ai_providers: default_ai_providers(),
-            ai_scan_assist_enabled: false,
-            ai_reorganize_enabled: false,
         }
     }
 }

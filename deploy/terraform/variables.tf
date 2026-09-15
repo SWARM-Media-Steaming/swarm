@@ -94,7 +94,7 @@ variable "web_app_subdomain" {
 }
 
 variable "relay_port" {
-  description = "Public TCP and UDP port reserved for the future relay container."
+  description = "Public TCP and UDP port for the fallback relay, hosted on the Oracle Cloud instance (see relay-oracle.tf)."
   type        = number
   default     = 8443
 
@@ -105,13 +105,24 @@ variable "relay_port" {
 }
 
 variable "allowed_relay_cidrs" {
-  description = "IPv4 networks allowed to reach the relay port. Keep 0.0.0.0/0 for internet clients."
+  description = "IPv4 networks allowed to reach the relay port on the Oracle-hosted relay instance. Keep 0.0.0.0/0 for internet clients."
   type        = list(string)
   default     = ["0.0.0.0/0"]
 }
 
+variable "relay_subdomain" {
+  description = "DNS label for the fallback relay. It resolves to the Oracle instance's IP, separate from the AWS app host."
+  type        = string
+  default     = "relay"
+
+  validation {
+    condition     = can(regex("^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", var.relay_subdomain))
+    error_message = "relay_subdomain must be a valid lowercase DNS label."
+  }
+}
+
 variable "ecr_image_tag" {
-  description = "Image tag deployed for each application repository."
+  description = "Image tag deployed for each AWS application repository (stun-server, prompt-web)."
   type        = string
   default     = "latest"
 }
@@ -120,4 +131,81 @@ variable "tags" {
   description = "Additional tags applied to AWS resources."
   type        = map(string)
   default     = {}
+}
+
+# --- Oracle Cloud: fallback relay (Always Free tier) ---
+#
+# The relay is the only workload hosted outside AWS. It runs on an Oracle
+# Cloud Infrastructure Always Free compute instance to avoid a second AWS
+# EC2/EBS bill, and publishes its container image to OCI Container Registry
+# (OCIR) instead of ECR. See relay-oracle.tf and the README for setup.
+
+variable "oci_tenancy_ocid" {
+  description = "OCID of the Oracle Cloud tenancy that hosts the relay instance."
+  type        = string
+}
+
+variable "oci_user_ocid" {
+  description = "OCID of the Oracle Cloud user Terraform authenticates as."
+  type        = string
+}
+
+variable "oci_username" {
+  description = "OCI username (e.g. the account email address) paired with oci_user_ocid, used for OCIR docker login."
+  type        = string
+}
+
+variable "oci_fingerprint" {
+  description = "Fingerprint of the OCI API signing key configured for oci_user_ocid."
+  type        = string
+}
+
+variable "oci_private_key_path" {
+  description = "Path to the private key half of the OCI API signing key."
+  type        = string
+  default     = "~/.oci/oci_api_key.pem"
+}
+
+variable "oci_region" {
+  description = "OCI region for the relay instance. Always Free compute shapes are only available in your tenancy's home region."
+  type        = string
+}
+
+variable "oci_compartment_ocid" {
+  description = "Compartment for the relay resources. Defaults to the tenancy's root compartment."
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "oci_registry_region_key" {
+  description = "Short region key OCI uses for Container Registry hostnames (e.g. \"iad\" for us-ashburn-1). Required when oci_region isn't in the built-in lookup table in relay-oracle.tf."
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "relay_instance_shape" {
+  description = "OCI Always Free compute shape for the relay instance."
+  type        = string
+  default     = "VM.Standard.E2.1.Micro"
+}
+
+variable "relay_image_tag" {
+  description = "Image tag deployed from the OCI Container Registry relay repository."
+  type        = string
+  default     = "latest"
+}
+
+variable "relay_ssh_public_key" {
+  description = "SSH public key installed on the relay instance. Leave null to skip SSH key injection (the instance stays reachable only through the OCI console's serial console)."
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "relay_ssh_allowed_cidrs" {
+  description = "IPv4 networks allowed to SSH into the relay instance. Leave empty (default) to disable SSH ingress entirely."
+  type        = list(string)
+  default     = []
 }

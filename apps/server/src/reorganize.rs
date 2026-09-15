@@ -12,10 +12,14 @@
 //! already exists, cross-device rename) is skipped and reported, never
 //! forced past.
 //!
-//! Scope: movies and TV episodes only. Music libraries already have their
-//! own artist/album folder convention (recovered from flat filenames when
-//! needed — see the "Recover artist/album from filenames in flat music
-//! libraries" work) and aren't touched here.
+//! Movies, TV episodes, and music tracks (issue #300) are all covered.
+//! Tracks never go through AI or TMDb — `swarm_media::classify` already
+//! recognizes and flattens the intermediate "category" grouping folders
+//! (`Album`, `Compilation`, …) some libraries insert between artist and
+//! album, and the rare loose track with no album folder at all falls back
+//! to the file's own embedded tags (the same `swarm_media::tags::read_tags`
+//! the scanner's cataloging path already uses) rather than a guess; a track
+//! with no album either way is left out of the plan.
 
 use crate::ai::AiClient;
 use std::collections::HashSet;
@@ -23,6 +27,7 @@ use std::path::{Path, PathBuf};
 use swarm_core::peer::MediaKind;
 use swarm_media::classify::{self, Classified};
 use swarm_media::plex::{self, PlexValidationIssue};
+use swarm_media::scrape::tmdb::TmdbClient;
 use swarm_media::subtitles::{parse_subtitle_name, subtitle_extension};
 
 /// Cap on how many AI calls one scan will make, so a folder full of
@@ -31,17 +36,150 @@ use swarm_media::subtitles::{parse_subtitle_name, subtitle_extension};
 /// never silently omitted from the plan.
 const MAX_AI_GUESSES: usize = 25;
 
+/// Common artwork extensions considered for orphan detection (issue #298),
+/// alongside `swarm_media::subtitles::subtitle_extension`. Deliberately a
+/// small, well-known set rather than every image format — this only needs
+/// to catch the loose poster/thumbnail leftovers a past rename left behind,
+/// not classify every image file in a library.
+const ORPHAN_ARTWORK_EXTS: &[&str] = &["jpg", "jpeg", "png"];
+
+/// The top-level holding folder orphaned sidecars are proposed into (issue
+/// #298) — never deleted, just moved out of the way so nothing else can
+/// collide with it (see `scan_root`'s orphan pass doc comment).
+const ORPHANED_FOLDER: &str = "_orphaned";
+
+/// The top-level holding folder confirmed content duplicates are proposed
+/// into (issue #299) — mirrors `_orphaned/`: never deleted, and the original
+/// relative path is preserved underneath so it can never collide with
+/// anything else already there. See `resolve_destination`.
+const DUPLICATES_FOLDER: &str = "_duplicates";
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ReorgItem {
     /// Path relative to the scanned root, forward-slashed.
     pub from: String,
     pub to: String,
+    /// `"video"`, `"track"` (issue #300: a music file proposed for a move
+    /// to its canonical `Artist/Album/Track.ext` path), `"subtitle"` (a
+    /// sidecar riding along with its video), `"orphan"` (issue #298: a
+    /// subtitle/artwork leftover with no matching video anywhere in the
+    /// root, proposed for a move into `_orphaned/` rather than a rename),
+    /// or `"duplicate"` (issue #299: the file already at the proposed
+    /// destination is byte-identical — this item is proposed for a move
+    /// into `_duplicates/` instead, and the already-canonical file at the
+    /// original destination is left alone).
     pub kind: &'static str,
     pub ai_assisted: bool,
+    /// `Some("tmdb")` when `classify` found a movie title but no year in the
+    /// filename and a confident TMDb lookup (see
+    /// `TmdbClient::confident_movie_year`) filled it in for this canonical
+    /// path — distinct from `ai_assisted`, which is about identifying an
+    /// otherwise unclassifiable file rather than enriching one `classify`
+    /// already placed.
+    pub year_source: Option<&'static str>,
     /// `Some(reason)` when this item must not be applied (e.g. the
     /// destination already exists) — carried in the plan so the UI can show
     /// *why* an item is excluded rather than silently dropping it.
     pub conflict: Option<String>,
+}
+
+/// One currently-configured media root's label and the [`MediaKind`] it's
+/// expected to hold, derived by the caller from `Settings::media_roots`'
+/// `RootAssetType` (`Movies` → `Some(MediaKind::Movie)`, `Shows` →
+/// `Some(MediaKind::Episode)`, `Music` → `Some(MediaKind::Track)`, `Mixed`
+/// and `PhotosVideos` → `None`, since neither imposes a classifiable
+/// expectation). Kept as this crate's own lightweight shape — `settings.rs`
+/// lives only in the gui binary crate, not this library crate — rather than
+/// importing `RootAssetType` directly (issue #301).
+#[derive(Debug, Clone)]
+pub struct RootExpectation {
+    pub label: String,
+    pub expected_kind: Option<MediaKind>,
+}
+
+/// One file whose classified kind doesn't match the asset type of the root
+/// it's currently sitting under — e.g. a whole TV show bundle sitting
+/// inside a root configured for movies (issue #301, see
+/// `docs/PLEX_COMPATIBILITY_AUDIT.md`). Detection and reporting only:
+/// deliberately a distinct type from [`ReorgItem`] with no `conflict`
+/// field and no destination path on the *current* root, so it can never be
+/// folded into a [`ReorgPlan`]'s `items` or passed to `apply_plan` — a
+/// cross-root move needs copy+verify+delete against a possibly separate
+/// filesystem/mount, not a cheap `fs::rename`, and that's out of scope
+/// here on purpose (see the module doc comment).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MisplacedItem {
+    /// Path relative to the scanned root, forward-slashed.
+    pub path: String,
+    /// `"movie"`, `"episode"`, or `"track"` — the kind `classify` assigned.
+    pub kind: &'static str,
+    /// The label of the root this file is currently sitting under.
+    pub current_root_label: String,
+    /// The label of the one currently-configured root whose asset type
+    /// actually matches this file's classified kind.
+    pub correct_root_label: String,
+}
+
+/// Walks `root` and flags every media file whose classified kind doesn't
+/// match `root_label`'s expected kind in `all_roots`, but only when exactly
+/// one *other* currently-configured root's expected kind matches — with
+/// zero or more than one candidate the correct destination is ambiguous, so
+/// the file is left out of the report entirely rather than guessed at (see
+/// the issue's non-negotiable constraint). A root with no expectation
+/// (`Mixed`/`PhotosVideos`, or a label `all_roots` doesn't recognize) never
+/// reports anything, since nothing about it is "wrong".
+pub fn find_misplaced_content(
+    root_label: &str,
+    root: &Path,
+    all_roots: &[RootExpectation],
+) -> std::io::Result<Vec<MisplacedItem>> {
+    let Some(current) = all_roots.iter().find(|r| r.label == root_label) else {
+        return Ok(Vec::new());
+    };
+    let Some(current_expected) = current.expected_kind else {
+        return Ok(Vec::new());
+    };
+
+    let mut all_files = Vec::new();
+    walk(root, root, &mut all_files)?;
+
+    let mut misplaced = Vec::new();
+    for relative in &all_files {
+        let unix_relative = to_unix(relative);
+        if classify::media_extension(&unix_relative).is_none() {
+            continue;
+        }
+        let Some(classified) = classify::classify(&unix_relative) else {
+            continue;
+        };
+        if classified.kind == current_expected {
+            continue;
+        }
+        let mut candidates = all_roots
+            .iter()
+            .filter(|r| r.label != root_label && r.expected_kind == Some(classified.kind));
+        let Some(correct) = candidates.next() else {
+            continue; // no configured root of the right kind — nowhere to point at
+        };
+        if candidates.next().is_some() {
+            continue; // ambiguous — more than one root of the right kind
+        }
+        misplaced.push(MisplacedItem {
+            path: unix_relative,
+            kind: media_kind_label(classified.kind),
+            current_root_label: root_label.to_string(),
+            correct_root_label: correct.label.clone(),
+        });
+    }
+    Ok(misplaced)
+}
+
+fn media_kind_label(kind: MediaKind) -> &'static str {
+    match kind {
+        MediaKind::Movie => "movie",
+        MediaKind::Episode => "episode",
+        MediaKind::Track => "track",
+    }
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize)]
@@ -49,7 +187,18 @@ pub struct ReorgPlan {
     pub root_label: String,
     pub items: Vec<ReorgItem>,
     pub ai_assisted_count: u32,
+    /// Movie items whose `(Year)` came from a TMDb lookup rather than the
+    /// filename itself (see `ReorgItem::year_source`).
+    pub tmdb_year_count: u32,
     pub conflict_count: u32,
+    /// Count of `kind == "orphan"` items — subtitle/artwork leftovers with
+    /// no matching video anywhere in the root (issue #298).
+    pub orphan_count: u32,
+    /// Count of `kind == "duplicate"` items — confirmed byte-identical
+    /// duplicates of a file already at its canonical destination, proposed
+    /// for a move into `_duplicates/` rather than left as a dead-end
+    /// conflict (issue #299).
+    pub duplicate_count: u32,
     /// Every deterministic Plex-conformance problem found in the root
     /// (issue #247) — the complete list, unlike the bounded best-effort
     /// subset a library scan reports. Each carries the current path, the
@@ -61,22 +210,37 @@ pub struct ReorgPlan {
 /// Walks `root` (a configured media root's real path) and proposes a
 /// rename/move for every video whose canonical path differs from its
 /// current one. `ai`, when given, is used only for files `classify` cannot
-/// place at all — see the module doc comment.
-pub async fn scan_root(root_label: &str, root: &Path, ai: Option<&AiClient>) -> std::io::Result<ReorgPlan> {
+/// place at all — see the module doc comment. `tmdb`, when given, is used
+/// only to backfill a missing movie year (issue #297) — never to identify a
+/// file `classify` and `ai` both failed to place.
+pub async fn scan_root(
+    root_label: &str,
+    root: &Path,
+    ai: Option<&AiClient>,
+    tmdb: Option<&TmdbClient>,
+) -> std::io::Result<ReorgPlan> {
     let mut video_files = Vec::new();
     walk(root, root, &mut video_files)?;
     video_files.sort();
 
     let mut items = Vec::new();
     let mut ai_assisted_count = 0u32;
+    let mut tmdb_year_count = 0u32;
     let mut ai_budget = MAX_AI_GUESSES;
     let mut planned_targets: HashSet<String> = HashSet::new();
 
     for relative in &video_files {
         let unix_relative = to_unix(relative);
-        let Some((ext, false)) = classify::media_extension(&unix_relative) else {
+        let Some((ext, is_audio)) = classify::media_extension(&unix_relative) else {
             continue;
         };
+
+        if is_audio {
+            if let Some(item) = plan_track(root, &unix_relative, ext, &mut planned_targets).await {
+                items.push(item);
+            }
+            continue;
+        }
 
         // `classify` deliberately has a best-effort movie fallback for every
         // recognized video extension. Keep that result even when it lacks a
@@ -99,6 +263,11 @@ pub async fn scan_root(root_label: &str, root: &Path, ai: Option<&AiClient>) -> 
             (deterministic, false)
         };
 
+        let (classified, year_source) = fill_missing_movie_year(classified, tmdb).await;
+        if year_source.is_some() {
+            tmdb_year_count += 1;
+        }
+
         let canonical = canonical_video_path(&classified, ext);
         if canonical == unix_relative {
             continue;
@@ -107,25 +276,42 @@ pub async fn scan_root(root_label: &str, root: &Path, ai: Option<&AiClient>) -> 
             ai_assisted_count += 1;
         }
 
-        let conflict = conflict_reason(root, &canonical, &mut planned_targets);
+        let (to, kind, conflict) =
+            resolve_destination(root, &unix_relative, &canonical, "video", &mut planned_targets).await;
         items.push(ReorgItem {
             from: unix_relative.clone(),
-            to: canonical.clone(),
-            kind: "video",
+            to,
+            kind,
             ai_assisted,
+            year_source,
             conflict,
         });
 
         for (sub_from, sub_to) in find_sidecar_moves(root, &unix_relative, &canonical) {
-            let conflict = conflict_reason(root, &sub_to, &mut planned_targets);
+            let (to, kind, conflict) =
+                resolve_destination(root, &sub_from, &sub_to, "subtitle", &mut planned_targets).await;
             items.push(ReorgItem {
                 from: sub_from,
-                to: sub_to,
-                kind: "subtitle",
+                to,
+                kind,
                 ai_assisted,
+                year_source,
                 conflict,
             });
         }
+    }
+
+    for (orphan_from, orphan_to) in find_orphans(&video_files, &items) {
+        let (to, kind, conflict) =
+            resolve_destination(root, &orphan_from, &orphan_to, "orphan", &mut planned_targets).await;
+        items.push(ReorgItem {
+            from: orphan_from,
+            to,
+            kind,
+            ai_assisted: false,
+            year_source: None,
+            conflict,
+        });
     }
 
     // Deterministic Plex-conformance validation over every media file in
@@ -144,23 +330,286 @@ pub async fn scan_root(root_label: &str, root: &Path, ai: Option<&AiClient>) -> 
     }
 
     let conflict_count = items.iter().filter(|i| i.conflict.is_some()).count() as u32;
+    let orphan_count = items.iter().filter(|i| i.kind == "orphan").count() as u32;
+    let duplicate_count = items.iter().filter(|i| i.kind == "duplicate").count() as u32;
     Ok(ReorgPlan {
         root_label: root_label.to_string(),
         items,
         ai_assisted_count,
+        tmdb_year_count,
         conflict_count,
+        orphan_count,
+        duplicate_count,
         validation,
     })
 }
 
-fn conflict_reason(root: &Path, target: &str, planned_targets: &mut HashSet<String>) -> Option<String> {
-    if root.join(target).exists() {
-        Some("a file already exists at the destination".to_string())
-    } else if !planned_targets.insert(target.to_string()) {
+/// Second pass over the walked file list (issue #298): every subtitle or
+/// common-artwork-extension file not already carried along as a sidecar by
+/// `find_sidecar_moves` above, whose base stem doesn't match *any* video
+/// anywhere in the root — not just the ones a rename was proposed for —
+/// gets proposed for a move into the `_orphaned/` holding folder, keeping
+/// its original relative path underneath so it can never collide with
+/// anything else already there. This is the on-disk shape of the leftover
+/// `.vtt`/`.jpg` files a past manual rename abandoned in place: the video
+/// they belonged to has since moved to its canonical folder under a
+/// different name, so nothing today points at them and `classify` never
+/// sees them as media to validate in the first place.
+///
+/// Matches on stem the same way `find_sidecar_moves` does: a subtitle's
+/// base stem is taken after `parse_subtitle_name` peels any trailing
+/// language/modifier token, exactly like matching a sidecar to its video at
+/// scan time; an artwork file's base stem is compared as-is, since none of
+/// this codebase's own artwork-writing conventions (see
+/// `swarm_media::scan::recovered_artwork_kind`) name a file after a movie's
+/// own stem directly — those already live under an `images/` sibling
+/// folder, which is skipped entirely here so real scraped/manual artwork is
+/// never mistaken for an orphan.
+fn find_orphans(all_files: &[PathBuf], items: &[ReorgItem]) -> Vec<(String, String)> {
+    let video_stems: HashSet<String> = all_files
+        .iter()
+        .filter_map(|relative| {
+            let unix_relative = to_unix(relative);
+            let (_, is_audio) = classify::media_extension(&unix_relative)?;
+            if is_audio {
+                return None;
+            }
+            Path::new(&unix_relative)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_lowercase())
+        })
+        .collect();
+
+    let already_accounted: HashSet<&str> = items.iter().map(|i| i.from.as_str()).collect();
+
+    let mut orphans = Vec::new();
+    for relative in all_files {
+        let unix_relative = to_unix(relative);
+        if classify::media_extension(&unix_relative).is_some() {
+            continue; // a video or audio file, not an orphan candidate
+        }
+        if in_images_dir(&unix_relative) || is_already_orphaned(&unix_relative) {
+            continue;
+        }
+        if already_accounted.contains(unix_relative.as_str()) {
+            continue;
+        }
+        let is_subtitle = subtitle_extension(&unix_relative).is_some();
+        let is_artwork = !is_subtitle
+            && unix_relative
+                .rsplit('.')
+                .next()
+                .is_some_and(|ext| ORPHAN_ARTWORK_EXTS.contains(&ext.to_lowercase().as_str()));
+        if !is_subtitle && !is_artwork {
+            continue;
+        }
+
+        let Some(stem) = Path::new(&unix_relative).file_stem().map(|s| s.to_string_lossy().to_string()) else {
+            continue;
+        };
+        let base_stem = if is_subtitle {
+            parse_subtitle_name(&stem).base_stem.to_lowercase()
+        } else {
+            stem.to_lowercase()
+        };
+        if video_stems.contains(&base_stem) {
+            continue; // still matches a video somewhere in the root
+        }
+
+        orphans.push((unix_relative.clone(), format!("{ORPHANED_FOLDER}/{unix_relative}")));
+    }
+    orphans
+}
+
+fn in_images_dir(relative: &str) -> bool {
+    Path::new(relative)
+        .components()
+        .any(|c| c.as_os_str().to_string_lossy().eq_ignore_ascii_case("images"))
+}
+
+fn is_already_orphaned(relative: &str) -> bool {
+    relative == ORPHANED_FOLDER || relative.starts_with(&format!("{ORPHANED_FOLDER}/"))
+}
+
+/// Backfills a movie's missing release year from TMDb before the canonical
+/// path is computed (issue #297). Only ever touches a `Classified` that
+/// already has a non-empty movie title and no year — TV episodes and
+/// already-yeared movies pass through untouched. A `None` result from the
+/// lookup (no API key configured, no match, or an ambiguous/low-confidence
+/// match — see `TmdbClient::confident_movie_year`) leaves the file exactly
+/// as `classify`/AI left it, so it falls back to today's bare-title
+/// behavior rather than ever guessing a year.
+async fn fill_missing_movie_year(
+    classified: Classified,
+    tmdb: Option<&TmdbClient>,
+) -> (Classified, Option<&'static str>) {
+    if classified.kind != MediaKind::Movie || classified.year.is_some() || classified.title.trim().is_empty() {
+        return (classified, None);
+    }
+    let Some(client) = tmdb else {
+        return (classified, None);
+    };
+    match client.confident_movie_year(&classified.title).await {
+        Ok(Some(year)) => (
+            Classified {
+                year: Some(year),
+                ..classified
+            },
+            Some("tmdb"),
+        ),
+        _ => (classified, None),
+    }
+}
+
+/// Proposes a canonical `Artist/Album/NN - Track.ext` move for one audio
+/// file (issue #300). No AI and no TMDb here: `classify` already resolves
+/// artist/album from the folder chain, seeing straight through the
+/// intermediate "category" grouping folders (`Album`, `Compilation`, …)
+/// some libraries insert one level below the artist — the only gap left is
+/// a track sitting loose directly under the artist folder with no album
+/// folder at all, which `fill_missing_track_album` closes from the file's
+/// own embedded tags. Returns `None` when the file is already at its
+/// canonical path, or when no album can be determined either way — this
+/// case is genuinely ambiguous, so the file is left out of the plan rather
+/// than the album being guessed at.
+async fn plan_track(
+    root: &Path,
+    relative: &str,
+    ext: &'static str,
+    planned_targets: &mut HashSet<String>,
+) -> Option<ReorgItem> {
+    let classified = classify::classify(relative)?;
+    let classified = fill_missing_track_album(root, relative, classified).await;
+    let canonical = canonical_track_path(&classified, ext)?;
+    if canonical == relative {
+        return None;
+    }
+    let (to, kind, conflict) = resolve_destination(root, relative, &canonical, "track", planned_targets).await;
+    Some(ReorgItem {
+        from: relative.to_string(),
+        to,
+        kind,
+        ai_assisted: false,
+        year_source: None,
+        conflict,
+    })
+}
+
+/// Fills in a loose track's missing album from its own embedded tags (issue
+/// #300) — the same `swarm_media::tags::read_tags` the scanner's cataloging
+/// path (`swarm_media::scan`) already reads for the exact same purpose, run
+/// in `spawn_blocking` for the same reason every other tag/fingerprint read
+/// in this codebase is: synchronous std::fs I/O that can be a slow SMB/NFS
+/// round trip sharing a worker thread with request handling. Only ever
+/// touches a `Classified` that has no album at all; a track that already
+/// has one (from an `Artist/Album/...` folder chain) passes through
+/// untouched. No usable tag, or no tags at all, leaves the album unset —
+/// `canonical_track_path` then refuses to propose a move for it.
+async fn fill_missing_track_album(root: &Path, relative: &str, classified: Classified) -> Classified {
+    if classified.kind != MediaKind::Track || classified.album.as_deref().is_some_and(|a| !a.trim().is_empty()) {
+        return classified;
+    }
+    let path = root.join(relative);
+    let tag = tokio::task::spawn_blocking(move || swarm_media::tags::read_tags(&path))
+        .await
+        .unwrap_or(None);
+    match tag.and_then(|t| t.album) {
+        Some(album) if !album.trim().is_empty() => Classified {
+            album: Some(album),
+            ..classified
+        },
+        _ => classified,
+    }
+}
+
+/// The canonical on-disk shape for a track — `Artist/Album/NN - Track.ext`,
+/// matching the naming `crate::plex::validate_media_file` already expects
+/// for `MediaKind::Track` and the `Artist/Album/Track` convention
+/// `docs/PLEX_COMPATIBILITY_AUDIT.md` checks against. `None` when either
+/// artist or album is still missing after `fill_missing_track_album` — see
+/// `plan_track`.
+fn canonical_track_path(c: &Classified, ext: &str) -> Option<String> {
+    let artist = c.artist.as_deref().map(str::trim).filter(|s| !s.is_empty())?;
+    let album = c.album.as_deref().map(str::trim).filter(|s| !s.is_empty())?;
+    let title = sanitize(&c.title);
+    let file_name = match c.track_number {
+        Some(n) => format!("{n:02} - {title}.{ext}"),
+        None => format!("{title}.{ext}"),
+    };
+    Some(format!("{}/{}/{file_name}", sanitize(artist), sanitize(album)))
+}
+
+/// Resolves what a proposed `source -> target` move should actually become
+/// once what's already on disk (and what this plan has already claimed) is
+/// accounted for. Returns the item's final `to`, `kind`, and `conflict` —
+/// `kind` stays `default_kind` unless the destination turns out to be a
+/// confirmed content duplicate (issue #299), in which case it becomes
+/// `"duplicate"` and `to` is redirected into `DUPLICATES_FOLDER`.
+async fn resolve_destination(
+    root: &Path,
+    source: &str,
+    target: &str,
+    default_kind: &'static str,
+    planned_targets: &mut HashSet<String>,
+) -> (String, &'static str, Option<String>) {
+    let dest_path = root.join(target);
+    if dest_path.exists() {
+        if files_are_identical(root.join(source), dest_path).await {
+            return duplicate_destination(source, planned_targets);
+        }
+        return (
+            target.to_string(),
+            default_kind,
+            Some("a file already exists at the destination".to_string()),
+        );
+    }
+    if !planned_targets.insert(target.to_string()) {
+        return (
+            target.to_string(),
+            default_kind,
+            Some("likely a duplicate — another item in this plan already targets this path".to_string()),
+        );
+    }
+    (target.to_string(), default_kind, None)
+}
+
+/// Redirects a confirmed duplicate's source into `_duplicates/<original
+/// relative path>` (issue #299), preserving its original scene-release name
+/// so it stays traceable back to `_cleanup_leftovers/`-style source
+/// folders. Still registered in `planned_targets` so two distinct sources
+/// can never collide on the same `_duplicates/` path.
+fn duplicate_destination(source: &str, planned_targets: &mut HashSet<String>) -> (String, &'static str, Option<String>) {
+    let target = format!("{DUPLICATES_FOLDER}/{source}");
+    let conflict = if !planned_targets.insert(target.clone()) {
         Some("likely a duplicate — another item in this plan already targets this path".to_string())
     } else {
         None
-    }
+    };
+    (target, "duplicate", conflict)
+}
+
+/// Compares two files by content fingerprint (issue #299) — the same
+/// `swarm_core::fingerprint` tool already used at scale to find and safely
+/// delete duplicate `library_entries` rows in this exact library: content-
+/// based, path-independent, negligible collision probability. Run in
+/// `spawn_blocking` like every other fingerprint read in this codebase (see
+/// `swarm_media::scan`): this is synchronous std::fs I/O that can be a slow
+/// SMB/NFS round trip and shares a worker thread with request handling. Any
+/// I/O error (permissions, a file that vanished mid-scan) is treated as
+/// "not identical" — falls back to today's plain-conflict behavior rather
+/// than ever guessing.
+async fn files_are_identical(a: PathBuf, b: PathBuf) -> bool {
+    tokio::task::spawn_blocking(move || -> std::io::Result<bool> {
+        if std::fs::metadata(&a)?.len() != std::fs::metadata(&b)?.len() {
+            return Ok(false);
+        }
+        let fp_a = swarm_core::fingerprint::fingerprint_file(&a)?;
+        let fp_b = swarm_core::fingerprint::fingerprint_file(&b)?;
+        Ok(fp_a == fp_b)
+    })
+    .await
+    .unwrap_or(Ok(false))
+    .unwrap_or(false)
 }
 
 fn is_confident(c: &Classified) -> bool {
@@ -415,16 +864,129 @@ mod tests {
         fs::write(path, contents).unwrap();
     }
 
+    /// Writes the smallest valid FLAC lofty will parse — a `STREAMINFO`
+    /// block (mandatory, fixed 34 bytes) followed by a `VORBIS_COMMENT`
+    /// block carrying `artist`/`album` — with no audio frames at all, so
+    /// tests can exercise `swarm_media::tags::read_tags` without a real
+    /// audio encoder. See the FLAC format spec's metadata block layout
+    /// (`https://xiph.org/flac/format.html`).
+    fn write_flac_with_tags(root: &Path, relative: &str, artist: &str, album: &str) {
+        let path = root.join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+
+        let mut data = Vec::new();
+        data.extend_from_slice(b"fLaC");
+
+        let mut stream_info = Vec::new();
+        stream_info.extend_from_slice(&4096u16.to_be_bytes()); // min block size
+        stream_info.extend_from_slice(&4096u16.to_be_bytes()); // max block size
+        stream_info.extend_from_slice(&[0, 0, 0]); // min frame size
+        stream_info.extend_from_slice(&[0, 0, 0]); // max frame size
+        let sample_rate: u32 = 44100;
+        let channels_minus_one: u32 = 1;
+        let bits_per_sample_minus_one: u32 = 15;
+        let info = (sample_rate << 12) | (channels_minus_one << 9) | (bits_per_sample_minus_one << 4);
+        stream_info.extend_from_slice(&info.to_be_bytes()); // sample rate/channels/bits/high total-samples bits
+        stream_info.extend_from_slice(&0u32.to_be_bytes()); // remaining total-samples bits
+        stream_info.extend_from_slice(&[0u8; 16]); // MD5 signature
+        assert_eq!(stream_info.len(), 34);
+        data.push(0x00); // block type 0 (STREAMINFO), not the last metadata block
+        data.extend_from_slice(&(stream_info.len() as u32).to_be_bytes()[1..]);
+        data.extend_from_slice(&stream_info);
+
+        let vendor = b"swarm-test";
+        let fields = [format!("ARTIST={artist}"), format!("ALBUM={album}")];
+        let mut comments = Vec::new();
+        comments.extend_from_slice(&(vendor.len() as u32).to_le_bytes());
+        comments.extend_from_slice(vendor);
+        comments.extend_from_slice(&(fields.len() as u32).to_le_bytes());
+        for field in &fields {
+            let bytes = field.as_bytes();
+            comments.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+            comments.extend_from_slice(bytes);
+        }
+        data.push(0x84); // block type 4 (VORBIS_COMMENT), last metadata block
+        data.extend_from_slice(&(comments.len() as u32).to_be_bytes()[1..]);
+        data.extend_from_slice(&comments);
+
+        fs::write(path, data).unwrap();
+    }
+
     #[tokio::test]
     async fn proposes_a_canonical_movie_folder_for_a_scene_release_name() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "10.Cloverfield.Lane.2016.1080p.BluRay.x264-GROUP.mkv", "x");
-        let plan = scan_root("local", dir.path(), None).await.unwrap();
+        let plan = scan_root("local", dir.path(), None, None).await.unwrap();
         assert_eq!(plan.items.len(), 1);
         let item = &plan.items[0];
         assert_eq!(item.to, "10 Cloverfield Lane (2016)/10 Cloverfield Lane (2016).mkv");
         assert!(item.conflict.is_none());
         assert!(!item.ai_assisted);
+    }
+
+    // --- TMDb year backfill (issue #297) ---
+
+    async fn spawn_mock_tmdb(router: axum::Router) -> TmdbClient {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let base = format!("http://{addr}");
+        TmdbClient::with_base_urls("key", &base, &base)
+    }
+
+    #[tokio::test]
+    async fn a_confident_tmdb_match_fills_in_a_missing_movie_year() {
+        use axum::routing::get;
+        use axum::Json;
+        use serde_json::json;
+
+        let router = axum::Router::new().route(
+            "/search/movie",
+            get(|| async {
+                Json(json!({"results": [
+                    {"id": 348, "title": "Alien", "release_date": "1979-05-25", "popularity": 40.0, "vote_count": 12000}
+                ]}))
+            }),
+        );
+        let tmdb = spawn_mock_tmdb(router).await;
+
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "Alien.mkv", "x");
+        let plan = scan_root("local", dir.path(), None, Some(&tmdb)).await.unwrap();
+
+        assert_eq!(plan.items.len(), 1);
+        let item = &plan.items[0];
+        assert_eq!(item.to, "Alien (1979)/Alien (1979).mkv");
+        assert_eq!(item.year_source, Some("tmdb"));
+        assert_eq!(plan.tmdb_year_count, 1);
+    }
+
+    #[tokio::test]
+    async fn an_ambiguous_tmdb_match_leaves_the_year_unfilled() {
+        use axum::routing::get;
+        use axum::Json;
+        use serde_json::json;
+
+        let router = axum::Router::new().route(
+            "/search/movie",
+            get(|| async {
+                Json(json!({"results": [
+                    {"id": 1, "title": "Scream", "release_date": "1996-12-20", "popularity": 30.0, "vote_count": 8000},
+                    {"id": 2, "title": "Scream", "release_date": "2022-01-14", "popularity": 25.0, "vote_count": 4000}
+                ]}))
+            }),
+        );
+        let tmdb = spawn_mock_tmdb(router).await;
+
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "Scream.mkv", "x");
+        let plan = scan_root("local", dir.path(), None, Some(&tmdb)).await.unwrap();
+
+        assert_eq!(plan.items.len(), 1);
+        let item = &plan.items[0];
+        assert_eq!(item.to, "Scream/Scream.mkv");
+        assert_eq!(item.year_source, None);
+        assert_eq!(plan.tmdb_year_count, 0);
     }
 
     #[tokio::test]
@@ -433,12 +995,62 @@ mod tests {
         write(dir.path(), "Heat.1995.mkv", "x");
         write(dir.path(), "Heat.1995.en.srt", "x");
         write(dir.path(), "Heat.1995.es.vtt", "x");
-        let plan = scan_root("local", dir.path(), None).await.unwrap();
+        let plan = scan_root("local", dir.path(), None, None).await.unwrap();
         let subtitles: Vec<_> = plan.items.iter().filter(|i| i.kind == "subtitle").collect();
         assert_eq!(subtitles.len(), 2);
         assert!(subtitles.iter().any(|item| item.to == "Heat (1995)/Heat (1995).en.srt"));
         assert!(subtitles.iter().any(|item| item.to == "Heat (1995)/Heat (1995).es.vtt"));
         assert!(subtitles.iter().all(|item| item.conflict.is_none()));
+        assert!(plan.items.iter().all(|item| item.kind != "orphan"));
+        assert_eq!(plan.orphan_count, 0);
+    }
+
+    // --- Orphaned sidecar detection (issue #298) ---
+
+    #[tokio::test]
+    async fn flags_a_leftover_subtitle_and_artwork_file_with_no_matching_video_as_orphaned() {
+        let dir = tempfile::tempdir().unwrap();
+        // The movie has already been reorganized into its canonical folder...
+        write(dir.path(), "Heat (1995)/Heat (1995).mkv", "x");
+        // ...but a subtitle and poster left over from the old
+        // "Heat.1995.1080p" naming scheme are still loose at the root,
+        // pointing at nothing.
+        write(dir.path(), "Heat.1995.1080p.vtt", "x");
+        write(dir.path(), "Heat.1995.1080p.jpg", "x");
+
+        let plan = scan_root("local", dir.path(), None, None).await.unwrap();
+
+        let orphans: Vec<_> = plan.items.iter().filter(|i| i.kind == "orphan").collect();
+        assert_eq!(orphans.len(), 2);
+        assert!(orphans.iter().any(|i| i.from == "Heat.1995.1080p.vtt" && i.to == "_orphaned/Heat.1995.1080p.vtt"));
+        assert!(orphans.iter().any(|i| i.from == "Heat.1995.1080p.jpg" && i.to == "_orphaned/Heat.1995.1080p.jpg"));
+        assert!(orphans.iter().all(|i| i.conflict.is_none()));
+        assert_eq!(plan.orphan_count, 2);
+    }
+
+    #[tokio::test]
+    async fn does_not_flag_a_sidecar_that_still_matches_a_video_as_orphaned() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "Heat.1995.mkv", "x");
+        write(dir.path(), "Heat.1995.en.srt", "x");
+
+        let plan = scan_root("local", dir.path(), None, None).await.unwrap();
+
+        assert!(plan.items.iter().any(|i| i.kind == "subtitle" && i.from == "Heat.1995.en.srt"));
+        assert!(plan.items.iter().all(|i| i.kind != "orphan"));
+        assert_eq!(plan.orphan_count, 0);
+    }
+
+    #[tokio::test]
+    async fn does_not_treat_scraped_artwork_under_an_images_folder_as_orphaned() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "Heat (1995)/Heat (1995).mkv", "x");
+        write(dir.path(), "Heat (1995)/images/heat-1995-tmdb-poster.jpg", "x");
+
+        let plan = scan_root("local", dir.path(), None, None).await.unwrap();
+
+        assert!(plan.items.iter().all(|i| i.kind != "orphan"));
+        assert_eq!(plan.orphan_count, 0);
     }
 
     #[tokio::test]
@@ -446,9 +1058,56 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "Heat.1995.mkv", "x");
         write(dir.path(), "Heat (1995)/Heat (1995).mkv", "already here");
-        let plan = scan_root("local", dir.path(), None).await.unwrap();
+        let plan = scan_root("local", dir.path(), None, None).await.unwrap();
         let video = plan.items.iter().find(|i| i.kind == "video").expect("video item");
         assert!(video.conflict.is_some());
+        assert_eq!(video.kind, "video");
+        assert_eq!(plan.conflict_count, 1);
+        assert_eq!(plan.duplicate_count, 0);
+    }
+
+    // --- True duplicate detection by content fingerprint (issue #299) ---
+
+    #[tokio::test]
+    async fn a_byte_identical_conflict_is_proposed_as_a_duplicate_move_and_never_touches_the_canonical_file() {
+        let dir = tempfile::tempdir().unwrap();
+        // Already organized correctly...
+        write(dir.path(), "Heat (1995)/Heat (1995).mkv", "same bytes");
+        // ...and a scene-release-named leftover with byte-identical content,
+        // the shape of `Movies/_cleanup_leftovers/` from the Plex
+        // compatibility audit.
+        write(dir.path(), "Heat.1995.BDRip.x264-GROUP.mkv", "same bytes");
+
+        let plan = scan_root("local", dir.path(), None, None).await.unwrap();
+
+        let duplicate = plan.items.iter().find(|i| i.kind == "duplicate").expect("duplicate item");
+        assert_eq!(duplicate.from, "Heat.1995.BDRip.x264-GROUP.mkv");
+        assert_eq!(duplicate.to, "_duplicates/Heat.1995.BDRip.x264-GROUP.mkv");
+        assert!(duplicate.conflict.is_none());
+        assert_eq!(plan.duplicate_count, 1);
+        assert_eq!(plan.conflict_count, 0);
+        assert_eq!(
+            fs::read_to_string(dir.path().join("Heat (1995)/Heat (1995).mkv")).unwrap(),
+            "same bytes"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_conflict_with_different_content_is_left_as_a_plain_conflict_not_a_duplicate() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "Heat (1995)/Heat (1995).mkv", "the real thing");
+        write(dir.path(), "Heat.1995.BDRip.x264-GROUP.mkv", "an unrelated remux");
+
+        let plan = scan_root("local", dir.path(), None, None).await.unwrap();
+
+        let video = plan.items.iter().find(|i| i.kind == "video").expect("video item");
+        assert_eq!(video.from, "Heat.1995.BDRip.x264-GROUP.mkv");
+        assert_eq!(
+            video.conflict.as_deref(),
+            Some("a file already exists at the destination")
+        );
+        assert!(plan.items.iter().all(|i| i.kind != "duplicate"));
+        assert_eq!(plan.duplicate_count, 0);
         assert_eq!(plan.conflict_count, 1);
     }
 
@@ -456,7 +1115,7 @@ mod tests {
     async fn leaves_an_already_canonical_file_out_of_the_plan() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "Heat (1995)/Heat (1995).mkv", "x");
-        let plan = scan_root("local", dir.path(), None).await.unwrap();
+        let plan = scan_root("local", dir.path(), None, None).await.unwrap();
         assert!(plan.items.is_empty());
     }
 
@@ -464,7 +1123,7 @@ mod tests {
     async fn proposes_every_video_even_when_metadata_is_incomplete_and_ai_is_unavailable() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "asdf1234.mkv", "x");
-        let plan = scan_root("local", dir.path(), None).await.unwrap();
+        let plan = scan_root("local", dir.path(), None, None).await.unwrap();
         assert_eq!(plan.items.len(), 1);
         assert_eq!(plan.items[0].to, "asdf1234/asdf1234.mkv");
         assert_eq!(plan.ai_assisted_count, 0);
@@ -475,7 +1134,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "Heat.1995.mp4", "x");
         write(dir.path(), "Heat (1995).mp4", "x");
-        let plan = scan_root("local", dir.path(), None).await.unwrap();
+        let plan = scan_root("local", dir.path(), None, None).await.unwrap();
         let duplicate = plan
             .items
             .iter()
@@ -494,6 +1153,7 @@ mod tests {
                 to: "Heat (1995)/Heat (1995).mkv".to_string(),
                 kind: "video",
                 ai_assisted: false,
+                year_source: None,
                 conflict: None,
             },
             ReorgItem {
@@ -501,6 +1161,7 @@ mod tests {
                 to: "Heat (1995)/Heat (1995).srt".to_string(),
                 kind: "subtitle",
                 ai_assisted: false,
+                year_source: None,
                 conflict: Some("a file already exists at the destination".to_string()),
             },
         ];
@@ -524,6 +1185,7 @@ mod tests {
             to: "Heat (1995)/Heat (1995).mkv".to_string(),
             kind: "video",
             ai_assisted: false,
+            year_source: None,
             conflict: None,
         }];
         let outcome = apply_plan(dir.path(), &items);
@@ -534,5 +1196,155 @@ mod tests {
             fs::read_to_string(dir.path().join("Heat (1995)/Heat (1995).mkv")).unwrap(),
             "unrelated existing file"
         );
+    }
+
+    // --- Music library reorganization (issue #300) ---
+
+    #[tokio::test]
+    async fn flattens_an_intermediate_grouping_folder_between_artist_and_album() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "Artist/Album/2003 - Some Album/01 - Track.mp3", "x");
+
+        let plan = scan_root("local", dir.path(), None, None).await.unwrap();
+
+        let track = plan.items.iter().find(|i| i.kind == "track").expect("track item");
+        assert_eq!(track.from, "Artist/Album/2003 - Some Album/01 - Track.mp3");
+        assert_eq!(track.to, "Artist/2003 - Some Album/01 - Track.mp3");
+        assert!(track.conflict.is_none());
+        assert!(!track.ai_assisted);
+    }
+
+    #[tokio::test]
+    async fn a_loose_track_with_a_readable_album_tag_moves_under_that_album() {
+        let dir = tempfile::tempdir().unwrap();
+        write_flac_with_tags(
+            dir.path(),
+            "Armin van Buuren/01 - Blank State.flac",
+            "Armin van Buuren",
+            "A State Of Trance",
+        );
+
+        let plan = scan_root("local", dir.path(), None, None).await.unwrap();
+
+        let track = plan.items.iter().find(|i| i.kind == "track").expect("track item");
+        assert_eq!(track.from, "Armin van Buuren/01 - Blank State.flac");
+        assert_eq!(track.to, "Armin van Buuren/A State Of Trance/01 - Blank State.flac");
+        assert!(track.conflict.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_loose_track_with_no_usable_album_tag_is_left_out_of_the_plan() {
+        let dir = tempfile::tempdir().unwrap();
+        // Not a real, tag-readable audio file, so `read_tags` finds nothing —
+        // same as a genuinely untagged loose track.
+        write(dir.path(), "Paul Oakenfold/Essential Mix 2001-03-04.mp3", "x");
+
+        let plan = scan_root("local", dir.path(), None, None).await.unwrap();
+
+        assert!(plan.items.iter().all(|i| i.from != "Paul Oakenfold/Essential Mix 2001-03-04.mp3"));
+    }
+
+    #[tokio::test]
+    async fn leaves_an_already_canonical_track_out_of_the_plan() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "Pink Floyd/The Wall/05 - Hey You.flac", "x");
+
+        let plan = scan_root("local", dir.path(), None, None).await.unwrap();
+
+        assert!(plan.items.iter().all(|i| i.kind != "track"));
+    }
+
+    // --- Wrong-media-root detection, report only (issue #301) ---
+
+    #[tokio::test]
+    async fn flags_an_episode_shaped_file_under_a_movies_root_and_names_the_shows_root() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "Dragon Ball Super/Dragon.Ball.Super.S01E01.mkv", "x");
+        let roots = vec![
+            RootExpectation {
+                label: "Movies".to_string(),
+                expected_kind: Some(MediaKind::Movie),
+            },
+            RootExpectation {
+                label: "Shows".to_string(),
+                expected_kind: Some(MediaKind::Episode),
+            },
+        ];
+
+        let misplaced = find_misplaced_content("Movies", dir.path(), &roots).unwrap();
+
+        assert_eq!(misplaced.len(), 1);
+        assert_eq!(misplaced[0].path, "Dragon Ball Super/Dragon.Ball.Super.S01E01.mkv");
+        assert_eq!(misplaced[0].kind, "episode");
+        assert_eq!(misplaced[0].current_root_label, "Movies");
+        assert_eq!(misplaced[0].correct_root_label, "Shows");
+    }
+
+    #[tokio::test]
+    async fn does_not_flag_content_that_matches_its_own_roots_expected_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "10.Cloverfield.Lane.2016.1080p.BluRay.x264-GROUP.mkv", "x");
+        let roots = vec![RootExpectation {
+            label: "Movies".to_string(),
+            expected_kind: Some(MediaKind::Movie),
+        }];
+
+        let misplaced = find_misplaced_content("Movies", dir.path(), &roots).unwrap();
+
+        assert!(misplaced.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_mixed_root_never_reports_anything() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "Dragon Ball Super/Dragon.Ball.Super.S01E01.mkv", "x");
+        let roots = vec![
+            RootExpectation {
+                label: "Everything".to_string(),
+                expected_kind: None,
+            },
+            RootExpectation {
+                label: "Shows".to_string(),
+                expected_kind: Some(MediaKind::Episode),
+            },
+        ];
+
+        let misplaced = find_misplaced_content("Everything", dir.path(), &roots).unwrap();
+
+        assert!(misplaced.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_ambiguous_correct_root_is_left_out_of_the_report() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "Dragon Ball Super/Dragon.Ball.Super.S01E01.mkv", "x");
+        let roots = vec![
+            RootExpectation {
+                label: "Movies".to_string(),
+                expected_kind: Some(MediaKind::Movie),
+            },
+            RootExpectation {
+                label: "Shows A".to_string(),
+                expected_kind: Some(MediaKind::Episode),
+            },
+            RootExpectation {
+                label: "Shows B".to_string(),
+                expected_kind: Some(MediaKind::Episode),
+            },
+        ];
+
+        let misplaced = find_misplaced_content("Movies", dir.path(), &roots).unwrap();
+
+        assert!(misplaced.is_empty());
+    }
+
+    /// Proves `MisplacedItem` is a structurally separate type from
+    /// `ReorgItem`, not merely a variant carrying a read-only flag:
+    /// `apply_plan`'s signature only accepts `&[ReorgItem]`, so this
+    /// assignment only compiles because the types are distinct — a
+    /// `Vec<MisplacedItem>` could not be substituted here.
+    #[test]
+    fn misplaced_items_can_never_be_passed_to_apply_plan() {
+        let _: fn(&Path, &[ReorgItem]) -> ApplyOutcome = apply_plan;
     }
 }

@@ -76,9 +76,28 @@ struct AppState {
 
 struct StoredReorgPlan {
     plan: reorganize::ReorgPlan,
+    /// Wrong-media-root findings for this same root (issue #301) — computed
+    /// once alongside `plan` at scan time, kept as its own field rather than
+    /// folded into `plan.items` since `reorganize::MisplacedItem` is a
+    /// structurally distinct, never-`apply_plan`-reachable type.
+    misplaced: Vec<reorganize::MisplacedItem>,
     root_path: PathBuf,
     status: &'static str,
     apply_outcome: Option<reorganize::ApplyOutcome>,
+}
+
+/// Maps a configured root's declared asset type to the `MediaKind` it's
+/// expected to hold, for `reorganize::find_misplaced_content` (issue #301).
+/// `Mixed` and `PhotosVideos` impose no classifiable expectation — neither
+/// maps onto a `MediaKind` — so a root declared either way never reports
+/// its own content as misplaced.
+fn expected_media_kind(asset_type: RootAssetType) -> Option<MediaKind> {
+    match asset_type {
+        RootAssetType::Movies => Some(MediaKind::Movie),
+        RootAssetType::Shows => Some(MediaKind::Episode),
+        RootAssetType::Music => Some(MediaKind::Track),
+        RootAssetType::Mixed | RootAssetType::PhotosVideos => None,
+    }
 }
 
 fn acquire_sleep_inhibitor() -> Option<keepawake::KeepAwake> {
@@ -295,17 +314,15 @@ impl AppState {
                 core.set_hls_segment_seconds(settings.hls_segment_seconds);
                 start_media_root_recovery(Arc::clone(&core), recovery_settings_dir.clone());
                 start_auto_library_watch(Arc::clone(&core), recovery_settings_dir);
-                if settings.mcp_enabled {
-                    if let Some(access_token) = settings.mcp_access_token.filter(|token| !token.is_empty()) {
-                        let mcp_core = Arc::clone(&core);
-                        tokio::spawn(async move {
-                            if let Err(err) = mcp::serve(mcp_core, settings.mcp_port, access_token).await {
-                                tracing::error!(%err, "MCP server stopped");
-                            }
-                        });
-                    } else {
-                        tracing::error!("MCP server is enabled but has no access token; create one in the AI tab");
-                    }
+                // The MCP server has no separate enable toggle — creating an
+                // access token (AI tab) is itself the enable action.
+                if let Some(access_token) = settings.mcp_access_token.filter(|token| !token.is_empty()) {
+                    let mcp_core = Arc::clone(&core);
+                    tokio::spawn(async move {
+                        if let Err(err) = mcp::serve(mcp_core, settings.mcp_port, access_token).await {
+                            tracing::error!(%err, "MCP server stopped");
+                        }
+                    });
                 }
                 Ok(core)
             })
@@ -883,7 +900,6 @@ struct SettingsView {
     local_transcription_enabled: bool,
     transcription_pause_while_streaming: bool,
     transcription_skip_if_subtitles_exist: bool,
-    mcp_enabled: bool,
     mcp_port: u16,
     mcp_access_token: Option<String>,
     auto_library_watch_enabled: bool,
@@ -895,8 +911,6 @@ struct SettingsView {
     auto_update: String,
     app_version: String,
     ai_providers: Vec<AiProviderView>,
-    ai_scan_assist_enabled: bool,
-    ai_reorganize_enabled: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -935,7 +949,6 @@ async fn get_settings<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<Set
         local_transcription_enabled: settings.local_transcription_enabled,
         transcription_pause_while_streaming: settings.transcription_pause_while_streaming,
         transcription_skip_if_subtitles_exist: settings.transcription_skip_if_subtitles_exist,
-        mcp_enabled: settings.mcp_enabled,
         mcp_port: settings.mcp_port,
         mcp_access_token: settings.mcp_access_token,
         auto_library_watch_enabled: settings.auto_library_watch_enabled,
@@ -947,8 +960,6 @@ async fn get_settings<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<Set
         auto_update: settings.auto_update,
         app_version: app.package_info().version.to_string(),
         ai_providers: ai_provider_views(&settings.ai_providers),
-        ai_scan_assist_enabled: settings.ai_scan_assist_enabled,
-        ai_reorganize_enabled: settings.ai_reorganize_enabled,
     })
 }
 
@@ -1650,17 +1661,10 @@ async fn generate_subtitles_for_entry<R: tauri::Runtime>(
     core.generate_subtitles_for_entry(&entry_key).await
 }
 
-/// Both take effect on next launch/restart, not live — see `mcp.rs`'s doc
-/// comment and `AppState::core`, which only ever starts the MCP listener
-/// once, the same time it starts `ServerCore` itself.
-#[tauri::command]
-async fn set_mcp_enabled<R: tauri::Runtime>(app: tauri::AppHandle<R>, enabled: bool) -> Result<(), String> {
-    let dir = app_data_dir(&app)?;
-    let mut settings: Settings = settings::load(&dir);
-    settings.mcp_enabled = enabled;
-    settings::save(&dir, &settings).map_err(|e| e.to_string())
-}
-
+/// Creating a token is the MCP server's enable action — there is no separate
+/// toggle. Takes effect on next launch/restart, not live — see `mcp.rs`'s
+/// doc comment and `AppState::core`, which only ever starts the MCP
+/// listener once, the same time it starts `ServerCore` itself.
 #[tauri::command]
 async fn generate_mcp_access_token<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<String, String> {
     let mut bytes = [0u8; 32];
@@ -1722,22 +1726,6 @@ async fn set_ai_provider_api_key<R: tauri::Runtime>(
     } else {
         Some(key.trim().to_string())
     };
-    settings::save(&dir, &settings).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn set_ai_scan_assist_enabled<R: tauri::Runtime>(app: tauri::AppHandle<R>, enabled: bool) -> Result<(), String> {
-    let dir = app_data_dir(&app)?;
-    let mut settings = settings::load(&dir);
-    settings.ai_scan_assist_enabled = enabled;
-    settings::save(&dir, &settings).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn set_ai_reorganize_enabled<R: tauri::Runtime>(app: tauri::AppHandle<R>, enabled: bool) -> Result<(), String> {
-    let dir = app_data_dir(&app)?;
-    let mut settings = settings::load(&dir);
-    settings.ai_reorganize_enabled = enabled;
     settings::save(&dir, &settings).map_err(|e| e.to_string())
 }
 
@@ -1965,10 +1953,22 @@ struct ReorgPlanView {
     root_label: String,
     items: Vec<reorganize::ReorgItem>,
     ai_assisted_count: u32,
+    tmdb_year_count: u32,
     conflict_count: u32,
+    /// Count of `kind == "orphan"` items — subtitle/artwork leftovers with
+    /// no matching video anywhere in the root (issue #298).
+    orphan_count: u32,
+    /// Count of `kind == "duplicate"` items — confirmed byte-identical
+    /// duplicates proposed for a move into `_duplicates/` (issue #299).
+    duplicate_count: u32,
     /// Deterministic Plex-conformance problems found in the root (issue
     /// #247) — surfaced to the AI tab alongside the proposed moves.
     validation: Vec<swarm_media::plex::PlexValidationIssue>,
+    /// Content classified as belonging under a *different* configured root
+    /// entirely (issue #301) — a separate, information-only report, never
+    /// mixed into `items`/`conflict_count`/etc. and never reachable by
+    /// `approve_ai_reorg_plan`.
+    misplaced: Vec<reorganize::MisplacedItem>,
     status: String,
     apply_summary: Option<ApplySummaryView>,
 }
@@ -1987,6 +1987,7 @@ struct ReorgFinishedEvent {
 fn reorg_plan_view(
     id: u64,
     plan: &reorganize::ReorgPlan,
+    misplaced: &[reorganize::MisplacedItem],
     status: &str,
     outcome: Option<&reorganize::ApplyOutcome>,
 ) -> ReorgPlanView {
@@ -1995,8 +1996,12 @@ fn reorg_plan_view(
         root_label: plan.root_label.clone(),
         items: plan.items.clone(),
         ai_assisted_count: plan.ai_assisted_count,
+        tmdb_year_count: plan.tmdb_year_count,
         conflict_count: plan.conflict_count,
+        orphan_count: plan.orphan_count,
+        duplicate_count: plan.duplicate_count,
         validation: plan.validation.clone(),
+        misplaced: misplaced.to_vec(),
         status: status.to_string(),
         apply_summary: outcome.map(|o| ApplySummaryView {
             applied: o.applied,
@@ -2017,10 +2022,13 @@ fn resolve_media_root(settings: &Settings, root_label: &str) -> Result<PathBuf, 
 
 /// Scans one configured media root and proposes a rename/move plan — pure
 /// computation, nothing on disk changes until `approve_ai_reorg_plan` runs.
-/// Gated by `ai_reorganize_enabled`; an AI provider is used only for the
+/// Always available (no separate enable toggle — the "Scan for cleanup"
+/// click itself is the permission); an AI provider is used only for the
 /// long tail of filenames `classify` can't place at all (see
 /// `reorganize::scan_root`) — if none is configured, the scan still runs,
-/// just without that fallback.
+/// just without that fallback. A configured TMDb key is used only to
+/// backfill a movie's missing release year (issue #297) — if none is
+/// configured, the scan still runs with today's bare-title fallback.
 #[tauri::command]
 async fn ai_reorganize_scan<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
@@ -2029,21 +2037,46 @@ async fn ai_reorganize_scan<R: tauri::Runtime>(
 ) -> Result<ReorgPlanView, String> {
     let dir = app_data_dir(&app)?;
     let settings = settings::load(&dir);
-    if !settings.ai_reorganize_enabled {
-        return Err("Enable \"AI reorganize\" on the AI tab first.".to_string());
-    }
     let root_path = resolve_media_root(&settings, &root_label)?;
     let ai_client = ai_client_from_settings(&settings).await.ok();
-    let plan = reorganize::scan_root(&root_label, &root_path, ai_client.as_ref())
+    let tmdb_client = settings
+        .tmdb_api_key
+        .as_deref()
+        .map(|key| swarm_media::scrape::tmdb::TmdbClient::new(key.to_string()));
+    let plan = reorganize::scan_root(&root_label, &root_path, ai_client.as_ref(), tmdb_client.as_ref())
         .await
         .map_err(|e| e.to_string())?;
 
+    // Cross-root "wrong library" detection (issue #301) — report only,
+    // computed against every currently-configured root, never folded into
+    // `plan.items`. Errors reading the root are ignored here rather than
+    // failing the whole scan: `scan_root` above already succeeded reading
+    // the same tree, so this is best-effort on top of a result the user is
+    // getting either way.
+    let all_roots: Vec<reorganize::RootExpectation> = settings
+        .media_roots
+        .iter()
+        .map(|r| reorganize::RootExpectation {
+            label: r.label.clone(),
+            expected_kind: expected_media_kind(r.asset_type),
+        })
+        .collect();
+    let root_path_for_misplaced = root_path.clone();
+    let root_label_for_misplaced = root_label.clone();
+    let misplaced = tokio::task::spawn_blocking(move || {
+        reorganize::find_misplaced_content(&root_label_for_misplaced, &root_path_for_misplaced, &all_roots)
+    })
+    .await
+    .unwrap_or(Ok(Vec::new()))
+    .unwrap_or_default();
+
     let id = state.next_reorg_plan_id.fetch_add(1, Ordering::Relaxed);
-    let view = reorg_plan_view(id, &plan, "proposed", None);
+    let view = reorg_plan_view(id, &plan, &misplaced, "proposed", None);
     state.reorg_plans.lock().await.insert(
         id,
         StoredReorgPlan {
             plan,
+            misplaced,
             root_path,
             status: "proposed",
             apply_outcome: None,
@@ -2057,7 +2090,9 @@ async fn list_ai_reorg_plans(state: tauri::State<'_, AppState>) -> Result<Vec<Re
     let plans = state.reorg_plans.lock().await;
     let mut views: Vec<ReorgPlanView> = plans
         .iter()
-        .map(|(id, stored)| reorg_plan_view(*id, &stored.plan, stored.status, stored.apply_outcome.as_ref()))
+        .map(|(id, stored)| {
+            reorg_plan_view(*id, &stored.plan, &stored.misplaced, stored.status, stored.apply_outcome.as_ref())
+        })
         .collect();
     views.sort_by_key(|v| v.id);
     Ok(views)
@@ -2085,7 +2120,7 @@ async fn approve_ai_reorg_plan<R: tauri::Runtime>(
         (
             stored.root_path.clone(),
             stored.plan.items.clone(),
-            reorg_plan_view(id, &stored.plan, stored.status, None),
+            reorg_plan_view(id, &stored.plan, &stored.misplaced, stored.status, None),
         )
     };
 
@@ -2531,16 +2566,18 @@ async fn run_library_maintenance<R: tauri::Runtime>(
             return Err("cancelled".to_string());
         }
 
-        // AI scan assist, automatic: when enabled and a provider/TMDb key
-        // are actually ready, resolve as many of this run's unmatched
-        // titles as possible right here — no per-item approval, per the
-        // "users don't want to approve one at a time" request. A disabled
-        // feature or an unready provider/key is treated as "nothing to do"
-        // rather than a library-maintenance failure; scan/scrape/reclassify
-        // must never fail because of this best-effort addition.
+        // AI scan assist, automatic: whenever a provider/TMDb key are
+        // actually ready, resolve as many of this run's unmatched titles as
+        // possible right here — no per-item approval, per the "users don't
+        // want to approve one at a time" request. There is no separate
+        // enable toggle: enabling a provider in the "Enabled AI tools" panel
+        // is itself the permission this relies on. An unready provider/key
+        // is treated as "nothing to do" rather than a library-maintenance
+        // failure; scan/scrape/reclassify must never fail because of this
+        // best-effort addition.
         let ai_assist = if !scrape.issues.is_empty() {
             let settings = settings::load(&app_data_dir(&app)?);
-            let ready = settings.ai_scan_assist_enabled.then(|| settings.tmdb_api_key.clone()).flatten();
+            let ready = settings.tmdb_api_key.clone();
             match ready {
                 Some(tmdb_api_key) => match ai_client_from_settings(&settings).await {
                     Ok(client) => {
@@ -2780,9 +2817,6 @@ async fn ai_scrape_assist<R: tauri::Runtime>(
 ) -> Result<AiScrapeSuggestion, String> {
     let dir = app_data_dir(&app)?;
     let settings = settings::load(&dir);
-    if !settings.ai_scan_assist_enabled {
-        return Err("Enable \"AI scan & scrape assist\" on the AI tab first.".to_string());
-    }
     let client = ai_client_from_settings(&settings).await?;
     let tmdb_api_key = settings
         .tmdb_api_key
@@ -2844,7 +2878,8 @@ async fn auto_apply_ai_scrape_assist(
 /// Runs `auto_apply_ai_scrape_assist` against whatever `list_scrape_issues`
 /// currently holds — the AI tab's "Check now" button, for resolving
 /// already-known issues on demand without a full library rescan. Same
-/// settings/provider/TMDb-key gating as `ai_scrape_assist`.
+/// provider/TMDb-key gating as `ai_scrape_assist`; clicking "Check now" is
+/// itself the permission for this run.
 #[tauri::command]
 async fn run_scrape_assist_now<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
@@ -2852,9 +2887,6 @@ async fn run_scrape_assist_now<R: tauri::Runtime>(
 ) -> Result<AiAssistOutcome, String> {
     let dir = app_data_dir(&app)?;
     let settings = settings::load(&dir);
-    if !settings.ai_scan_assist_enabled {
-        return Err("Enable \"AI scan & scrape assist\" on the AI tab first.".to_string());
-    }
     let client = ai_client_from_settings(&settings).await?;
     let tmdb_api_key = settings
         .tmdb_api_key
@@ -3620,7 +3652,6 @@ fn main() {
             set_transcription_skip_if_subtitles_exist,
             generate_subtitles_for_entry,
             get_transcription_status,
-            set_mcp_enabled,
             generate_mcp_access_token,
             get_status,
             get_bandwidth_history,
@@ -3666,8 +3697,6 @@ fn main() {
             set_ai_provider_enabled,
             set_ai_provider_model,
             set_ai_provider_api_key,
-            set_ai_scan_assist_enabled,
-            set_ai_reorganize_enabled,
             test_ai_provider,
             detect_ai_tools,
             list_scrape_issues,

@@ -19,6 +19,7 @@
     <h2>Welcome to SWARM</h2>
     <p class="tagline centered">Stream Whatever, Anywhere — Remote Media</p>
     <p class="muted">Choose the folder with your music and video. SWARM will scan it and can stream from it to devices in your swarm.</p>
+    <p class="muted compact-help">macOS may ask to allow folder access and local network access as part of this — each is a one-time prompt. Allow both so SWARM never has to ask again; you can review or redo either later under Settings &rarr; App permissions.</p>
     <label for="onboardRootAssetType">Asset type</label>
     <select id="onboardRootAssetType">
       <option value="" selected disabled>Choose asset type…</option>
@@ -170,6 +171,31 @@
   </section>
 
   <section id="tabPanel-settings" class="view d-none">
+    <div class="panel">
+      <div class="card-head">
+        <h2 class="info-trigger" data-info="app-permissions" tabindex="0" role="button"><i class="bi bi-shield-lock heading-icon"></i>App permissions <i class="bi bi-info-circle info-affordance"></i></h2>
+      </div>
+      <p class="muted compact-help">SWARM asks macOS for each of these once, the first time it's needed — usually during first-run setup. Once you allow one, macOS remembers that choice and SWARM never asks again unless you revoke it yourself.</p>
+      <div class="media-root-row">
+        <div class="media-root-info">
+          <div class="media-root-label">Folder access<span class="media-root-asset">Files and Folders</span></div>
+          <div class="muted compact-help">Lets SWARM read the media folders you add as library locations, including network shares and removable drives.</div>
+        </div>
+        <div class="media-root-actions">
+          <button id="grantFileAccessBtn" class="secondary-button compact"><i class="bi bi-shield-lock"></i>Open macOS Settings</button>
+        </div>
+      </div>
+      <div class="media-root-row">
+        <div class="media-root-info">
+          <div class="media-root-label">Local network access<span class="media-root-asset">Local Network</span></div>
+          <div class="muted compact-help">Lets SWARM advertise itself so Fire TV and Android TV apps on this network can find and pair with this server.</div>
+        </div>
+        <div class="media-root-actions">
+          <button id="grantLocalNetworkAccessBtn" class="secondary-button compact"><i class="bi bi-broadcast-pin"></i>Open macOS Settings</button>
+        </div>
+      </div>
+    </div>
+
     <div class="panel">
       <div class="card-head">
         <h2 class="info-trigger" data-info="local-subtitles" tabindex="0" role="button"><i class="bi bi-badge-cc-fill heading-icon"></i>Local subtitles <i class="bi bi-info-circle info-affordance"></i></h2>
@@ -329,52 +355,32 @@
   <section id="tabPanel-ai" class="view d-none">
     <div class="panel">
       <p class="eyebrow">PROVIDERS</p>
-      <h2><i class="bi bi-stars heading-icon"></i>Enabled AI tools</h2>
-      <p class="muted">Turn on the AI tools SWARM may call for the advanced features below. SWARM uses each tool's own command-line app and the sign-in already on this machine — there is no API key to enter and nothing to save. Metered tools are used only when at least 10% of their available usage remains. Nothing here is required for MCP (further down this tab), which works the other way around: an AI tool connecting <em>to</em> SWARM.</p>
+      <h2 class="info-trigger" data-info="enabled-ai-tools" tabindex="0" role="button"><i class="bi bi-stars heading-icon"></i>Enabled AI tools <i class="bi bi-info-circle info-affordance"></i></h2>
       <div id="aiProvidersList"></div>
-    </div>
-    <div class="panel">
-      <p class="eyebrow">AUTOMATION</p>
-      <h2><i class="bi bi-magic heading-icon"></i>AI automation</h2>
-      <div class="row align-center">
-        <label class="toggle checkbox-label"><input type="checkbox" id="aiScanAssistCheck"> Scan &amp; scrape assist</label>
-        <span id="aiScanAssistStatus" class="note"></span>
-      </div>
-      <div class="row align-center">
-        <label class="toggle checkbox-label"><input type="checkbox" id="aiReorganizeCheck"> Reorganize media</label>
-        <span id="aiReorganizeStatus" class="note"></span>
-      </div>
     </div>
     <div class="panel">
       <div class="card-head"><h2 class="info-trigger" data-info="scan-scrape-assist" tabindex="0" role="button"><i class="bi bi-search-heart-fill heading-icon"></i>Scan &amp; scrape assist <i class="bi bi-info-circle info-affordance"></i></h2>
         <button id="runScrapeAssistNowBtn" class="secondary-button"><i class="bi bi-stars"></i>Check now</button>
       </div>
+      <p id="aiScanAssistStatus" class="note error d-none"></p>
       <div id="scrapeAssistWrap" class="d-none">
-        <h3 class="review-heading">Needs review</h3>
-        <ul id="scrapeAssistList" class="issue-list"></ul>
+        <div id="scrapeAssistGroups"></div>
       </div>
     </div>
     <div class="panel">
       <div class="card-head"><h2 class="info-trigger" data-info="reorganize-media" tabindex="0" role="button"><i class="bi bi-folder-symlink-fill heading-icon"></i>Reorganize media <i class="bi bi-info-circle info-affordance"></i></h2></div>
-      <div id="aiReorganizeScanWrap" class="row action-row d-none">
+      <div id="aiReorganizeScanWrap" class="row action-row">
         <select id="aiReorganizeRootSelect" class="grow"></select>
         <button id="aiReorganizeScanBtn" class="secondary-button"><i class="bi bi-search"></i>Scan for cleanup</button>
       </div>
       <div id="aiReorgPlansList"></div>
     </div>
-    <div class="panel compact-panel">
-      <h2 class="info-trigger" data-info="mcp-help" tabindex="0" role="button"><i class="bi bi-question-circle-fill heading-icon"></i>About MCP &amp; the AI tools API <i class="bi bi-info-circle info-affordance"></i></h2>
-    </div>
     <div class="panel">
       <div class="card-head"><h2 class="info-trigger" data-info="mcp-server" tabindex="0" role="button"><i class="bi bi-hdd-network-fill heading-icon"></i>MCP Server <i class="bi bi-info-circle info-affordance"></i></h2></div>
-      <div class="row">
-        <label class="toggle checkbox-label"><input type="checkbox" id="mcpEnabledCheck"> Enable MCP server</label>
-        <button id="saveMcpSettingsBtn" class="secondary-button"><i class="bi bi-check-lg"></i>Save</button>
-      </div>
       <div class="row token-row">
         <input id="mcpAccessTokenInput" class="mono" readonly placeholder="Create an access token first">
         <button id="generateMcpTokenBtn" class="secondary-button"><i class="bi bi-key-fill"></i>Create access token</button>
-        <button id="copyMcpTokenBtn" class="secondary-button"><i class="bi bi-copy"></i>Copy</button>
+        <button id="copyMcpTokenBtn" class="icon-button" aria-label="Copy access token" title="Copy access token"><i class="bi bi-copy"></i></button>
       </div>
       <p id="mcpStatus" class="note"></p>
     </div>

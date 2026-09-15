@@ -102,22 +102,6 @@ resource "aws_security_group" "app_host" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  ingress {
-    description = "Fallback relay TCP"
-    from_port   = var.relay_port
-    to_port     = var.relay_port
-    protocol    = "tcp"
-    cidr_blocks = var.allowed_relay_cidrs
-  }
-
-  ingress {
-    description = "Fallback relay UDP"
-    from_port   = var.relay_port
-    to_port     = var.relay_port
-    protocol    = "udp"
-    cidr_blocks = var.allowed_relay_cidrs
-  }
-
   egress {
     from_port   = 0
     to_port     = 0
@@ -129,7 +113,9 @@ resource "aws_security_group" "app_host" {
 }
 
 resource "aws_ecr_repository" "containers" {
-  for_each = toset(["stun-server", "relay-server", "prompt-web"])
+  # The relay server runs on Oracle Cloud (see relay-oracle.tf) and publishes
+  # to OCI Container Registry instead of ECR.
+  for_each = toset(["stun-server", "prompt-web"])
 
   name                 = "${local.name_prefix}/${each.value}"
   image_tag_mutability = "MUTABLE"
@@ -224,13 +210,10 @@ resource "aws_instance" "app_host" {
     image_tag          = var.ecr_image_tag
     stun_image         = aws_ecr_repository.containers["stun-server"].repository_url
     stun_repository    = aws_ecr_repository.containers["stun-server"].name
-    relay_image        = aws_ecr_repository.containers["relay-server"].repository_url
-    relay_repository   = aws_ecr_repository.containers["relay-server"].name
     web_app_image      = aws_ecr_repository.containers["prompt-web"].repository_url
     web_app_repository = aws_ecr_repository.containers["prompt-web"].name
     stun_domain        = local.stun_domain
     web_app_domain     = local.web_app_domain
-    relay_port         = var.relay_port
     data_volume_id     = aws_ebs_volume.app_data.id
   })
 

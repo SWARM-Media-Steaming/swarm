@@ -4,8 +4,10 @@
 //! Streamable HTTP. See `apps/server/ui`'s "AI" dashboard tab for what MCP
 //! is and how to point a client at it.
 //!
-//! It starts alongside `ServerCore` when `Settings::mcp_enabled` is set and
-//! shares the desktop application's lifecycle, including while hidden.
+//! It starts alongside `ServerCore` whenever `Settings::mcp_access_token` is
+//! set — there is no separate enable toggle, creating a token is the enable
+//! action — and shares the desktop application's lifecycle, including while
+//! hidden.
 //!
 //! Every tool here is read-only by design (v1 scope, decided explicitly):
 //! an AI client can search/inspect the library and check swarm/error state,

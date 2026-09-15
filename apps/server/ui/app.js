@@ -143,6 +143,10 @@ const INFO_TOPICS = {
     body: "TMDb supplies posters, artwork, cast lists, and summaries for movies and TV. Create a free Developer API key at TMDb under Settings → API, then paste the v3 API key or v4 read token here. Music artwork and LRCLIB lyrics are fetched automatically during metadata scraping and do not require an API key.",
     link: "https://www.themoviedb.org/", linkLabel: "Visit TMDb",
   },
+  "app-permissions": {
+    icon: "bi-shield-lock", title: "App permissions",
+    body: "SWARM needs two kinds of one-time macOS access: folder access, to read the media folders you add as library locations (including network shares and removable drives), and local network access, so Fire TV and Android TV apps can find and pair with this server. Both are normally requested once during first-run setup. macOS remembers your answer for good, so SWARM never has to ask again — unless you revoke it yourself. Use the buttons here to jump straight to the right System Settings pane, whether you're granting access for the first time or fixing a \"Don't Allow\" answered by mistake.",
+  },
   "local-subtitles": {
     icon: "bi-badge-cc-fill", title: "Local subtitle generation",
     body: "SWARM can generate English subtitles locally with Whisper. The first run downloads and verifies a compact model of about 142 MB. Processing can take roughly as long as the video—or considerably longer on older CPUs—and uses sustained CPU. SWARM always pauses this work during library scans, and by default also pauses while anyone is streaming. Work is saved in ten-minute sections and resumes after disabling, closing, or restarting the app. Each generated subtitle is saved next to its source file, named after it with a \"-whisper-english-subtitles.vtt\" suffix, so it travels with the media. Use a movie or episode's Manage panel to generate a subtitle for just that one item, or turn on bulk generation here for the whole library — optionally skipping anything that already has a subtitle.",
@@ -188,10 +192,17 @@ const INFO_TOPICS = {
     body: "Every stream travels straight from your server to your client over a private connection — no third-party relay ever sits in the middle.",
     link: "https://en.wikipedia.org/wiki/Peer-to-peer", linkLabel: "Learn about peer-to-peer",
   },
-  "mcp-help": {
-    icon: "bi-stars", title: "About MCP & the AI tools API",
+  "enabled-ai-tools": {
+    icon: "bi-stars", title: "Enabled AI tools",
+    body:
+      "Turn on the AI tools SWARM may call for the advanced features below (Scan & scrape assist, Reorganize media) — SWARM uses each tool's own command-line app and the sign-in already on this machine, so there's no API key to enter and nothing to save. Enabling a tool here is what makes those features usable at all; each one still asks again in its own way (a \"Check now\"/\"Ask AI\"/\"Scan for cleanup\" click) before it actually spends any usage.\n\n" +
+      "Whenever any enabled feature needs AI, SWARM tries the tools in the order they're listed above and uses the first one that's installed, signed in, and has at least 10% of its usage remaining — metered tools are skipped once they run low so a feature never gets silently blocked by one tool's quota. This list is shared by every AI feature in SWARM, including MCP-adjacent ones; it has nothing to do with the MCP Server further down this tab, which works the other way around — an AI tool connecting to SWARM, not SWARM calling out to one.",
+  },
+  "mcp-server": {
+    icon: "bi-hdd-network-fill", title: "MCP Server",
     body:
       "The Model Context Protocol is an open standard that lets an AI assistant talk directly to outside tools and data. SWARM exposes a small, read-only MCP API so an assistant like Claude can look things up in your library on your behalf — it can search and check status, but it can't change settings or touch your files.\n\n" +
+      "Creating an access token is what turns the server on — there's no separate enable switch. Your AI tool sends that token with each MCP request so only clients you configure can access your library. The port is fixed at 7890; restart SWARM after creating or changing the token for it to take effect.\n\n" +
       "Once you've added this MCP Server to an AI tool, just ask ordinary questions about your library — the tool picks the function it needs and turns the results into a conversational answer:\n" +
       "You: What comedies are in my library?\n" +
       "AI: I found 18 comedies. A few highlights are Game Night, Palm Springs, and Clue.\n\n" +
@@ -206,17 +217,13 @@ const INFO_TOPICS = {
       { href: "https://claude.ai/", label: "Open Claude" },
     ],
   },
-  "mcp-server": {
-    icon: "bi-hdd-network-fill", title: "MCP Server",
-    body: "Create a token, enable the server, save, and restart SWARM. Your AI tool sends this token with each MCP request so only clients you configure can access your library. The port is fixed at 7890.",
-  },
   "scan-scrape-assist": {
     icon: "bi-search-heart-fill", title: "Scan & scrape assist",
-    body: "When a scrape can't find a confident TMDb match, AI suggests a cleaner title from the filename and retries the lookup. When this is enabled, \"Scan and update library\" resolves what it can automatically — no per-item approval. Use \"Check now\" to resolve currently-known issues on demand without a full rescan; anything still unresolved stays listed below for manual review.",
+    body: "When a scrape can't find a confident TMDb match, AI suggests a cleaner title from the filename and retries the lookup. \"Scan and update library\" resolves what it can automatically as part of every scan — no per-item approval. Use \"Check now\" to resolve currently-known issues on demand without a full rescan; anything still unresolved stays listed below, grouped by Movies/Shows/Music, for manual review.",
   },
   "reorganize-media": {
     icon: "bi-folder-symlink-fill", title: "Reorganize media",
-    body: "Scan a media root and propose consistent folder names and file locations (subtitles included) so both the scanner and you can read your library easily. Nothing changes until you review and approve the plan — SWARM only ever renames/moves files here, never deletes.",
+    body: "Scan a media root and propose consistent folder names and file locations (subtitles included) so both the scanner and you can read your library easily. Leftover subtitle/artwork files with no matching video anywhere in the root are proposed for a move into an _orphaned/ holding folder instead of a rename. Content that actually belongs under a different configured root (e.g. a TV show sitting in a Movies root) is called out separately below and is report-only — SWARM never moves anything across roots automatically. Nothing changes until you review and approve the plan — SWARM only ever renames/moves files here, never deletes.",
   },
   "approve-tv": {
     icon: "bi-shield-check", title: "Approve a TV",
@@ -400,6 +407,29 @@ document.getElementById("mediaRootWarningGrantBtn").addEventListener("click", as
   try {
     await invoke("open_external_url", {
       url: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles",
+    });
+  } catch (err) {
+    showToast(String(err), "error");
+  }
+});
+
+// Settings -> App permissions (#293): a durable, always-visible place to
+// (re)trigger either one-time macOS grant, instead of only surfacing them
+// reactively when something already broke.
+document.getElementById("grantFileAccessBtn").addEventListener("click", async () => {
+  try {
+    await invoke("open_external_url", {
+      url: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles",
+    });
+  } catch (err) {
+    showToast(String(err), "error");
+  }
+});
+
+document.getElementById("grantLocalNetworkAccessBtn").addEventListener("click", async () => {
+  try {
+    await invoke("open_external_url", {
+      url: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_LocalNetwork",
     });
   } catch (err) {
     showToast(String(err), "error");

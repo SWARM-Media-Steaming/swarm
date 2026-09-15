@@ -28,5 +28,20 @@
 	<string>SWARM Server reads media files you add as library locations, which may live in your Documents folder.</string>
 	<key>NSDownloadsFolderUsageDescription</key>
 	<string>SWARM Server reads media files you add as library locations, which may live in your Downloads folder.</string>
+	<!--
+	  GitHub #293: the media server also advertises itself over mDNS/Bonjour
+	  (apps/server/src/lan.rs) so Fire TV and Android TV clients on the same
+	  network can find it. That crosses macOS's separate Local Network TCC
+	  boundary the first time it runs. As with the file-access keys above, a
+	  missing usage description makes macOS re-ask more readily; with one
+	  (plus the stable signing identity in scripts/macos_stable_signing.sh)
+	  the "Allow" answer sticks for good.
+	-->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>SWARM Server advertises itself on your local network so Fire TV and Android TV apps can find and pair with this server.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_swarm-peer._udp.</string>
+	</array>
 </dict>
 </plist>

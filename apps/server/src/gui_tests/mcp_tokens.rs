@@ -2,7 +2,7 @@
 //! touches `AppState::core`, so `test_app()` (no media root) is enough.
 
 use super::harness::test_app;
-use crate::{generate_mcp_access_token, get_settings, set_mcp_enabled};
+use crate::{generate_mcp_access_token, get_settings};
 
 #[tokio::test]
 async fn generate_mcp_access_token_persists_a_real_random_token() {
@@ -40,28 +40,15 @@ async fn generate_mcp_access_token_rotates_to_a_new_value_each_call() {
 }
 
 #[tokio::test]
-async fn set_mcp_enabled_persists_the_toggle() {
+async fn a_fresh_install_has_no_access_token() {
+    // There is no separate enable toggle any more (issue #296) — creating a
+    // token is the enable action, so "no token yet" is the entire disabled
+    // state worth asserting here.
     let test_app = test_app();
     let app = test_app.handle();
 
-    let initial = get_settings(app.clone())
+    let settings = get_settings(app.clone())
         .await
         .expect("get_settings should succeed");
-    assert!(!initial.mcp_enabled, "MCP should default to disabled");
-
-    set_mcp_enabled(app.clone(), true)
-        .await
-        .expect("set_mcp_enabled should succeed");
-    let enabled = get_settings(app.clone())
-        .await
-        .expect("get_settings should succeed");
-    assert!(enabled.mcp_enabled);
-
-    set_mcp_enabled(app.clone(), false)
-        .await
-        .expect("set_mcp_enabled should succeed");
-    let disabled = get_settings(app.clone())
-        .await
-        .expect("get_settings should succeed");
-    assert!(!disabled.mcp_enabled);
+    assert_eq!(settings.mcp_access_token, None);
 }

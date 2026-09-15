@@ -19,6 +19,7 @@
     <h2>Welcome to SWARM</h2>
     <p class="tagline centered">Stream Whatever, Anywhere — Remote Media</p>
     <p class="muted">Choose the folder with your music and video. SWARM will scan it and can stream from it to devices in your swarm.</p>
+    <p class="muted compact-help">macOS may ask to allow folder access and local network access as part of this — each is a one-time prompt. Allow both so SWARM never has to ask again; you can review or redo either later under Settings &rarr; App permissions.</p>
     <label for="onboardRootAssetType">Asset type</label>
     <select id="onboardRootAssetType">
       <option value="" selected disabled>Choose asset type…</option>
@@ -170,6 +171,31 @@
   </section>
 
   <section id="tabPanel-settings" class="view d-none">
+    <div class="panel">
+      <div class="card-head">
+        <h2 class="info-trigger" data-info="app-permissions" tabindex="0" role="button"><i class="bi bi-shield-lock heading-icon"></i>App permissions <i class="bi bi-info-circle info-affordance"></i></h2>
+      </div>
+      <p class="muted compact-help">SWARM asks macOS for each of these once, the first time it's needed — usually during first-run setup. Once you allow one, macOS remembers that choice and SWARM never asks again unless you revoke it yourself.</p>
+      <div class="media-root-row">
+        <div class="media-root-info">
+          <div class="media-root-label">Folder access<span class="media-root-asset">Files and Folders</span></div>
+          <div class="muted compact-help">Lets SWARM read the media folders you add as library locations, including network shares and removable drives.</div>
+        </div>
+        <div class="media-root-actions">
+          <button id="grantFileAccessBtn" class="secondary-button compact"><i class="bi bi-shield-lock"></i>Open macOS Settings</button>
+        </div>
+      </div>
+      <div class="media-root-row">
+        <div class="media-root-info">
+          <div class="media-root-label">Local network access<span class="media-root-asset">Local Network</span></div>
+          <div class="muted compact-help">Lets SWARM advertise itself so Fire TV and Android TV apps on this network can find and pair with this server.</div>
+        </div>
+        <div class="media-root-actions">
+          <button id="grantLocalNetworkAccessBtn" class="secondary-button compact"><i class="bi bi-broadcast-pin"></i>Open macOS Settings</button>
+        </div>
+      </div>
+    </div>
+
     <div class="panel">
       <div class="card-head">
         <h2 class="info-trigger" data-info="local-subtitles" tabindex="0" role="button"><i class="bi bi-badge-cc-fill heading-icon"></i>Local subtitles <i class="bi bi-info-circle info-affordance"></i></h2>

@@ -143,6 +143,10 @@ const INFO_TOPICS = {
     body: "TMDb supplies posters, artwork, cast lists, and summaries for movies and TV. Create a free Developer API key at TMDb under Settings → API, then paste the v3 API key or v4 read token here. Music artwork and LRCLIB lyrics are fetched automatically during metadata scraping and do not require an API key.",
     link: "https://www.themoviedb.org/", linkLabel: "Visit TMDb",
   },
+  "app-permissions": {
+    icon: "bi-shield-lock", title: "App permissions",
+    body: "SWARM needs two kinds of one-time macOS access: folder access, to read the media folders you add as library locations (including network shares and removable drives), and local network access, so Fire TV and Android TV apps can find and pair with this server. Both are normally requested once during first-run setup. macOS remembers your answer for good, so SWARM never has to ask again — unless you revoke it yourself. Use the buttons here to jump straight to the right System Settings pane, whether you're granting access for the first time or fixing a \"Don't Allow\" answered by mistake.",
+  },
   "local-subtitles": {
     icon: "bi-badge-cc-fill", title: "Local subtitle generation",
     body: "SWARM can generate English subtitles locally with Whisper. The first run downloads and verifies a compact model of about 142 MB. Processing can take roughly as long as the video—or considerably longer on older CPUs—and uses sustained CPU. SWARM always pauses this work during library scans, and by default also pauses while anyone is streaming. Work is saved in ten-minute sections and resumes after disabling, closing, or restarting the app. Each generated subtitle is saved next to its source file, named after it with a \"-whisper-english-subtitles.vtt\" suffix, so it travels with the media. Use a movie or episode's Manage panel to generate a subtitle for just that one item, or turn on bulk generation here for the whole library — optionally skipping anything that already has a subtitle.",
@@ -400,6 +404,29 @@ document.getElementById("mediaRootWarningGrantBtn").addEventListener("click", as
   try {
     await invoke("open_external_url", {
       url: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles",
+    });
+  } catch (err) {
+    showToast(String(err), "error");
+  }
+});
+
+// Settings -> App permissions (#293): a durable, always-visible place to
+// (re)trigger either one-time macOS grant, instead of only surfacing them
+// reactively when something already broke.
+document.getElementById("grantFileAccessBtn").addEventListener("click", async () => {
+  try {
+    await invoke("open_external_url", {
+      url: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles",
+    });
+  } catch (err) {
+    showToast(String(err), "error");
+  }
+});
+
+document.getElementById("grantLocalNetworkAccessBtn").addEventListener("click", async () => {
+  try {
+    await invoke("open_external_url", {
+      url: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_LocalNetwork",
     });
   } catch (err) {
     showToast(String(err), "error");

@@ -43,19 +43,21 @@ document.getElementById("autoUpdateModeSelect").addEventListener("change", async
   }
 });
 
+// Issue #309: "Check now" lists the 3 most recent stable + 3 most recent
+// beta releases (not just whatever GitHub currently calls "latest") so the
+// user can pick a specific one. Picking one installs it via install_update's
+// `tag` argument — a separate path from the plain installUpdateBtn below,
+// which stays wired to the passive "notify" banner's single pending update.
 document.getElementById("checkUpdateBtn").addEventListener("click", async (event) => {
   const button = event.currentTarget;
   button.disabled = true;
   document.getElementById("softwareUpdateStatus").textContent = "Checking for updates…";
   try {
-    const summary = await invoke("check_for_update");
-    if (summary) {
-      showPendingUpdate(summary);
-    } else {
-      softwareUpdatePending = null;
-      document.getElementById("installUpdateBtn").classList.add("d-none");
-      document.getElementById("softwareUpdateStatus").textContent = "SWARM Server is up to date.";
-    }
+    const candidates = await invoke("check_for_update");
+    renderUpdateCandidates(candidates);
+    document.getElementById("softwareUpdateStatus").textContent = candidates.length
+      ? "Pick a version below to install it."
+      : "No published releases were found.";
   } catch (err) {
     showToast(String(err), "error");
   } finally {
@@ -63,11 +65,52 @@ document.getElementById("checkUpdateBtn").addEventListener("click", async (event
   }
 });
 
+function renderUpdateCandidates(candidates) {
+  const list = document.getElementById("updateCandidatesList");
+  list.classList.toggle("d-none", candidates.length === 0);
+  list.innerHTML = candidates.map((c) => {
+    const channel = c.prerelease
+      ? `<span class="update-candidate-channel beta">Beta</span>`
+      : `<span class="update-candidate-channel">Stable</span>`;
+    const current = c.isCurrent ? `<span class="update-candidate-current">Running now</span>` : "";
+    const note = (c.notes || "").trim().split("\n")[0];
+    let action;
+    if (c.isCurrent) {
+      action = `<button class="secondary-button compact" disabled>Current</button>`;
+    } else if (!c.installable) {
+      action = `<button class="secondary-button compact" disabled title="Downgrading to an older version isn't supported yet.">Too old</button>`;
+    } else {
+      action = `<button class="primary-button compact" data-install-tag="${esc(c.tag)}"><i class="bi bi-download"></i>Install</button>`;
+    }
+    return `
+    <div class="update-candidate-row">
+      <div class="update-candidate-info">
+        <div class="update-candidate-version">${esc(c.version)}${channel}${current}</div>
+        ${note ? `<div class="update-candidate-notes">${esc(note)}</div>` : ""}
+        ${!c.installable && !c.isCurrent ? `<div class="update-candidate-blocked-reason">Older than the running version — downgrading isn't supported yet.</div>` : ""}
+      </div>
+      <div class="update-candidate-actions">${action}</div>
+    </div>`;
+  }).join("");
+  list.querySelectorAll("[data-install-tag]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      showToast("Downloading update… the server will restart when it's ready.", "success");
+      try {
+        await invoke("install_update", { tag: btn.dataset.installTag }); // process restarts on success
+      } catch (err) {
+        btn.disabled = false;
+        showToast(String(err), "error");
+      }
+    });
+  });
+}
+
 document.getElementById("installUpdateBtn").addEventListener("click", async (event) => {
   event.currentTarget.disabled = true;
   showToast("Downloading update… the server will restart when it's ready.", "success");
   try {
-    await invoke("install_update"); // process restarts on success
+    await invoke("install_update", { tag: null }); // process restarts on success
   } catch (err) {
     event.currentTarget.disabled = false;
     showToast(String(err), "error");

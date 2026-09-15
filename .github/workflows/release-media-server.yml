@@ -1,0 +1,190 @@
+name: Release media server
+
+# Issue #309: publishes a signed, auto-updatable SWARM Server build for
+# macOS, Windows, and Linux on every push to `main` or `ai-main` that
+# actually touches this app or something it depends on — NOT on every push
+# to this monorepo (the STUN server, the TV clients, shared docs, etc. all
+# live here too and must not trigger a media-server release).
+#
+# Versioning:
+#   - `ai-main` (beta channel) always publishes, as
+#     `<Cargo.toml version>-beta.<run_number>` — unique by construction, and
+#     flagged `prerelease` so it never becomes the repo's "Latest release".
+#   - `main` (stable channel) always publishes too. If the workspace version
+#     hasn't been bumped since the last published stable release, build
+#     metadata (`+main.<run_number>`) is appended for uniqueness instead.
+#     `semver` deliberately ignores build metadata when *ordering* two
+#     versions, so two `+main.<n>` releases in a row would compare equal
+#     under the updater plugin's default "is this newer?" check — that gap
+#     is closed on the app side with a custom version comparator (see
+#     apps/server/src/gui.rs's `release_is_newer`), not by avoiding the
+#     suffix here.
+#
+# Prerequisite this workflow cannot self-serve: TAURI_SIGNING_PRIVATE_KEY
+# (and TAURI_SIGNING_PRIVATE_KEY_PASSWORD, if the key has one) must exist as
+# repository secrets, holding the minisign private key matching the pubkey
+# already embedded in apps/server/tauri.conf.json. Provisioning secrets
+# needs repo-admin access this workflow (and the agent that authored it)
+# does not have — a human with that access must generate/locate the
+# matching private key and add it before a run here can produce a signed,
+# installable release. Until then, every run of this workflow fails at the
+# signing step, by design (an unsigned build would fail every client's
+# updater signature check anyway).
+
+on:
+  push:
+    branches: [main, ai-main]
+    paths:
+      - "apps/server/**"
+      - "crates/swarm-core/**"
+      - "crates/swarm-media/**"
+      - "crates/swarm-p2p/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/release-media-server.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: release-media-server-${{ github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # ------------------------------------------------------------- version ----
+  version:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.compute.outputs.version }}
+      tag: ${{ steps.compute.outputs.tag }}
+      prerelease: ${{ steps.compute.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compute the release version
+        id: compute
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          base_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          if [ -z "$base_version" ]; then
+            echo "could not read [workspace.package] version from Cargo.toml" >&2
+            exit 1
+          fi
+
+          if [ "${{ github.ref_name }}" = "ai-main" ]; then
+            version="${base_version}-beta.${{ github.run_number }}"
+            prerelease=true
+          else
+            # Find the most recently published *stable* release this same
+            # pipeline made, and compare its base version (its tag with the
+            # server-v prefix and any +main.<n> suffix stripped) against the
+            # current one. Only append build metadata when they match —
+            # an actual version bump publishes cleanly with no suffix.
+            last_stable_tag="$(gh api "repos/$REPO/releases" --paginate --jq \
+              '[.[] | select(.draft == false and .prerelease == false and (.tag_name | startswith("server-v")))][0].tag_name // empty')"
+            last_stable_version="${last_stable_tag#server-v}"
+            last_stable_base="${last_stable_version%%+*}"
+            if [ "$last_stable_base" = "$base_version" ]; then
+              version="${base_version}+main.${{ github.run_number }}"
+            else
+              version="$base_version"
+            fi
+            prerelease=false
+          fi
+
+          tag="server-v${version}"
+          echo "Publishing $tag (prerelease=$prerelease)"
+          {
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+
+  # ------------------------------------------------------------- publish ----
+  publish:
+    needs: version
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            args: "--target aarch64-apple-darwin"
+          - platform: macos-latest
+            target: x86_64-apple-darwin
+            args: "--target x86_64-apple-darwin"
+          - platform: ubuntu-22.04
+            target: ""
+            args: ""
+          - platform: windows-latest
+            target: ""
+            args: ""
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux build dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/server/package-lock.json
+
+      - name: Install frontend (Tauri CLI) dependencies
+        working-directory: apps/server
+        run: npm ci
+
+      # Tauri reads its app version from tauri.conf.json (falling back to
+      # Cargo.toml only when that field is absent) — patching it here, before
+      # the build, is what makes app.package_info().version (surfaced in the
+      # UI's sidebar and used by the updater's own "current version" check)
+      # equal the exact version this workflow just computed, suffix and all.
+      - name: Stamp the computed version into tauri.conf.json
+        shell: bash
+        run: |
+          node -e '
+            const fs = require("fs");
+            const path = "apps/server/tauri.conf.json";
+            const conf = JSON.parse(fs.readFileSync(path, "utf8"));
+            conf.version = process.argv[1];
+            fs.writeFileSync(path, JSON.stringify(conf, null, 2) + "\n");
+          ' "${{ needs.version.outputs.version }}"
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: apps/server
+          tagName: ${{ needs.version.outputs.tag }}
+          releaseName: >-
+            ${{ needs.version.outputs.prerelease == 'true'
+                && format('SWARM Server {0} — 🧪 Beta / pre-prod build', needs.version.outputs.version)
+                || format('SWARM Server {0}', needs.version.outputs.version) }}
+          releaseBody: >-
+            ${{ needs.version.outputs.prerelease == 'true'
+                && '🧪 **Beta / pre-prod build** — published automatically from active development (`ai-main`). May be unstable; prefer a stable release for everyday use.'
+                || 'Stable build published automatically from `main`. See the assets below for macOS, Windows, and Linux installers.' }}
+          releaseDraft: false
+          prerelease: ${{ needs.version.outputs.prerelease }}
+          includeUpdaterJson: true
+          args: ${{ matrix.args }}

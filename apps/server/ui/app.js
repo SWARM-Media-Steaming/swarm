@@ -154,7 +154,7 @@ const INFO_TOPICS = {
   },
   "software-update": {
     icon: "bi-arrow-repeat", title: "Software update",
-    body: "New versions of SWARM Server publish automatically after each change passes tests. \"Notify me\" surfaces a message here when one is available and you choose when to install. \"Download automatically\" fetches it in the background and swaps it in place — playback is never interrupted and the new version runs the next time the server restarts. \"Check now\" works in any mode. Builds are signed with a self-signed certificate (not an Apple Developer ID); an in-place update keeps the macOS file-access grants you already gave, but a fresh install from a .dmg still needs one right-click → Open.",
+    body: "New versions of SWARM Server publish automatically after each change passes tests — a stable build from the main line, or a beta from active development. \"Notify me\" surfaces a message here when one is available and you choose when to install. \"Automatically\" waits until nothing is actively streaming or transcoding, then downloads and swaps it in place — a live stream is never interrupted, and the new version runs the next time the server restarts. \"Check now\" works in either mode and lists the three most recent stable and three most recent beta releases so you can pick a specific one; picking anything older than what's currently installed is disabled here — downgrading isn't supported yet. Builds are signed with a self-signed certificate (not an Apple Developer ID); an in-place update keeps the macOS file-access grants you already gave, but a fresh install from a .dmg still needs one right-click → Open.",
     link: "", linkLabel: "",
   },
   "opensubtitles-downloads": {
@@ -223,7 +223,7 @@ const INFO_TOPICS = {
   },
   "reorganize-media": {
     icon: "bi-folder-symlink-fill", title: "Reorganize media",
-    body: "Scan a media root and propose consistent folder names and file locations (subtitles included) so both the scanner and you can read your library easily. Leftover subtitle/artwork files with no matching video anywhere in the root are proposed for a move into an _orphaned/ holding folder instead of a rename. Content that actually belongs under a different configured root (e.g. a TV show sitting in a Movies root) is called out separately below and is report-only — SWARM never moves anything across roots automatically. Nothing changes until you review and approve the plan — SWARM only ever renames/moves files here, never deletes.",
+    body: "Scan a media root and propose consistent folder names and file locations (subtitles included) so both the scanner and you can read your library easily. Leftover subtitle/artwork files with no matching video anywhere in the root are proposed for a move into an _orphaned/ holding folder instead of a rename. Content that actually belongs under a different configured root (e.g. a TV show sitting in a Movies root) is called out separately below and is report-only — SWARM never moves anything across roots automatically. Uncheck \"Include\" on any item you don't want touched — everything else still applies. Nothing changes until you review and approve the plan — SWARM only ever renames/moves files here, never deletes.",
   },
   "approve-tv": {
     icon: "bi-shield-check", title: "Approve a TV",
@@ -493,6 +493,12 @@ async function enterDashboard() {
 
 async function boot() {
   const settings = await invoke("get_settings");
+  // Issue #309: the exact published version (with its -beta.<n>/+main.<n>
+  // suffix when this build carries one) stays visible without opening
+  // Settings — set once here since boot() already fetches settings on
+  // every startup path, onboarding included.
+  const versionEl = document.getElementById("sidebarVersion");
+  if (versionEl) versionEl.textContent = `v${settings.app_version}`;
   if (!settings.media_roots || settings.media_roots.length === 0) {
     show("onboardFolderView");
     return;

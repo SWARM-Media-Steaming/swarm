@@ -68,4 +68,39 @@ class AudioTrackAvailabilityTest {
         assertEquals(true, isEnglishAudioLabel("English 5.1"))
         assertEquals(false, isEnglishAudioLabel("Spanish"))
     }
+
+    @Test
+    fun `equivalent language tags share a cross episode preference key`() {
+        assertEquals("english", audioLanguageKey("en", null, index = 0))
+        assertEquals("english", audioLanguageKey("eng", null, index = 1))
+        assertEquals("english", audioLanguageKey("en-US", null, index = 2))
+    }
+
+    @Test
+    fun `untagged named tracks retain their language as the preference key`() {
+        assertEquals("spanish", audioLanguageKey("und", "Spanish", index = 0))
+        assertEquals("english", audioLanguageKey(null, "English", index = 1))
+    }
+
+    @Test
+    fun `fully untagged tracks can still be matched by their stable position`() {
+        assertEquals("audio 2", audioLanguageKey(null, null, index = 1))
+    }
+
+    @Test
+    fun `saved show language wins over the default english track`() {
+        val english = TrackChoice("English", null, 0, isSelected = true, audioLanguageKey = "english")
+        val spanish = TrackChoice("Spanish", null, 1, isSelected = false, audioLanguageKey = "spanish")
+
+        assertEquals(spanish, preferredAudioTrack(listOf(english, spanish), "spanish"))
+    }
+
+    @Test
+    fun `english remains the fallback when a show has no usable preference`() {
+        val spanish = TrackChoice("Spanish", null, 0, isSelected = true, audioLanguageKey = "spanish")
+        val english = TrackChoice("English", null, 1, isSelected = false, audioLanguageKey = "english")
+
+        assertEquals(english, preferredAudioTrack(listOf(spanish, english), null))
+        assertEquals(english, preferredAudioTrack(listOf(spanish, english), "french"))
+    }
 }

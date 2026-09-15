@@ -55,6 +55,7 @@
     <div class="sidebar-foot">
       <div class="machine-state"><span class="pulse-dot"></span><span>Serving from this Mac</span></div>
       <button id="hideToTrayBtn" class="text-button" title="Hide this window; the media server will keep running"><i class="bi bi-dash-square"></i>Hide to menu bar</button>
+      <div id="sidebarVersion" class="sidebar-version muted"></div>
     </div>
   </aside>
 
@@ -245,17 +246,17 @@
 
     <div class="panel">
       <h2 class="info-trigger" data-info="software-update" tabindex="0" role="button"><i class="bi bi-arrow-repeat heading-icon"></i>Software update <i class="bi bi-info-circle info-affordance"></i></h2>
-      <p class="muted compact-help">New versions publish automatically after each change passes tests. Updates swap in place; playback keeps running and the new version takes effect the next time the server restarts.</p>
+      <p class="muted compact-help">New versions publish automatically after each change passes tests. "Automatically" waits until nothing is actively streaming before installing, then swaps in place — the new version takes effect on the next restart.</p>
       <div class="row">
         <select id="autoUpdateModeSelect">
-          <option value="off">Don't check for updates</option>
           <option value="notify">Notify me when one is available</option>
-          <option value="auto">Download automatically, apply on restart</option>
+          <option value="auto">Automatically</option>
         </select>
         <button id="checkUpdateBtn" class="secondary-button"><i class="bi bi-search"></i>Check now</button>
       </div>
       <p id="softwareUpdateStatus" class="note"></p>
       <button id="installUpdateBtn" class="primary-button d-none"><i class="bi bi-download"></i>Install &amp; restart</button>
+      <div id="updateCandidatesList" class="update-candidates d-none"></div>
     </div>
   </section>
 
@@ -367,12 +368,13 @@
         <div id="scrapeAssistGroups"></div>
       </div>
     </div>
-    <div class="panel">
+    <div class="panel" id="aiReorganizePanel">
       <div class="card-head"><h2 class="info-trigger" data-info="reorganize-media" tabindex="0" role="button"><i class="bi bi-folder-symlink-fill heading-icon"></i>Reorganize media <i class="bi bi-info-circle info-affordance"></i></h2></div>
       <div id="aiReorganizeScanWrap" class="row action-row">
         <select id="aiReorganizeRootSelect" class="grow"></select>
         <button id="aiReorganizeScanBtn" class="secondary-button"><i class="bi bi-search"></i>Scan for cleanup</button>
       </div>
+      <p id="aiReorgConfirmMsg" class="note d-none" aria-live="polite"></p>
       <div id="aiReorgPlansList"></div>
     </div>
     <div class="panel">

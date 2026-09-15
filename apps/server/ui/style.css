@@ -141,6 +141,10 @@ td.mono {
 }
 .sidebar-foot { margin-top: auto; padding: 16px 8px 0; border-top: 1px solid var(--line-soft); }
 .machine-state { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: .66rem; margin-bottom: 12px; }
+/* Issue #309: the exact published version (including a -beta.<n>/+main.<n>
+   suffix when present) stays visible on every tab without opening Settings. */
+.sidebar-version { font-size: .62rem; letter-spacing: .02em; margin-top: 10px; opacity: .75; }
+.sidebar-collapsed .sidebar-version { font-size: 0; }
 .pulse-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 4px color-mix(in srgb, var(--green) 10%, transparent); flex: 0 0 auto; }
 .workspace {
   min-width: 0; overflow: auto;
@@ -167,7 +171,8 @@ td.mono {
 #tabPanel-metrics > .panel, #tabPanel-settings > .panel, #tabPanel-swarm > .panel,
 #tabPanel-notifications > .panel, #tabPanel-ai > .panel { margin-bottom: 0; }
 #tabPanel-metrics > .panel:first-child, #tabPanel-settings > .panel:nth-child(2),
-#tabPanel-swarm > .panel:last-child, #tabPanel-ai > .panel:first-child, #tabPanel-ai > .panel:last-child { grid-column: 1 / -1; }
+#tabPanel-swarm > .panel:last-child, #tabPanel-ai > .panel:first-child, #tabPanel-ai > .panel:last-child,
+#tabPanel-ai #aiReorganizePanel { grid-column: 1 / -1; }
 .card-head { margin-bottom: 16px; }
 .card-head h2 { font-size: .92rem; }
 .heading-icon { color: var(--violet); }
@@ -203,7 +208,19 @@ td.mono {
 .misplaced-heading { color: color-mix(in srgb, var(--amber) 78%, var(--text)); }
 .issue-list.misplaced-items { background: color-mix(in srgb, var(--amber) 6%, transparent); }
 .plan-summary { justify-content: space-between; align-items: center; }
-.plan-items, .plan-actions { margin-top: 8px; }
+.plan-actions { margin-top: 8px; }
+
+/* Reorganize media: full-width review grid (issue #312) — each proposed
+   move is its own card in a responsive column/row layout instead of a
+   single scrolling list, and carries its own include/exclude toggle so a
+   file can be left out of the approved run without rejecting the whole
+   plan. */
+.reorg-items-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 10px; margin: 8px 0 14px; }
+.reorg-item-card { display: flex; flex-direction: column; gap: 6px; transition: opacity .15s ease; }
+.reorg-item-excluded { opacity: .5; }
+.reorg-item-select { margin: 0; }
+.reorg-item-paths { font-size: .8rem; line-height: 1.4; overflow-wrap: anywhere; }
+.reorg-item-arrow { color: var(--muted); margin: 0 5px; }
 .media-view-toggle { margin-bottom: 14px; }
 .media-view-toggle > button { flex: 0 0 auto; }
 .card-meta { margin-top: 3px; font-size: .7rem; }
@@ -264,6 +281,26 @@ td.mono {
   border-radius: 999px; color: var(--muted); font-size: .65rem; letter-spacing: .04em; vertical-align: 1px;
 }
 .media-roots-add { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); }
+
+/* "Check now" version picker (issue #309) — same delineated-row shape as
+   .media-root-row above: one bordered card per candidate release so six
+   stacked entries read as distinct picks, not a wall of text. */
+.update-candidates { margin-top: 12px; }
+.update-candidate-row {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface-muted); margin-bottom: 8px;
+}
+.update-candidate-row:last-child { margin-bottom: 0; }
+.update-candidate-info { flex: 1; min-width: 0; }
+.update-candidate-version { font-size: .85rem; font-weight: 700; }
+.update-candidate-channel {
+  display: inline-block; margin-left: 7px; padding: 1px 6px; border: 1px solid var(--border);
+  border-radius: 999px; color: var(--muted); font-size: .65rem; letter-spacing: .04em; vertical-align: 1px;
+}
+.update-candidate-channel.beta { color: var(--cyan); }
+.update-candidate-current { margin-left: 7px; color: var(--green); font-size: .68rem; font-weight: 600; }
+.update-candidate-notes, .update-candidate-blocked-reason { font-size: .78rem; color: var(--muted); margin-top: 2px; }
 
 /* Add-media-root modal (issue #252) — browse-only: choose a folder, pick an
    asset type, Add root / Cancel. Same modal shell as the SMB connect modal. */
@@ -866,7 +903,7 @@ li.info-trigger:hover { background: var(--surface-muted); }
   .topbar-actions { display: none; }
   .view-stack { padding: 22px 20px 36px; }
   #tabPanel-metrics, #tabPanel-settings, #tabPanel-swarm, #tabPanel-notifications, #tabPanel-ai { grid-template-columns: 1fr; }
-  .grid, .about-features, .scrape-assist-grid { grid-template-columns: 1fr; }
+  .grid, .about-features, .scrape-assist-grid, .reorg-items-grid { grid-template-columns: 1fr; }
   .media-root-warning { align-items: flex-start; flex-wrap: wrap; }
   .media-root-warning-copy { flex-basis: calc(100% - 42px); }
   .media-root-row, .client-error-row { flex-direction: column; }

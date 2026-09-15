@@ -252,6 +252,29 @@ document.getElementById("runScrapeAssistNowBtn").addEventListener("click", async
 // is cheap enough that this isn't worth persisting. No enable toggle (issue
 // #296): clicking "Scan for cleanup" is itself the permission to use AI for
 // the filenames `classify` can't place on its own.
+//
+// Issue #312: each item in a proposed plan carries its own include/exclude
+// checkbox (`reorgExcluded`, keyed by plan id, holding the excluded `from`
+// paths) so a file can be left out of the approved run. Once a plan finishes
+// applying or undoing, its id goes into `reorgConfirmedIds` so it drops out
+// of the rendered list for good — the panel resets to just the root picker
+// and "Scan for cleanup", with a plain-text confirmation of what happened
+// shown briefly above it (in addition to the toast, which can be missed).
+let reorgExcluded = {};
+let reorgConfirmedIds = new Set();
+let reorgConfirmTimer = null;
+
+function showReorgConfirmation(message, hasErrors) {
+  const el = document.getElementById("aiReorgConfirmMsg");
+  if (!el) return;
+  el.textContent = message;
+  el.className = hasErrors ? "error" : "note";
+  clearTimeout(reorgConfirmTimer);
+  reorgConfirmTimer = setTimeout(() => {
+    el.textContent = "";
+    el.className = "note d-none";
+  }, hasErrors ? 7000 : 5000);
+}
 
 async function refreshReorganize(settings) {
   try {
@@ -274,28 +297,36 @@ async function refreshReorganize(settings) {
 
 function renderReorgPlans(plans) {
   const wrap = document.getElementById("aiReorgPlansList");
-  if (!plans || plans.length === 0) {
+  const visiblePlans = (plans || []).filter(plan => !reorgConfirmedIds.has(plan.id));
+  if (visiblePlans.length === 0) {
     wrap.innerHTML = "";
     return;
   }
-  wrap.innerHTML = plans
+  wrap.innerHTML = visiblePlans
     .slice()
     .reverse()
     .map(plan => {
-      const itemsHtml =
-        plan.items
-          .map(
-            item => `
-        <li>
-          <span class="mono">${esc(item.from)}</span> → ${item.destination_root_label ? `<strong>${esc(item.destination_root_label)}:</strong> ` : ""}<span class="mono">${esc(item.to)}</span>
-          ${item.kind === "orphan" ? '<br><span class="orphan-label"><i class="bi bi-exclamation-triangle"></i> Orphaned — no matching video found, moved out of the way</span>' : ""}
-          ${item.kind === "duplicate" ? '<br><span class="duplicate-label"><i class="bi bi-files"></i> Duplicate of an already-organized file — moved aside, original left untouched</span>' : ""}
-          ${item.ai_assisted ? '<span class="muted ai-assisted-label"> (AI-assisted)</span>' : ""}
-          ${item.year_source === "tmdb" ? '<span class="muted tmdb-year-label"> (year via TMDb)</span>' : ""}
-          ${item.conflict ? `<br><span class="issue-reason">${esc(item.conflict)} — left in place</span>` : ""}
-        </li>`
-          )
-          .join("") || '<li class="muted">Nothing to reorganize — this root already looks consistent.</li>';
+      const itemsHtml = plan.items.length
+        ? `<div class="reorg-items-grid">${plan.items
+            .map(item => {
+              const excludable = !item.conflict;
+              const isExcluded = excludable && reorgExcluded[plan.id]?.has(item.from);
+              const checkboxHtml = excludable
+                ? `<label class="checkbox-label reorg-item-select"><input type="checkbox" class="reorg-item-toggle" data-plan-id="${plan.id}" data-from="${esc(item.from)}" ${isExcluded ? "" : "checked"}>Include</label>`
+                : "";
+              return `
+        <div class="service-card reorg-item-card${isExcluded ? " reorg-item-excluded" : ""}">
+          ${checkboxHtml}
+          <div class="reorg-item-paths mono">${esc(item.from)}<span class="reorg-item-arrow">→</span>${item.destination_root_label ? `<strong>${esc(item.destination_root_label)}:</strong> ` : ""}${esc(item.to)}</div>
+          ${item.kind === "orphan" ? '<span class="orphan-label"><i class="bi bi-exclamation-triangle"></i> Orphaned — no matching video found, moved out of the way</span>' : ""}
+          ${item.kind === "duplicate" ? '<span class="duplicate-label"><i class="bi bi-files"></i> Duplicate of an already-organized file — moved aside, original left untouched</span>' : ""}
+          ${item.ai_assisted ? '<span class="muted ai-assisted-label">AI-assisted</span>' : ""}
+          ${item.year_source === "tmdb" ? '<span class="muted tmdb-year-label">Year via TMDb</span>' : ""}
+          ${item.conflict ? `<span class="issue-reason">${esc(item.conflict)} — left in place</span>` : ""}
+        </div>`;
+            })
+            .join("")}</div>`
+        : '<p class="muted">Nothing to reorganize — this root already looks consistent.</p>';
       const misplacedHtml =
         plan.misplaced && plan.misplaced.length
           ? `
@@ -335,7 +366,7 @@ function renderReorgPlans(plans) {
             <strong>${esc(plan.root_label)}</strong>
             <span class="muted">${plan.items.length} item(s), ${plan.ai_assisted_count} AI-assisted, ${plan.tmdb_year_count} TMDb-year, ${plan.orphan_count} orphaned, ${plan.duplicate_count} duplicate(s), ${plan.conflict_count} conflict(s) — <em>${esc(plan.status)}</em></span>
           </div>
-          <ul class="issue-list plan-items">${itemsHtml}</ul>
+          ${itemsHtml}
           ${misplacedHtml}
           ${summaryHtml}
           ${undoSummaryHtml}
@@ -344,12 +375,23 @@ function renderReorgPlans(plans) {
     })
     .join("");
 
+  wrap.querySelectorAll(".reorg-item-toggle").forEach(cb => {
+    cb.addEventListener("change", () => {
+      const id = Number(cb.dataset.planId);
+      const from = cb.dataset.from;
+      if (!reorgExcluded[id]) reorgExcluded[id] = new Set();
+      if (cb.checked) reorgExcluded[id].delete(from);
+      else reorgExcluded[id].add(from);
+      cb.closest(".reorg-item-card")?.classList.toggle("reorg-item-excluded", !cb.checked);
+    });
+  });
   wrap.querySelectorAll(".approve-reorg-btn").forEach(btn => {
     btn.addEventListener("click", async () => {
       const id = Number(btn.dataset.planId);
+      const excludedPaths = Array.from(reorgExcluded[id] || []);
       btn.disabled = true;
       try {
-        await invoke("approve_ai_reorg_plan", { id });
+        await invoke("approve_ai_reorg_plan", { id, excludedPaths });
         showToast("Reorganization started in the background. You’ll be notified when it finishes.", "progress");
         await refreshAi();
       } catch (err) {
@@ -363,6 +405,7 @@ function renderReorgPlans(plans) {
       const id = Number(btn.dataset.planId);
       try {
         await invoke("reject_ai_reorg_plan", { id });
+        delete reorgExcluded[id];
         await refreshAi();
       } catch (err) {
         showToast(String(err), "error");
@@ -393,6 +436,9 @@ listen("ai-reorganize-finished", async ({ payload }) => {
     hasErrors ? "warning" : "success",
     { duration: hasErrors ? 7000 : 4500 }
   );
+  showReorgConfirmation(`“${payload.root_label}” reorganized — ${detail}`, hasErrors);
+  reorgConfirmedIds.add(payload.id);
+  delete reorgExcluded[payload.id];
   await Promise.all([refreshAi(), refreshLibrary(), refreshNotificationBadge()]);
 });
 
@@ -404,6 +450,9 @@ listen("ai-reorganize-undone", async ({ payload }) => {
     hasErrors ? "warning" : "success",
     { duration: hasErrors ? 7000 : 4500 }
   );
+  showReorgConfirmation(`“${payload.root_label}” undo — ${detail}`, hasErrors);
+  reorgConfirmedIds.add(payload.id);
+  delete reorgExcluded[payload.id];
   await Promise.all([refreshAi(), refreshLibrary(), refreshNotificationBadge()]);
 });
 

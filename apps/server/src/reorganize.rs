@@ -44,15 +44,24 @@ const ORPHAN_ARTWORK_EXTS: &[&str] = &["jpg", "jpeg", "png"];
 /// collide with it (see `scan_root`'s orphan pass doc comment).
 const ORPHANED_FOLDER: &str = "_orphaned";
 
+/// The top-level holding folder confirmed content duplicates are proposed
+/// into (issue #299) — mirrors `_orphaned/`: never deleted, and the original
+/// relative path is preserved underneath so it can never collide with
+/// anything else already there. See `resolve_destination`.
+const DUPLICATES_FOLDER: &str = "_duplicates";
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ReorgItem {
     /// Path relative to the scanned root, forward-slashed.
     pub from: String,
     pub to: String,
-    /// `"video"`, `"subtitle"` (a sidecar riding along with its video), or
+    /// `"video"`, `"subtitle"` (a sidecar riding along with its video),
     /// `"orphan"` (issue #298: a subtitle/artwork leftover with no matching
     /// video anywhere in the root, proposed for a move into `_orphaned/`
-    /// rather than a rename).
+    /// rather than a rename), or `"duplicate"` (issue #299: the file
+    /// already at the proposed destination is byte-identical — this item
+    /// is proposed for a move into `_duplicates/` instead, and the
+    /// already-canonical file at the original destination is left alone).
     pub kind: &'static str,
     pub ai_assisted: bool,
     /// `Some("tmdb")` when `classify` found a movie title but no year in the
@@ -80,6 +89,11 @@ pub struct ReorgPlan {
     /// Count of `kind == "orphan"` items — subtitle/artwork leftovers with
     /// no matching video anywhere in the root (issue #298).
     pub orphan_count: u32,
+    /// Count of `kind == "duplicate"` items — confirmed byte-identical
+    /// duplicates of a file already at its canonical destination, proposed
+    /// for a move into `_duplicates/` rather than left as a dead-end
+    /// conflict (issue #299).
+    pub duplicate_count: u32,
     /// Every deterministic Plex-conformance problem found in the root
     /// (issue #247) — the complete list, unlike the bounded best-effort
     /// subset a library scan reports. Each carries the current path, the
@@ -150,22 +164,24 @@ pub async fn scan_root(
             ai_assisted_count += 1;
         }
 
-        let conflict = conflict_reason(root, &canonical, &mut planned_targets);
+        let (to, kind, conflict) =
+            resolve_destination(root, &unix_relative, &canonical, "video", &mut planned_targets).await;
         items.push(ReorgItem {
             from: unix_relative.clone(),
-            to: canonical.clone(),
-            kind: "video",
+            to,
+            kind,
             ai_assisted,
             year_source,
             conflict,
         });
 
         for (sub_from, sub_to) in find_sidecar_moves(root, &unix_relative, &canonical) {
-            let conflict = conflict_reason(root, &sub_to, &mut planned_targets);
+            let (to, kind, conflict) =
+                resolve_destination(root, &sub_from, &sub_to, "subtitle", &mut planned_targets).await;
             items.push(ReorgItem {
                 from: sub_from,
-                to: sub_to,
-                kind: "subtitle",
+                to,
+                kind,
                 ai_assisted,
                 year_source,
                 conflict,
@@ -174,11 +190,12 @@ pub async fn scan_root(
     }
 
     for (orphan_from, orphan_to) in find_orphans(&video_files, &items) {
-        let conflict = conflict_reason(root, &orphan_to, &mut planned_targets);
+        let (to, kind, conflict) =
+            resolve_destination(root, &orphan_from, &orphan_to, "orphan", &mut planned_targets).await;
         items.push(ReorgItem {
             from: orphan_from,
-            to: orphan_to,
-            kind: "orphan",
+            to,
+            kind,
             ai_assisted: false,
             year_source: None,
             conflict,
@@ -202,6 +219,7 @@ pub async fn scan_root(
 
     let conflict_count = items.iter().filter(|i| i.conflict.is_some()).count() as u32;
     let orphan_count = items.iter().filter(|i| i.kind == "orphan").count() as u32;
+    let duplicate_count = items.iter().filter(|i| i.kind == "duplicate").count() as u32;
     Ok(ReorgPlan {
         root_label: root_label.to_string(),
         items,
@@ -209,6 +227,7 @@ pub async fn scan_root(
         tmdb_year_count,
         conflict_count,
         orphan_count,
+        duplicate_count,
         validation,
     })
 }
@@ -330,14 +349,77 @@ async fn fill_missing_movie_year(
     }
 }
 
-fn conflict_reason(root: &Path, target: &str, planned_targets: &mut HashSet<String>) -> Option<String> {
-    if root.join(target).exists() {
-        Some("a file already exists at the destination".to_string())
-    } else if !planned_targets.insert(target.to_string()) {
+/// Resolves what a proposed `source -> target` move should actually become
+/// once what's already on disk (and what this plan has already claimed) is
+/// accounted for. Returns the item's final `to`, `kind`, and `conflict` —
+/// `kind` stays `default_kind` unless the destination turns out to be a
+/// confirmed content duplicate (issue #299), in which case it becomes
+/// `"duplicate"` and `to` is redirected into `DUPLICATES_FOLDER`.
+async fn resolve_destination(
+    root: &Path,
+    source: &str,
+    target: &str,
+    default_kind: &'static str,
+    planned_targets: &mut HashSet<String>,
+) -> (String, &'static str, Option<String>) {
+    let dest_path = root.join(target);
+    if dest_path.exists() {
+        if files_are_identical(root.join(source), dest_path).await {
+            return duplicate_destination(source, planned_targets);
+        }
+        return (
+            target.to_string(),
+            default_kind,
+            Some("a file already exists at the destination".to_string()),
+        );
+    }
+    if !planned_targets.insert(target.to_string()) {
+        return (
+            target.to_string(),
+            default_kind,
+            Some("likely a duplicate — another item in this plan already targets this path".to_string()),
+        );
+    }
+    (target.to_string(), default_kind, None)
+}
+
+/// Redirects a confirmed duplicate's source into `_duplicates/<original
+/// relative path>` (issue #299), preserving its original scene-release name
+/// so it stays traceable back to `_cleanup_leftovers/`-style source
+/// folders. Still registered in `planned_targets` so two distinct sources
+/// can never collide on the same `_duplicates/` path.
+fn duplicate_destination(source: &str, planned_targets: &mut HashSet<String>) -> (String, &'static str, Option<String>) {
+    let target = format!("{DUPLICATES_FOLDER}/{source}");
+    let conflict = if !planned_targets.insert(target.clone()) {
         Some("likely a duplicate — another item in this plan already targets this path".to_string())
     } else {
         None
-    }
+    };
+    (target, "duplicate", conflict)
+}
+
+/// Compares two files by content fingerprint (issue #299) — the same
+/// `swarm_core::fingerprint` tool already used at scale to find and safely
+/// delete duplicate `library_entries` rows in this exact library: content-
+/// based, path-independent, negligible collision probability. Run in
+/// `spawn_blocking` like every other fingerprint read in this codebase (see
+/// `swarm_media::scan`): this is synchronous std::fs I/O that can be a slow
+/// SMB/NFS round trip and shares a worker thread with request handling. Any
+/// I/O error (permissions, a file that vanished mid-scan) is treated as
+/// "not identical" — falls back to today's plain-conflict behavior rather
+/// than ever guessing.
+async fn files_are_identical(a: PathBuf, b: PathBuf) -> bool {
+    tokio::task::spawn_blocking(move || -> std::io::Result<bool> {
+        if std::fs::metadata(&a)?.len() != std::fs::metadata(&b)?.len() {
+            return Ok(false);
+        }
+        let fp_a = swarm_core::fingerprint::fingerprint_file(&a)?;
+        let fp_b = swarm_core::fingerprint::fingerprint_file(&b)?;
+        Ok(fp_a == fp_b)
+    })
+    .await
+    .unwrap_or(Ok(false))
+    .unwrap_or(false)
 }
 
 fn is_confident(c: &Classified) -> bool {
@@ -741,6 +823,53 @@ mod tests {
         let plan = scan_root("local", dir.path(), None, None).await.unwrap();
         let video = plan.items.iter().find(|i| i.kind == "video").expect("video item");
         assert!(video.conflict.is_some());
+        assert_eq!(video.kind, "video");
+        assert_eq!(plan.conflict_count, 1);
+        assert_eq!(plan.duplicate_count, 0);
+    }
+
+    // --- True duplicate detection by content fingerprint (issue #299) ---
+
+    #[tokio::test]
+    async fn a_byte_identical_conflict_is_proposed_as_a_duplicate_move_and_never_touches_the_canonical_file() {
+        let dir = tempfile::tempdir().unwrap();
+        // Already organized correctly...
+        write(dir.path(), "Heat (1995)/Heat (1995).mkv", "same bytes");
+        // ...and a scene-release-named leftover with byte-identical content,
+        // the shape of `Movies/_cleanup_leftovers/` from the Plex
+        // compatibility audit.
+        write(dir.path(), "Heat.1995.BDRip.x264-GROUP.mkv", "same bytes");
+
+        let plan = scan_root("local", dir.path(), None, None).await.unwrap();
+
+        let duplicate = plan.items.iter().find(|i| i.kind == "duplicate").expect("duplicate item");
+        assert_eq!(duplicate.from, "Heat.1995.BDRip.x264-GROUP.mkv");
+        assert_eq!(duplicate.to, "_duplicates/Heat.1995.BDRip.x264-GROUP.mkv");
+        assert!(duplicate.conflict.is_none());
+        assert_eq!(plan.duplicate_count, 1);
+        assert_eq!(plan.conflict_count, 0);
+        assert_eq!(
+            fs::read_to_string(dir.path().join("Heat (1995)/Heat (1995).mkv")).unwrap(),
+            "same bytes"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_conflict_with_different_content_is_left_as_a_plain_conflict_not_a_duplicate() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "Heat (1995)/Heat (1995).mkv", "the real thing");
+        write(dir.path(), "Heat.1995.BDRip.x264-GROUP.mkv", "an unrelated remux");
+
+        let plan = scan_root("local", dir.path(), None, None).await.unwrap();
+
+        let video = plan.items.iter().find(|i| i.kind == "video").expect("video item");
+        assert_eq!(video.from, "Heat.1995.BDRip.x264-GROUP.mkv");
+        assert_eq!(
+            video.conflict.as_deref(),
+            Some("a file already exists at the destination")
+        );
+        assert!(plan.items.iter().all(|i| i.kind != "duplicate"));
+        assert_eq!(plan.duplicate_count, 0);
         assert_eq!(plan.conflict_count, 1);
     }
 

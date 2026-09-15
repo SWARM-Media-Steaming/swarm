@@ -1939,6 +1939,9 @@ struct ReorgPlanView {
     /// Count of `kind == "orphan"` items — subtitle/artwork leftovers with
     /// no matching video anywhere in the root (issue #298).
     orphan_count: u32,
+    /// Count of `kind == "duplicate"` items — confirmed byte-identical
+    /// duplicates proposed for a move into `_duplicates/` (issue #299).
+    duplicate_count: u32,
     /// Deterministic Plex-conformance problems found in the root (issue
     /// #247) — surfaced to the AI tab alongside the proposed moves.
     validation: Vec<swarm_media::plex::PlexValidationIssue>,
@@ -1971,6 +1974,7 @@ fn reorg_plan_view(
         tmdb_year_count: plan.tmdb_year_count,
         conflict_count: plan.conflict_count,
         orphan_count: plan.orphan_count,
+        duplicate_count: plan.duplicate_count,
         validation: plan.validation.clone(),
         status: status.to_string(),
         apply_summary: outcome.map(|o| ApplySummaryView {

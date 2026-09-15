@@ -200,6 +200,8 @@ td.mono {
 .orphan-label { font-size: .68rem; color: color-mix(in srgb, var(--amber) 78%, var(--text)); }
 .duplicate-label { font-size: .68rem; color: color-mix(in srgb, var(--cyan) 78%, var(--text)); }
 .ai-reorg-plan { margin-top: 12px; }
+.misplaced-heading { color: color-mix(in srgb, var(--amber) 78%, var(--text)); }
+.issue-list.misplaced-items { background: color-mix(in srgb, var(--amber) 6%, transparent); }
 .plan-summary { justify-content: space-between; align-items: center; }
 .plan-items, .plan-actions { margin-top: 8px; }
 .media-view-toggle { margin-bottom: 14px; }

@@ -83,6 +83,105 @@ pub struct ReorgItem {
     pub conflict: Option<String>,
 }
 
+/// One currently-configured media root's label and the [`MediaKind`] it's
+/// expected to hold, derived by the caller from `Settings::media_roots`'
+/// `RootAssetType` (`Movies` → `Some(MediaKind::Movie)`, `Shows` →
+/// `Some(MediaKind::Episode)`, `Music` → `Some(MediaKind::Track)`, `Mixed`
+/// and `PhotosVideos` → `None`, since neither imposes a classifiable
+/// expectation). Kept as this crate's own lightweight shape — `settings.rs`
+/// lives only in the gui binary crate, not this library crate — rather than
+/// importing `RootAssetType` directly (issue #301).
+#[derive(Debug, Clone)]
+pub struct RootExpectation {
+    pub label: String,
+    pub expected_kind: Option<MediaKind>,
+}
+
+/// One file whose classified kind doesn't match the asset type of the root
+/// it's currently sitting under — e.g. a whole TV show bundle sitting
+/// inside a root configured for movies (issue #301, see
+/// `docs/PLEX_COMPATIBILITY_AUDIT.md`). Detection and reporting only:
+/// deliberately a distinct type from [`ReorgItem`] with no `conflict`
+/// field and no destination path on the *current* root, so it can never be
+/// folded into a [`ReorgPlan`]'s `items` or passed to `apply_plan` — a
+/// cross-root move needs copy+verify+delete against a possibly separate
+/// filesystem/mount, not a cheap `fs::rename`, and that's out of scope
+/// here on purpose (see the module doc comment).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MisplacedItem {
+    /// Path relative to the scanned root, forward-slashed.
+    pub path: String,
+    /// `"movie"`, `"episode"`, or `"track"` — the kind `classify` assigned.
+    pub kind: &'static str,
+    /// The label of the root this file is currently sitting under.
+    pub current_root_label: String,
+    /// The label of the one currently-configured root whose asset type
+    /// actually matches this file's classified kind.
+    pub correct_root_label: String,
+}
+
+/// Walks `root` and flags every media file whose classified kind doesn't
+/// match `root_label`'s expected kind in `all_roots`, but only when exactly
+/// one *other* currently-configured root's expected kind matches — with
+/// zero or more than one candidate the correct destination is ambiguous, so
+/// the file is left out of the report entirely rather than guessed at (see
+/// the issue's non-negotiable constraint). A root with no expectation
+/// (`Mixed`/`PhotosVideos`, or a label `all_roots` doesn't recognize) never
+/// reports anything, since nothing about it is "wrong".
+pub fn find_misplaced_content(
+    root_label: &str,
+    root: &Path,
+    all_roots: &[RootExpectation],
+) -> std::io::Result<Vec<MisplacedItem>> {
+    let Some(current) = all_roots.iter().find(|r| r.label == root_label) else {
+        return Ok(Vec::new());
+    };
+    let Some(current_expected) = current.expected_kind else {
+        return Ok(Vec::new());
+    };
+
+    let mut all_files = Vec::new();
+    walk(root, root, &mut all_files)?;
+
+    let mut misplaced = Vec::new();
+    for relative in &all_files {
+        let unix_relative = to_unix(relative);
+        if classify::media_extension(&unix_relative).is_none() {
+            continue;
+        }
+        let Some(classified) = classify::classify(&unix_relative) else {
+            continue;
+        };
+        if classified.kind == current_expected {
+            continue;
+        }
+        let mut candidates = all_roots
+            .iter()
+            .filter(|r| r.label != root_label && r.expected_kind == Some(classified.kind));
+        let Some(correct) = candidates.next() else {
+            continue; // no configured root of the right kind — nowhere to point at
+        };
+        if candidates.next().is_some() {
+            continue; // ambiguous — more than one root of the right kind
+        }
+        misplaced.push(MisplacedItem {
+            path: unix_relative,
+            kind: media_kind_label(classified.kind),
+            current_root_label: root_label.to_string(),
+            correct_root_label: correct.label.clone(),
+        });
+    }
+    Ok(misplaced)
+}
+
+fn media_kind_label(kind: MediaKind) -> &'static str {
+    match kind {
+        MediaKind::Movie => "movie",
+        MediaKind::Episode => "episode",
+        MediaKind::Track => "track",
+    }
+}
+
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct ReorgPlan {
     pub root_label: String,
@@ -1153,5 +1252,99 @@ mod tests {
         let plan = scan_root("local", dir.path(), None, None).await.unwrap();
 
         assert!(plan.items.iter().all(|i| i.kind != "track"));
+    }
+
+    // --- Wrong-media-root detection, report only (issue #301) ---
+
+    #[tokio::test]
+    async fn flags_an_episode_shaped_file_under_a_movies_root_and_names_the_shows_root() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "Dragon Ball Super/Dragon.Ball.Super.S01E01.mkv", "x");
+        let roots = vec![
+            RootExpectation {
+                label: "Movies".to_string(),
+                expected_kind: Some(MediaKind::Movie),
+            },
+            RootExpectation {
+                label: "Shows".to_string(),
+                expected_kind: Some(MediaKind::Episode),
+            },
+        ];
+
+        let misplaced = find_misplaced_content("Movies", dir.path(), &roots).unwrap();
+
+        assert_eq!(misplaced.len(), 1);
+        assert_eq!(misplaced[0].path, "Dragon Ball Super/Dragon.Ball.Super.S01E01.mkv");
+        assert_eq!(misplaced[0].kind, "episode");
+        assert_eq!(misplaced[0].current_root_label, "Movies");
+        assert_eq!(misplaced[0].correct_root_label, "Shows");
+    }
+
+    #[tokio::test]
+    async fn does_not_flag_content_that_matches_its_own_roots_expected_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "10.Cloverfield.Lane.2016.1080p.BluRay.x264-GROUP.mkv", "x");
+        let roots = vec![RootExpectation {
+            label: "Movies".to_string(),
+            expected_kind: Some(MediaKind::Movie),
+        }];
+
+        let misplaced = find_misplaced_content("Movies", dir.path(), &roots).unwrap();
+
+        assert!(misplaced.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_mixed_root_never_reports_anything() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "Dragon Ball Super/Dragon.Ball.Super.S01E01.mkv", "x");
+        let roots = vec![
+            RootExpectation {
+                label: "Everything".to_string(),
+                expected_kind: None,
+            },
+            RootExpectation {
+                label: "Shows".to_string(),
+                expected_kind: Some(MediaKind::Episode),
+            },
+        ];
+
+        let misplaced = find_misplaced_content("Everything", dir.path(), &roots).unwrap();
+
+        assert!(misplaced.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_ambiguous_correct_root_is_left_out_of_the_report() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "Dragon Ball Super/Dragon.Ball.Super.S01E01.mkv", "x");
+        let roots = vec![
+            RootExpectation {
+                label: "Movies".to_string(),
+                expected_kind: Some(MediaKind::Movie),
+            },
+            RootExpectation {
+                label: "Shows A".to_string(),
+                expected_kind: Some(MediaKind::Episode),
+            },
+            RootExpectation {
+                label: "Shows B".to_string(),
+                expected_kind: Some(MediaKind::Episode),
+            },
+        ];
+
+        let misplaced = find_misplaced_content("Movies", dir.path(), &roots).unwrap();
+
+        assert!(misplaced.is_empty());
+    }
+
+    /// Proves `MisplacedItem` is a structurally separate type from
+    /// `ReorgItem`, not merely a variant carrying a read-only flag:
+    /// `apply_plan`'s signature only accepts `&[ReorgItem]`, so this
+    /// assignment only compiles because the types are distinct — a
+    /// `Vec<MisplacedItem>` could not be substituted here.
+    #[test]
+    fn misplaced_items_can_never_be_passed_to_apply_plan() {
+        let _: fn(&Path, &[ReorgItem]) -> ApplyOutcome = apply_plan;
     }
 }

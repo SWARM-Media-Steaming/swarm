@@ -14,11 +14,11 @@
 //! once on the "Enabled AI tools" panel) and the explicit action itself
 //! (clicking "Ask AI"/"Check now"/"Scan for cleanup" — direct permission).
 
-use super::harness::{test_app, test_app_with_media_root};
+use super::harness::{empty_media_root_dir, test_app, test_app_with_media_root};
 use crate::{
-    ai_reorganize_scan, ai_scrape_assist, approve_ai_reorg_plan, get_settings, list_ai_reorg_plans,
-    list_scrape_issues, reject_ai_reorg_plan, run_scrape_assist_now, set_ai_provider_api_key,
-    set_ai_provider_enabled, set_ai_provider_model, test_ai_provider,
+    add_media_root, ai_reorganize_scan, ai_scrape_assist, approve_ai_reorg_plan, get_settings,
+    list_ai_reorg_plans, list_scrape_issues, reject_ai_reorg_plan, run_scrape_assist_now,
+    set_ai_provider_api_key, set_ai_provider_enabled, set_ai_provider_model, test_ai_provider,
 };
 use tauri::Manager;
 
@@ -169,6 +169,42 @@ async fn ai_reorganize_scan_proposes_a_plan_for_a_messy_filename_with_no_ai_need
     let plans = list_ai_reorg_plans(app.state()).await.expect("list_ai_reorg_plans should succeed");
     assert_eq!(plans.len(), 1);
     assert_eq!(plans[0].id, plan.id);
+}
+
+/// Issue #301: a TV show bundle sitting in a `Movies`-typed root, with a
+/// second `Shows`-typed root also configured, is reported (not moved) as
+/// belonging in the other root — and never shows up as a normal move
+/// proposal for the wrong reason.
+#[tokio::test]
+async fn ai_reorganize_scan_reports_an_episode_shaped_file_sitting_in_the_movies_root() {
+    let (test_app, movies_dir) = test_app_with_media_root().await;
+    let app = test_app.handle();
+    let shows_dir = empty_media_root_dir();
+    add_media_root(
+        app.clone(),
+        app.state(),
+        "Shows".to_string(),
+        shows_dir.path().to_string_lossy().to_string(),
+        Some("shows".to_string()),
+    )
+    .await
+    .expect("add_media_root should succeed for the second, Shows-typed root");
+
+    std::fs::write(
+        movies_dir.path().join("Dragon.Ball.Super.S01E01.mkv"),
+        b"fake video bytes",
+    )
+    .expect("write fixture episode file into the Movies root");
+
+    let plan = ai_reorganize_scan(app.clone(), app.state(), "Movies".to_string())
+        .await
+        .expect("ai_reorganize_scan should succeed");
+
+    assert_eq!(plan.misplaced.len(), 1);
+    assert_eq!(plan.misplaced[0].path, "Dragon.Ball.Super.S01E01.mkv");
+    assert_eq!(plan.misplaced[0].kind, "episode");
+    assert_eq!(plan.misplaced[0].current_root_label, "Movies");
+    assert_eq!(plan.misplaced[0].correct_root_label, "Shows");
 }
 
 #[tokio::test]

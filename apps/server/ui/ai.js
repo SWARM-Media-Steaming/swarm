@@ -295,6 +295,22 @@ function renderReorgPlans(plans) {
         </li>`
           )
           .join("") || '<li class="muted">Nothing to reorganize — this root already looks consistent.</li>';
+      const misplacedHtml =
+        plan.misplaced && plan.misplaced.length
+          ? `
+        <h3 class="review-heading misplaced-heading"><i class="bi bi-signpost-split-fill"></i> ${plan.misplaced.length} item(s) belong in a different library</h3>
+        <ul class="issue-list misplaced-items">${plan.misplaced
+          .map(
+            item => `
+        <li>
+          <span class="mono">${esc(item.path)}</span>
+          <br><span class="muted">Classified as ${esc(item.kind)} — belongs under “<strong>${esc(
+              item.correct_root_label
+            )}</strong>”, not moved automatically</span>
+        </li>`
+          )
+          .join("")}</ul>`
+          : "";
       const summaryHtml = plan.apply_summary
         ? `<p class="muted">${plan.apply_summary.applied} moved, ${plan.apply_summary.skipped} skipped.${
             plan.apply_summary.errors.length ? `<br>${plan.apply_summary.errors.map(esc).join("<br>")}` : ""
@@ -312,6 +328,7 @@ function renderReorgPlans(plans) {
             <span class="muted">${plan.items.length} item(s), ${plan.ai_assisted_count} AI-assisted, ${plan.tmdb_year_count} TMDb-year, ${plan.orphan_count} orphaned, ${plan.duplicate_count} duplicate(s), ${plan.conflict_count} conflict(s) — <em>${esc(plan.status)}</em></span>
           </div>
           <ul class="issue-list plan-items">${itemsHtml}</ul>
+          ${misplacedHtml}
           ${summaryHtml}
           <div class="row plan-actions">${actionsHtml}</div>
         </div>`;

@@ -76,9 +76,28 @@ struct AppState {
 
 struct StoredReorgPlan {
     plan: reorganize::ReorgPlan,
+    /// Wrong-media-root findings for this same root (issue #301) — computed
+    /// once alongside `plan` at scan time, kept as its own field rather than
+    /// folded into `plan.items` since `reorganize::MisplacedItem` is a
+    /// structurally distinct, never-`apply_plan`-reachable type.
+    misplaced: Vec<reorganize::MisplacedItem>,
     root_path: PathBuf,
     status: &'static str,
     apply_outcome: Option<reorganize::ApplyOutcome>,
+}
+
+/// Maps a configured root's declared asset type to the `MediaKind` it's
+/// expected to hold, for `reorganize::find_misplaced_content` (issue #301).
+/// `Mixed` and `PhotosVideos` impose no classifiable expectation — neither
+/// maps onto a `MediaKind` — so a root declared either way never reports
+/// its own content as misplaced.
+fn expected_media_kind(asset_type: RootAssetType) -> Option<MediaKind> {
+    match asset_type {
+        RootAssetType::Movies => Some(MediaKind::Movie),
+        RootAssetType::Shows => Some(MediaKind::Episode),
+        RootAssetType::Music => Some(MediaKind::Track),
+        RootAssetType::Mixed | RootAssetType::PhotosVideos => None,
+    }
 }
 
 fn acquire_sleep_inhibitor() -> Option<keepawake::KeepAwake> {
@@ -1945,6 +1964,11 @@ struct ReorgPlanView {
     /// Deterministic Plex-conformance problems found in the root (issue
     /// #247) — surfaced to the AI tab alongside the proposed moves.
     validation: Vec<swarm_media::plex::PlexValidationIssue>,
+    /// Content classified as belonging under a *different* configured root
+    /// entirely (issue #301) — a separate, information-only report, never
+    /// mixed into `items`/`conflict_count`/etc. and never reachable by
+    /// `approve_ai_reorg_plan`.
+    misplaced: Vec<reorganize::MisplacedItem>,
     status: String,
     apply_summary: Option<ApplySummaryView>,
 }
@@ -1963,6 +1987,7 @@ struct ReorgFinishedEvent {
 fn reorg_plan_view(
     id: u64,
     plan: &reorganize::ReorgPlan,
+    misplaced: &[reorganize::MisplacedItem],
     status: &str,
     outcome: Option<&reorganize::ApplyOutcome>,
 ) -> ReorgPlanView {
@@ -1976,6 +2001,7 @@ fn reorg_plan_view(
         orphan_count: plan.orphan_count,
         duplicate_count: plan.duplicate_count,
         validation: plan.validation.clone(),
+        misplaced: misplaced.to_vec(),
         status: status.to_string(),
         apply_summary: outcome.map(|o| ApplySummaryView {
             applied: o.applied,
@@ -2021,12 +2047,36 @@ async fn ai_reorganize_scan<R: tauri::Runtime>(
         .await
         .map_err(|e| e.to_string())?;
 
+    // Cross-root "wrong library" detection (issue #301) — report only,
+    // computed against every currently-configured root, never folded into
+    // `plan.items`. Errors reading the root are ignored here rather than
+    // failing the whole scan: `scan_root` above already succeeded reading
+    // the same tree, so this is best-effort on top of a result the user is
+    // getting either way.
+    let all_roots: Vec<reorganize::RootExpectation> = settings
+        .media_roots
+        .iter()
+        .map(|r| reorganize::RootExpectation {
+            label: r.label.clone(),
+            expected_kind: expected_media_kind(r.asset_type),
+        })
+        .collect();
+    let root_path_for_misplaced = root_path.clone();
+    let root_label_for_misplaced = root_label.clone();
+    let misplaced = tokio::task::spawn_blocking(move || {
+        reorganize::find_misplaced_content(&root_label_for_misplaced, &root_path_for_misplaced, &all_roots)
+    })
+    .await
+    .unwrap_or(Ok(Vec::new()))
+    .unwrap_or_default();
+
     let id = state.next_reorg_plan_id.fetch_add(1, Ordering::Relaxed);
-    let view = reorg_plan_view(id, &plan, "proposed", None);
+    let view = reorg_plan_view(id, &plan, &misplaced, "proposed", None);
     state.reorg_plans.lock().await.insert(
         id,
         StoredReorgPlan {
             plan,
+            misplaced,
             root_path,
             status: "proposed",
             apply_outcome: None,
@@ -2040,7 +2090,9 @@ async fn list_ai_reorg_plans(state: tauri::State<'_, AppState>) -> Result<Vec<Re
     let plans = state.reorg_plans.lock().await;
     let mut views: Vec<ReorgPlanView> = plans
         .iter()
-        .map(|(id, stored)| reorg_plan_view(*id, &stored.plan, stored.status, stored.apply_outcome.as_ref()))
+        .map(|(id, stored)| {
+            reorg_plan_view(*id, &stored.plan, &stored.misplaced, stored.status, stored.apply_outcome.as_ref())
+        })
         .collect();
     views.sort_by_key(|v| v.id);
     Ok(views)
@@ -2068,7 +2120,7 @@ async fn approve_ai_reorg_plan<R: tauri::Runtime>(
         (
             stored.root_path.clone(),
             stored.plan.items.clone(),
-            reorg_plan_view(id, &stored.plan, stored.status, None),
+            reorg_plan_view(id, &stored.plan, &stored.misplaced, stored.status, None),
         )
     };
 

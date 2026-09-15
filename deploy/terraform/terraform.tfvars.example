@@ -8,3 +8,16 @@ domain_name = "example.com"
 # instance_type   = "t3.micro"
 # environment     = "production"
 # relay_port      = 8443
+
+# Oracle Cloud: fallback relay (Always Free tier). See the README for how to
+# obtain these from the OCI console.
+oci_tenancy_ocid = "ocid1.tenancy.oc1..example"
+oci_user_ocid    = "ocid1.user.oc1..example"
+oci_username     = "you@example.com"
+oci_fingerprint  = "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99"
+oci_region       = "us-ashburn-1"
+
+# oci_private_key_path    = "~/.oci/oci_api_key.pem"
+# oci_compartment_ocid    = "ocid1.compartment.oc1..example"
+# relay_ssh_public_key    = "ssh-ed25519 AAAA... you@example.com"
+# relay_ssh_allowed_cidrs = ["203.0.113.4/32"]

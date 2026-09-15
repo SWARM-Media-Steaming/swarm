@@ -1,0 +1,77 @@
+#!/bin/bash
+set -euo pipefail
+
+dnf install -y dnf-utils firewalld
+dnf config-manager --add-repo https://download.docker.com/linux/oracle/docker-ce.repo
+dnf install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+systemctl enable --now docker
+systemctl enable --now firewalld
+
+# Oracle Linux images ship firewalld active by default; the OCI security
+# list controls perimeter access, but the host firewall still drops the
+# relay port unless it's opened here too.
+firewall-cmd --permanent --add-port=${relay_port}/tcp
+firewall-cmd --permanent --add-port=${relay_port}/udp
+firewall-cmd --reload
+
+mkdir -p /opt/swarm-relay
+cat >/opt/swarm-relay/compose.yaml <<COMPOSE
+name: swarm-relay
+
+services:
+  relay-server:
+    image: ${registry_host}/${registry_repository}:${image_tag}
+    restart: unless-stopped
+    init: true
+    environment:
+      RELAY_BIND: 0.0.0.0:${relay_port}
+      RELAY_PUBLIC_HOST: ${relay_domain}
+      RELAY_PUBLIC_PORT: ${relay_port}
+    ports:
+      - "${relay_port}:${relay_port}/tcp"
+      - "${relay_port}:${relay_port}/udp"
+COMPOSE
+
+cat >/usr/local/bin/swarm-relay-deploy <<'SCRIPT'
+#!/bin/bash
+set -euo pipefail
+echo '${registry_token}' | docker login ${registry_host} --username '${registry_username}' --password-stdin
+
+if docker compose --project-directory /opt/swarm-relay pull; then
+  docker compose --project-directory /opt/swarm-relay up --detach
+fi
+SCRIPT
+chmod 0700 /usr/local/bin/swarm-relay-deploy
+
+cat >/etc/systemd/system/swarm-relay.service <<'UNIT'
+[Unit]
+Description=SWARM fallback relay container
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/swarm-relay
+ExecStart=/usr/local/bin/swarm-relay-deploy
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+cat >/etc/systemd/system/swarm-relay.timer <<'TIMER'
+[Unit]
+Description=Periodically reconcile the SWARM relay container
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+TIMER
+
+systemctl daemon-reload
+systemctl enable --now swarm-relay.timer
+systemctl start swarm-relay.service

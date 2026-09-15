@@ -2469,19 +2469,24 @@ async fn list_ai_reorg_plans(state: tauri::State<'_, AppState>) -> Result<Vec<Re
     Ok(views)
 }
 
-/// Applies every non-conflicting item in a still-`proposed` plan (see
-/// `reorganize::apply_plan` — renames files, removes only emptied source
-/// directories, and never overwrites), records a notification either way,
-/// and kicks off a rescan so the library picks up the new layout. Filesystem
-/// work runs on a blocking thread since `apply_plan` is synchronous I/O over
-/// potentially many files.
+/// Applies every non-conflicting, non-excluded item in a still-`proposed`
+/// plan (see `reorganize::apply_plan` — renames files, removes only emptied
+/// source directories, and never overwrites), records a notification either
+/// way, and kicks off a rescan so the library picks up the new layout.
+/// `excluded_paths` (each a `ReorgItem::from`) lets the review UI deselect
+/// individual items before approving (issue #312) — a deselected item is
+/// simply never attempted, left exactly as it was, and is neither counted
+/// nor reported in the outcome. Filesystem work runs on a blocking thread
+/// since `apply_plan` is synchronous I/O over potentially many files.
 #[tauri::command]
 async fn approve_ai_reorg_plan<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     state: tauri::State<'_, AppState>,
     id: u64,
+    excluded_paths: Vec<String>,
 ) -> Result<ReorgPlanView, String> {
     let core = state.core(&app).await?;
+    let excluded: HashSet<String> = excluded_paths.into_iter().collect();
     let (root_path, destination_roots, items, affected_labels, view) = {
         let mut plans = state.reorg_plans.lock().await;
         let stored = plans.get_mut(&id).ok_or_else(|| "reorganize plan not found".to_string())?;
@@ -2500,10 +2505,17 @@ async fn approve_ai_reorg_plan<R: tauri::Runtime>(
                 affected_labels.push(label.clone());
             }
         }
+        let items: Vec<reorganize::ReorgItem> = stored
+            .plan
+            .items
+            .iter()
+            .filter(|item| !excluded.contains(&item.from))
+            .cloned()
+            .collect();
         (
             stored.root_path.clone(),
             stored.destination_roots.clone(),
-            stored.plan.items.clone(),
+            items,
             affected_labels,
             reorg_plan_view(id, &stored.plan, &stored.misplaced, stored.status, None, None),
         )

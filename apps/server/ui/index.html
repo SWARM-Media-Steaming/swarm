@@ -368,12 +368,13 @@
         <div id="scrapeAssistGroups"></div>
       </div>
     </div>
-    <div class="panel">
+    <div class="panel" id="aiReorganizePanel">
       <div class="card-head"><h2 class="info-trigger" data-info="reorganize-media" tabindex="0" role="button"><i class="bi bi-folder-symlink-fill heading-icon"></i>Reorganize media <i class="bi bi-info-circle info-affordance"></i></h2></div>
       <div id="aiReorganizeScanWrap" class="row action-row">
         <select id="aiReorganizeRootSelect" class="grow"></select>
         <button id="aiReorganizeScanBtn" class="secondary-button"><i class="bi bi-search"></i>Scan for cleanup</button>
       </div>
+      <p id="aiReorgConfirmMsg" class="note d-none" aria-live="polite"></p>
       <div id="aiReorgPlansList"></div>
     </div>
     <div class="panel">

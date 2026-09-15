@@ -217,7 +217,7 @@ async fn approve_ai_reorg_plan_moves_the_file_and_never_deletes_anything() {
         .await
         .expect("ai_reorganize_scan should succeed");
 
-    let applying = approve_ai_reorg_plan(app.clone(), app.state(), plan.id)
+    let applying = approve_ai_reorg_plan(app.clone(), app.state(), plan.id, Vec::new())
         .await
         .expect("approve_ai_reorg_plan should succeed");
     assert_eq!(applying.status, "applying");
@@ -252,10 +252,65 @@ async fn approve_ai_reorg_plan_moves_the_file_and_never_deletes_anything() {
     // Approving again must be rejected — this is a one-shot action, not an
     // idempotent replay (the source file it would move no longer exists at
     // its original path anyway).
-    let error = approve_ai_reorg_plan(app.clone(), app.state(), plan.id)
+    let error = approve_ai_reorg_plan(app.clone(), app.state(), plan.id, Vec::new())
         .await
         .expect_err("re-approving an already-applied plan should fail");
     assert!(error.contains("already"));
+}
+
+#[tokio::test]
+async fn approve_ai_reorg_plan_leaves_excluded_items_untouched() {
+    // Issue #312: the review UI lets a user uncheck individual items before
+    // approving. That must leave the excluded file exactly where it was —
+    // neither moved nor counted as "skipped" (which is reserved for items
+    // the plan itself couldn't apply, e.g. a conflict) — while every other
+    // item in the same plan still goes through.
+    let (test_app, root_dir) = test_app_with_media_root().await;
+    let app = test_app.handle();
+    std::fs::write(root_dir.path().join("Heat.1995.mkv"), b"fake video bytes").expect("write fixture movie file");
+    std::fs::write(root_dir.path().join("Se7en.1995.mkv"), b"fake video bytes").expect("write fixture movie file");
+
+    let plan = ai_reorganize_scan(app.clone(), app.state(), "Movies".to_string())
+        .await
+        .expect("ai_reorganize_scan should succeed");
+    assert_eq!(plan.items.len(), 2);
+
+    let excluded_item = plan
+        .items
+        .iter()
+        .find(|item| item.from == "Heat.1995.mkv")
+        .expect("Heat.1995.mkv should be in the plan");
+
+    approve_ai_reorg_plan(app.clone(), app.state(), plan.id, vec![excluded_item.from.clone()])
+        .await
+        .expect("approve_ai_reorg_plan should succeed");
+
+    let applied = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let plans = list_ai_reorg_plans(app.state())
+                .await
+                .expect("list_ai_reorg_plans should succeed");
+            if plans[0].status == "applied" {
+                break plans.into_iter().next().expect("stored plan");
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("background reorganization should finish");
+    let summary = applied.apply_summary.expect("an applied plan should carry a summary");
+    assert_eq!(summary.applied, 1, "only the non-excluded item should be applied");
+    assert_eq!(summary.skipped, 0, "an excluded item is not a skip — it was never attempted");
+
+    assert!(
+        root_dir.path().join("Heat.1995.mkv").exists(),
+        "the excluded item must be left exactly where it was"
+    );
+    assert!(
+        !root_dir.path().join("Se7en.1995.mkv").exists(),
+        "the non-excluded item should have moved"
+    );
+    assert!(root_dir.path().join("Se7en (1995)/Se7en (1995).mkv").exists());
 }
 
 #[tokio::test]

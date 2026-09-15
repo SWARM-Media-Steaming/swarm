@@ -171,7 +171,8 @@ td.mono {
 #tabPanel-metrics > .panel, #tabPanel-settings > .panel, #tabPanel-swarm > .panel,
 #tabPanel-notifications > .panel, #tabPanel-ai > .panel { margin-bottom: 0; }
 #tabPanel-metrics > .panel:first-child, #tabPanel-settings > .panel:nth-child(2),
-#tabPanel-swarm > .panel:last-child, #tabPanel-ai > .panel:first-child, #tabPanel-ai > .panel:last-child { grid-column: 1 / -1; }
+#tabPanel-swarm > .panel:last-child, #tabPanel-ai > .panel:first-child, #tabPanel-ai > .panel:last-child,
+#tabPanel-ai #aiReorganizePanel { grid-column: 1 / -1; }
 .card-head { margin-bottom: 16px; }
 .card-head h2 { font-size: .92rem; }
 .heading-icon { color: var(--violet); }
@@ -207,7 +208,19 @@ td.mono {
 .misplaced-heading { color: color-mix(in srgb, var(--amber) 78%, var(--text)); }
 .issue-list.misplaced-items { background: color-mix(in srgb, var(--amber) 6%, transparent); }
 .plan-summary { justify-content: space-between; align-items: center; }
-.plan-items, .plan-actions { margin-top: 8px; }
+.plan-actions { margin-top: 8px; }
+
+/* Reorganize media: full-width review grid (issue #312) — each proposed
+   move is its own card in a responsive column/row layout instead of a
+   single scrolling list, and carries its own include/exclude toggle so a
+   file can be left out of the approved run without rejecting the whole
+   plan. */
+.reorg-items-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 10px; margin: 8px 0 14px; }
+.reorg-item-card { display: flex; flex-direction: column; gap: 6px; transition: opacity .15s ease; }
+.reorg-item-excluded { opacity: .5; }
+.reorg-item-select { margin: 0; }
+.reorg-item-paths { font-size: .8rem; line-height: 1.4; overflow-wrap: anywhere; }
+.reorg-item-arrow { color: var(--muted); margin: 0 5px; }
 .media-view-toggle { margin-bottom: 14px; }
 .media-view-toggle > button { flex: 0 0 auto; }
 .card-meta { margin-top: 3px; font-size: .7rem; }
@@ -890,7 +903,7 @@ li.info-trigger:hover { background: var(--surface-muted); }
   .topbar-actions { display: none; }
   .view-stack { padding: 22px 20px 36px; }
   #tabPanel-metrics, #tabPanel-settings, #tabPanel-swarm, #tabPanel-notifications, #tabPanel-ai { grid-template-columns: 1fr; }
-  .grid, .about-features, .scrape-assist-grid { grid-template-columns: 1fr; }
+  .grid, .about-features, .scrape-assist-grid, .reorg-items-grid { grid-template-columns: 1fr; }
   .media-root-warning { align-items: flex-start; flex-wrap: wrap; }
   .media-root-warning-copy { flex-basis: calc(100% - 42px); }
   .media-root-row, .client-error-row { flex-direction: column; }

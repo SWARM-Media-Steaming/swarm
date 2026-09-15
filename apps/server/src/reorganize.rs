@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 use swarm_core::peer::MediaKind;
 use swarm_media::classify::{self, Classified};
 use swarm_media::plex::{self, PlexValidationIssue};
+use swarm_media::roots::MediaRootAssetType;
 use swarm_media::scrape::tmdb::TmdbClient;
 use swarm_media::subtitles::{parse_subtitle_name, subtitle_extension};
 
@@ -219,9 +220,29 @@ pub async fn scan_root(
     ai: Option<&AiClient>,
     tmdb: Option<&TmdbClient>,
 ) -> std::io::Result<ReorgPlan> {
+    scan_root_for_asset_type(root_label, root, MediaRootAssetType::Mixed, ai, tmdb).await
+}
+
+/// Root-aware form of [`scan_root`]. A configured Shows root must not use
+/// the classifier's generic, last-resort movie interpretation for unnumbered
+/// bonus clips: doing that produced one top-level `Title/Title.ext` folder
+/// per trailer, interview, and featurette. The declared root type supplies
+/// the structural context the normal library scan already uses.
+pub async fn scan_root_for_asset_type(
+    root_label: &str,
+    root: &Path,
+    asset_type: MediaRootAssetType,
+    ai: Option<&AiClient>,
+    tmdb: Option<&TmdbClient>,
+) -> std::io::Result<ReorgPlan> {
     let mut video_files = Vec::new();
     walk(root, root, &mut video_files)?;
     video_files.sort();
+    let known_show_roots = if asset_type == MediaRootAssetType::Shows {
+        known_show_roots(&video_files)
+    } else {
+        Vec::new()
+    };
 
     let mut items = Vec::new();
     let mut ai_assisted_count = 0u32;
@@ -246,7 +267,11 @@ pub async fn scan_root(
         // recognized video extension. Keep that result even when it lacks a
         // year: dropping it here was why large flat libraries left most of
         // their files untouched once the bounded AI budget was exhausted.
-        let Some(deterministic) = classify::classify(&unix_relative) else {
+        let Some(deterministic) = classify_for_reorganization(
+            &unix_relative,
+            asset_type,
+            &known_show_roots,
+        ) else {
             continue;
         };
         let (classified, ai_assisted) = if !is_confident(&deterministic) && ai_budget > 0 {
@@ -323,7 +348,11 @@ pub async fn scan_root(
         if classify::media_extension(&unix_relative).is_none() {
             continue;
         }
-        let classified = classify::classify(&unix_relative);
+        let classified = classify_for_reorganization(
+            &unix_relative,
+            asset_type,
+            &known_show_roots,
+        );
         if let Some(issue) = plex::validate_media_file(&unix_relative, classified.as_ref()) {
             validation.push(issue);
         }
@@ -342,6 +371,120 @@ pub async fn scan_root(
         duplicate_count,
         validation,
     })
+}
+
+/// Top-level directories already proven to be real shows by at least one
+/// numbered episode. These anchors let a second reorganization run repair
+/// the bad singleton folders created by the old algorithm, e.g.
+/// `Friends - Gag Reel/Friends - Gag Reel.mkv` back under `Friends/`.
+fn known_show_roots(files: &[PathBuf]) -> Vec<String> {
+    let mut roots = Vec::new();
+    for relative in files {
+        let path = to_unix(relative);
+        let Some(classified) = classify::classify(&path) else {
+            continue;
+        };
+        if classified.kind != MediaKind::Episode || classified.episode.is_none() {
+            continue;
+        }
+        let Some(top) = path.split('/').next().filter(|part| !part.is_empty()) else {
+            continue;
+        };
+        if !roots.iter().any(|known: &String| known.eq_ignore_ascii_case(top)) {
+            roots.push(top.to_string());
+        }
+    }
+    roots.sort_by_key(|name| std::cmp::Reverse(name.len()));
+    roots
+}
+
+fn classify_for_reorganization(
+    relative_path: &str,
+    asset_type: MediaRootAssetType,
+    known_shows: &[String],
+) -> Option<Classified> {
+    let generic = classify::classify(relative_path)?;
+    if asset_type != MediaRootAssetType::Shows {
+        return classify::classify_for_asset_type(relative_path, asset_type).or(Some(generic));
+    }
+
+    let top = relative_path.split('/').next()?;
+    let top_is_known_show = known_shows.iter().any(|show| show.eq_ignore_ascii_case(top));
+    if generic.kind == MediaKind::Episode || top_is_known_show {
+        return classify::classify_for_asset_type(relative_path, asset_type).or(Some(generic));
+    }
+
+    // A year-bearing folder is an actual movie misplaced in the Shows root,
+    // not a TV extra. Likewise the common Dragon Ball `M01` movie notation.
+    // Leave these as movies so the existing cross-root detector points them
+    // at the configured Movies library instead of hiding them under a show.
+    if generic.year.is_some() || looks_like_numbered_movie(top) {
+        return Some(generic);
+    }
+
+    let parent = known_shows.iter().find(|show| {
+        top.get(..show.len()).is_some_and(|prefix| prefix.eq_ignore_ascii_case(show))
+            && top.get(show.len()..).is_some_and(|suffix| suffix.starts_with(" - "))
+    })?;
+    let suffix = top[parent.len() + 3..].trim();
+    let mut repaired = classify::classify_for_asset_type(relative_path, asset_type)?;
+    repaired.show_title = Some(parent.clone());
+    repaired.season = Some(0);
+    repaired.episode = None;
+    repaired.episode_end = None;
+    let extra_kind = infer_extra_kind(suffix);
+    repaired.extra_kind = Some(extra_kind.slug());
+    repaired.extra_title = Some(clean_bug_split_extra_title(suffix));
+    repaired.extra_parent_title = None;
+    repaired.extra_parent_dir = None;
+    Some(repaired)
+}
+
+fn looks_like_numbered_movie(folder: &str) -> bool {
+    folder.split(" - ").any(|part| {
+        let upper = part.trim().to_ascii_uppercase();
+        upper.strip_prefix('M')
+            .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+    })
+}
+
+fn infer_extra_kind(title: &str) -> plex::PlexExtraKind {
+    let lower = title.to_ascii_lowercase();
+    if ["trailer", "promo", "tv spot", "sizzle reel"]
+        .iter()
+        .any(|token| lower.contains(token))
+    {
+        plex::PlexExtraKind::Trailers
+    } else if ["interview", "answers your questions", "man-on-the-street", "voices of"]
+        .iter()
+        .any(|token| lower.contains(token))
+    {
+        plex::PlexExtraKind::Interviews
+    } else if ["deleted", "alternate scene", "fake ending", "producer's cut", "extended"]
+        .iter()
+        .any(|token| lower.contains(token))
+    {
+        plex::PlexExtraKind::DeletedScenes
+    } else if [
+        "behind the scene", "making of", "gag reel", "music video", "live performance",
+        "theme song", "clean opening", "clean ending", "nced", "ncop",
+    ]
+    .iter()
+    .any(|token| lower.contains(token))
+    {
+        plex::PlexExtraKind::Featurettes
+    } else {
+        plex::PlexExtraKind::Other
+    }
+}
+
+fn clean_bug_split_extra_title(suffix: &str) -> String {
+    suffix
+        .trim()
+        .strip_suffix(" new")
+        .unwrap_or(suffix.trim())
+        .trim()
+        .to_string()
 }
 
 /// Second pass over the walked file list (issue #298): every subtitle or
@@ -618,7 +761,9 @@ fn is_confident(c: &Classified) -> bool {
         MediaKind::Episode => {
             c.show_title.as_deref().is_some_and(|s| !s.trim().is_empty())
                 && c.season.is_some()
-                && c.episode.is_some()
+                && (c.episode.is_some()
+                    || (c.extra_kind.is_some()
+                        && c.extra_title.as_deref().is_some_and(|title| !title.trim().is_empty())))
         }
         MediaKind::Track => false,
     }
@@ -644,11 +789,34 @@ fn canonical_video_path(c: &Classified, ext: &str) -> String {
         }
         MediaKind::Episode => {
             let show = sanitize(c.show_title.as_deref().unwrap_or("Unknown Show"));
+            if let (Some(kind), Some(title)) = (c.extra_kind, c.extra_title.as_deref()) {
+                let category = extra_directory(kind);
+                let title = sanitize(title);
+                return if c.season.unwrap_or(0) > 0 {
+                    let season = c.season.unwrap_or(1);
+                    format!("{show}/Season {season:02}/{category}/{title}.{ext}")
+                } else {
+                    format!("{show}/{category}/{title}.{ext}")
+                };
+            }
             let season = c.season.unwrap_or(1);
             let episode = c.episode.unwrap_or(0);
             format!("{show}/Season {season:02}/{show} - S{season:02}E{episode:02}.{ext}")
         }
         MediaKind::Track => String::new(),
+    }
+}
+
+fn extra_directory(slug: &str) -> &'static str {
+    match slug {
+        "behindTheScenes" => "Behind The Scenes",
+        "deletedScene" => "Deleted Scenes",
+        "featurette" => "Featurettes",
+        "interview" => "Interviews",
+        "scene" => "Scenes",
+        "short" => "Shorts",
+        "trailer" => "Trailers",
+        _ => "Other",
     }
 }
 
@@ -802,17 +970,28 @@ fn to_unix(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppliedMove {
+    pub from: String,
+    pub to: String,
+}
+
 #[derive(Debug, Default)]
 pub struct ApplyOutcome {
     pub applied: u32,
     pub skipped: u32,
     pub errors: Vec<String>,
+    /// Exact journal of moves that succeeded. A plan can be partially
+    /// applied, so undo must never infer this list from the original plan.
+    pub applied_moves: Vec<AppliedMove>,
 }
 
 /// Applies every non-conflicting item by `fs::rename` — never a copy+delete
 /// fallback, so a failed or partial move can never cost the source file.
-/// Re-checks existence right before each move (the plan may be stale by the
-/// time a user approves it) rather than trusting the scan-time snapshot.
+/// Empty source directories are removed after their last file moves, but no
+/// file is deleted. Re-checks existence right before each move (the plan may
+/// be stale by the time a user approves it) rather than trusting the
+/// scan-time snapshot.
 pub fn apply_plan(root: &Path, items: &[ReorgItem]) -> ApplyOutcome {
     let mut outcome = ApplyOutcome::default();
     for item in items {
@@ -843,7 +1022,14 @@ pub fn apply_plan(root: &Path, items: &[ReorgItem]) -> ApplyOutcome {
             }
         }
         match std::fs::rename(&from, &to) {
-            Ok(()) => outcome.applied += 1,
+            Ok(()) => {
+                outcome.applied += 1;
+                outcome.applied_moves.push(AppliedMove {
+                    from: item.from.clone(),
+                    to: item.to.clone(),
+                });
+                remove_empty_ancestors(root, from.parent());
+            }
             Err(error) => {
                 outcome.skipped += 1;
                 outcome.errors.push(format!("{}: move failed ({error}), left in place", item.from));
@@ -851,6 +1037,75 @@ pub fn apply_plan(root: &Path, items: &[ReorgItem]) -> ApplyOutcome {
         }
     }
     outcome
+}
+
+/// Reverses only the moves that actually succeeded, in reverse order.
+/// Existing original paths are never overwritten; when one has reappeared,
+/// the moved file remains at its reorganized path and is reported as skipped.
+pub fn undo_plan(root: &Path, applied_moves: &[AppliedMove]) -> ApplyOutcome {
+    let mut outcome = ApplyOutcome::default();
+    for applied in applied_moves.iter().rev() {
+        let from = root.join(&applied.to);
+        let to = root.join(&applied.from);
+        if !from.exists() {
+            outcome.skipped += 1;
+            outcome.errors.push(format!(
+                "{}: reorganized file no longer exists, skipped",
+                applied.to
+            ));
+            continue;
+        }
+        if to.exists() {
+            outcome.skipped += 1;
+            outcome.errors.push(format!(
+                "{}: original path now exists, skipped to avoid overwrite",
+                applied.from
+            ));
+            continue;
+        }
+        if let Some(parent) = to.parent() {
+            if let Err(error) = std::fs::create_dir_all(parent) {
+                outcome.skipped += 1;
+                outcome.errors.push(format!(
+                    "{}: could not recreate original folder ({error}), skipped",
+                    applied.from
+                ));
+                continue;
+            }
+        }
+        match std::fs::rename(&from, &to) {
+            Ok(()) => {
+                outcome.applied += 1;
+                outcome.applied_moves.push(AppliedMove {
+                    from: applied.to.clone(),
+                    to: applied.from.clone(),
+                });
+                remove_empty_ancestors(root, from.parent());
+            }
+            Err(error) => {
+                outcome.skipped += 1;
+                outcome.errors.push(format!(
+                    "{}: undo failed ({error}), left at reorganized path",
+                    applied.to
+                ));
+            }
+        }
+    }
+    outcome
+}
+
+fn remove_empty_ancestors(root: &Path, start: Option<&Path>) {
+    let mut current = start.map(Path::to_path_buf);
+    while let Some(dir) = current {
+        if dir == root || !dir.starts_with(root) {
+            break;
+        }
+        let parent = dir.parent().map(Path::to_path_buf);
+        if std::fs::remove_dir(&dir).is_err() {
+            break;
+        }
+        current = parent;
+    }
 }
 
 #[cfg(test)]
@@ -922,6 +1177,117 @@ mod tests {
         assert_eq!(item.to, "10 Cloverfield Lane (2016)/10 Cloverfield Lane (2016).mkv");
         assert!(item.conflict.is_none());
         assert!(!item.ai_assisted);
+    }
+
+    #[tokio::test]
+    async fn shows_root_keeps_deep_extras_under_their_one_show_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "Aqua Teen Hunger Force/Season 01/Aqua Teen Hunger Force - S01E01.mkv",
+            "episode",
+        );
+        write(
+            dir.path(),
+            "Aqua Teen Hunger Force/Featurettes/The Movie/Deleted Scenes/Dorm Room Extended.mkv",
+            "extra",
+        );
+
+        let plan = scan_root_for_asset_type(
+            "Shows",
+            dir.path(),
+            MediaRootAssetType::Shows,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let extra = plan
+            .items
+            .iter()
+            .find(|item| item.from.ends_with("Dorm Room Extended.mkv"))
+            .expect("deep extra should be normalized");
+        assert_eq!(
+            extra.to,
+            "Aqua Teen Hunger Force/Deleted Scenes/Dorm Room Extended.mkv"
+        );
+        assert!(!extra.to.starts_with("Dorm Room Extended/"));
+    }
+
+    #[tokio::test]
+    async fn shows_root_repairs_singleton_extra_folders_created_by_the_old_bug() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "Friends/Season 01/Friends - S01E01.mkv",
+            "episode",
+        );
+        write(
+            dir.path(),
+            "Friends - Gag Reel -The One with Never-Before-Seen Gags new/Friends - Gag Reel -The One with Never-Before-Seen Gags new.mkv",
+            "extra",
+        );
+        write(
+            dir.path(),
+            "Friends - Gag Reel -The One with Never-Before-Seen Gags new/Friends - Gag Reel -The One with Never-Before-Seen Gags new.en.vtt",
+            "subtitle",
+        );
+
+        let plan = scan_root_for_asset_type(
+            "Shows",
+            dir.path(),
+            MediaRootAssetType::Shows,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let video = plan.items.iter().find(|item| item.kind == "video").unwrap();
+        assert_eq!(
+            video.to,
+            "Friends/Featurettes/Gag Reel -The One with Never-Before-Seen Gags.mkv"
+        );
+        assert!(plan.items.iter().any(|item| {
+            item.kind == "subtitle"
+                && item.to
+                    == "Friends/Featurettes/Gag Reel -The One with Never-Before-Seen Gags.en.vtt"
+        }));
+    }
+
+    #[tokio::test]
+    async fn shows_root_keeps_feature_films_classified_as_movies() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "Dragon Ball Z/Season 01/Dragon Ball Z - S01E01.mkv",
+            "episode",
+        );
+        write(
+            dir.path(),
+            "Dragon Ball Z - M01 - Dead Zone/Dragon Ball Z - M01 - Dead Zone.mkv",
+            "movie",
+        );
+        write(
+            dir.path(),
+            "Dragon Ball Super - BROLY (2018)/Dragon Ball Super - BROLY (2018).mkv",
+            "movie",
+        );
+
+        let plan = scan_root_for_asset_type(
+            "Shows",
+            dir.path(),
+            MediaRootAssetType::Shows,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(plan.items.iter().all(|item| {
+            !item.from.contains("M01 - Dead Zone") && !item.from.contains("BROLY (2018)")
+        }));
     }
 
     // --- TMDb year backfill (issue #297) ---
@@ -1195,6 +1561,83 @@ mod tests {
         assert_eq!(
             fs::read_to_string(dir.path().join("Heat (1995)/Heat (1995).mkv")).unwrap(),
             "unrelated existing file"
+        );
+    }
+
+    #[test]
+    fn undo_plan_restores_only_successfully_applied_moves() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "Aqua Teen Hunger Force - Deleted Scene.mkv", "video");
+        write(dir.path(), "Aqua Teen Hunger Force - Deleted Scene.en.srt", "subtitle");
+        let items = vec![
+            ReorgItem {
+                from: "Aqua Teen Hunger Force - Deleted Scene.mkv".to_string(),
+                to: "Aqua Teen Hunger Force/Deleted Scenes/Deleted Scene.mkv".to_string(),
+                kind: "video",
+                ai_assisted: false,
+                year_source: None,
+                conflict: None,
+            },
+            ReorgItem {
+                from: "Aqua Teen Hunger Force - Deleted Scene.en.srt".to_string(),
+                to: "Aqua Teen Hunger Force/Deleted Scenes/Deleted Scene.en.srt".to_string(),
+                kind: "subtitle",
+                ai_assisted: false,
+                year_source: None,
+                conflict: None,
+            },
+            ReorgItem {
+                from: "missing.jpg".to_string(),
+                to: "Aqua Teen Hunger Force/poster.jpg".to_string(),
+                kind: "artwork",
+                ai_assisted: false,
+                year_source: None,
+                conflict: None,
+            },
+        ];
+
+        let applied = apply_plan(dir.path(), &items);
+        assert_eq!(applied.applied, 2);
+        assert_eq!(applied.skipped, 1);
+        assert_eq!(applied.applied_moves.len(), 2);
+
+        let undone = undo_plan(dir.path(), &applied.applied_moves);
+        assert_eq!(undone.applied, 2);
+        assert_eq!(undone.skipped, 0);
+        assert_eq!(
+            fs::read_to_string(dir.path().join("Aqua Teen Hunger Force - Deleted Scene.mkv")).unwrap(),
+            "video"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("Aqua Teen Hunger Force - Deleted Scene.en.srt")).unwrap(),
+            "subtitle"
+        );
+        assert!(!dir.path().join("Aqua Teen Hunger Force").exists());
+    }
+
+    #[test]
+    fn undo_plan_never_overwrites_an_original_path_that_reappeared() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "Friends - Gag Reel.mkv", "original");
+        let items = vec![ReorgItem {
+            from: "Friends - Gag Reel.mkv".to_string(),
+            to: "Friends/Featurettes/Gag Reel.mkv".to_string(),
+            kind: "video",
+            ai_assisted: false,
+            year_source: None,
+            conflict: None,
+        }];
+        let applied = apply_plan(dir.path(), &items);
+        write(dir.path(), "Friends - Gag Reel.mkv", "new file");
+
+        let undone = undo_plan(dir.path(), &applied.applied_moves);
+
+        assert_eq!(undone.applied, 0);
+        assert_eq!(undone.skipped, 1);
+        assert_eq!(fs::read_to_string(dir.path().join("Friends - Gag Reel.mkv")).unwrap(), "new file");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("Friends/Featurettes/Gag Reel.mkv")).unwrap(),
+            "original"
         );
     }
 

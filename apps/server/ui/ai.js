@@ -245,12 +245,13 @@ document.getElementById("runScrapeAssistNowBtn").addEventListener("click", async
 // ---- AI tab: reorganize media ------------------------------------------------
 //
 // A plan only ever proposes; nothing on disk changes until
-// `approve_ai_reorg_plan` runs (never a delete, never an overwrite — see
-// `reorganize.rs`). Plans live in memory only (`AppState::reorg_plans`), so
-// they don't survive a restart — a fresh scan is cheap enough that this
-// isn't worth persisting. No enable toggle (issue #296): clicking "Scan for
-// cleanup" is itself the permission to use AI for the filenames `classify`
-// can't place on its own.
+// `approve_ai_reorg_plan` runs (never a file delete or overwrite — see
+// `reorganize.rs`). Successful moves are journaled so they can be safely
+// undone during this session. Plans live in memory only
+// (`AppState::reorg_plans`), so they don't survive a restart — a fresh scan
+// is cheap enough that this isn't worth persisting. No enable toggle (issue
+// #296): clicking "Scan for cleanup" is itself the permission to use AI for
+// the filenames `classify` can't place on its own.
 
 async function refreshReorganize(settings) {
   try {
@@ -316,11 +317,18 @@ function renderReorgPlans(plans) {
             plan.apply_summary.errors.length ? `<br>${plan.apply_summary.errors.map(esc).join("<br>")}` : ""
           }</p>`
         : "";
+      const undoSummaryHtml = plan.undo_summary
+        ? `<p class="muted">Undo: ${plan.undo_summary.applied} restored, ${plan.undo_summary.skipped} skipped.${
+            plan.undo_summary.errors.length ? `<br>${plan.undo_summary.errors.map(esc).join("<br>")}` : ""
+          }</p>`
+        : "";
       const actionsHtml =
         plan.status === "proposed"
           ? `<button class="secondary-button approve-reorg-btn" data-plan-id="${plan.id}"><i class="bi bi-check-lg"></i>Approve &amp; apply</button>
            <button class="secondary-button reject-reorg-btn" data-plan-id="${plan.id}"><i class="bi bi-x-lg"></i>Reject</button>`
-          : "";
+          : plan.status === "applied" && plan.apply_summary?.applied
+            ? `<button class="secondary-button undo-reorg-btn" data-plan-id="${plan.id}"><i class="bi bi-arrow-counterclockwise"></i>Undo</button>`
+            : "";
       return `
         <div class="service-card ai-reorg-plan">
           <div class="row plan-summary">
@@ -330,6 +338,7 @@ function renderReorgPlans(plans) {
           <ul class="issue-list plan-items">${itemsHtml}</ul>
           ${misplacedHtml}
           ${summaryHtml}
+          ${undoSummaryHtml}
           <div class="row plan-actions">${actionsHtml}</div>
         </div>`;
     })
@@ -360,6 +369,20 @@ function renderReorgPlans(plans) {
       }
     });
   });
+  wrap.querySelectorAll(".undo-reorg-btn").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const id = Number(btn.dataset.planId);
+      btn.disabled = true;
+      try {
+        await invoke("undo_ai_reorg_plan", { id });
+        showToast("Undo started in the background. You’ll be notified when it finishes.", "progress");
+        await refreshAi();
+      } catch (err) {
+        showToast(String(err), "error");
+        btn.disabled = false;
+      }
+    });
+  });
 }
 
 listen("ai-reorganize-finished", async ({ payload }) => {
@@ -367,6 +390,17 @@ listen("ai-reorganize-finished", async ({ payload }) => {
   const detail = payload.applied + " file(s) moved, " + payload.skipped + " skipped.";
   showToast(
     (hasErrors ? "Reorganization finished with issues: " : "Reorganization complete: ") + detail,
+    hasErrors ? "warning" : "success",
+    { duration: hasErrors ? 7000 : 4500 }
+  );
+  await Promise.all([refreshAi(), refreshLibrary(), refreshNotificationBadge()]);
+});
+
+listen("ai-reorganize-undone", async ({ payload }) => {
+  const hasErrors = payload.errors?.length > 0;
+  const detail = payload.applied + " file(s) restored, " + payload.skipped + " skipped.";
+  showToast(
+    (hasErrors ? "Undo finished with issues: " : "Reorganization undone: ") + detail,
     hasErrors ? "warning" : "success",
     { duration: hasErrors ? 7000 : 4500 }
   );

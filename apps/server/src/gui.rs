@@ -84,6 +84,7 @@ struct StoredReorgPlan {
     root_path: PathBuf,
     status: &'static str,
     apply_outcome: Option<reorganize::ApplyOutcome>,
+    undo_outcome: Option<reorganize::ApplyOutcome>,
 }
 
 /// Maps a configured root's declared asset type to the `MediaKind` it's
@@ -97,6 +98,16 @@ fn expected_media_kind(asset_type: RootAssetType) -> Option<MediaKind> {
         RootAssetType::Shows => Some(MediaKind::Episode),
         RootAssetType::Music => Some(MediaKind::Track),
         RootAssetType::Mixed | RootAssetType::PhotosVideos => None,
+    }
+}
+
+fn media_root_asset_type(asset_type: RootAssetType) -> MediaRootAssetType {
+    match asset_type {
+        RootAssetType::Mixed => MediaRootAssetType::Mixed,
+        RootAssetType::Movies => MediaRootAssetType::Movies,
+        RootAssetType::Shows => MediaRootAssetType::Shows,
+        RootAssetType::Music => MediaRootAssetType::Music,
+        RootAssetType::PhotosVideos => MediaRootAssetType::PhotosVideos,
     }
 }
 
@@ -1971,9 +1982,11 @@ struct ReorgPlanView {
     misplaced: Vec<reorganize::MisplacedItem>,
     status: String,
     apply_summary: Option<ApplySummaryView>,
+    undo_summary: Option<ApplySummaryView>,
 }
 
 const AI_REORGANIZE_FINISHED_EVENT: &str = "ai-reorganize-finished";
+const AI_REORGANIZE_UNDONE_EVENT: &str = "ai-reorganize-undone";
 
 #[derive(Clone, serde::Serialize)]
 struct ReorgFinishedEvent {
@@ -1990,6 +2003,7 @@ fn reorg_plan_view(
     misplaced: &[reorganize::MisplacedItem],
     status: &str,
     outcome: Option<&reorganize::ApplyOutcome>,
+    undo_outcome: Option<&reorganize::ApplyOutcome>,
 ) -> ReorgPlanView {
     ReorgPlanView {
         id,
@@ -2004,6 +2018,11 @@ fn reorg_plan_view(
         misplaced: misplaced.to_vec(),
         status: status.to_string(),
         apply_summary: outcome.map(|o| ApplySummaryView {
+            applied: o.applied,
+            skipped: o.skipped,
+            errors: o.errors.clone(),
+        }),
+        undo_summary: undo_outcome.map(|o| ApplySummaryView {
             applied: o.applied,
             skipped: o.skipped,
             errors: o.errors.clone(),
@@ -2038,14 +2057,26 @@ async fn ai_reorganize_scan<R: tauri::Runtime>(
     let dir = app_data_dir(&app)?;
     let settings = settings::load(&dir);
     let root_path = resolve_media_root(&settings, &root_label)?;
+    let root_asset_type = settings
+        .media_roots
+        .iter()
+        .find(|root| root.label == root_label)
+        .map(|root| media_root_asset_type(root.asset_type))
+        .unwrap_or_default();
     let ai_client = ai_client_from_settings(&settings).await.ok();
     let tmdb_client = settings
         .tmdb_api_key
         .as_deref()
         .map(|key| swarm_media::scrape::tmdb::TmdbClient::new(key.to_string()));
-    let plan = reorganize::scan_root(&root_label, &root_path, ai_client.as_ref(), tmdb_client.as_ref())
-        .await
-        .map_err(|e| e.to_string())?;
+    let plan = reorganize::scan_root_for_asset_type(
+        &root_label,
+        &root_path,
+        root_asset_type,
+        ai_client.as_ref(),
+        tmdb_client.as_ref(),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
 
     // Cross-root "wrong library" detection (issue #301) — report only,
     // computed against every currently-configured root, never folded into
@@ -2071,7 +2102,7 @@ async fn ai_reorganize_scan<R: tauri::Runtime>(
     .unwrap_or_default();
 
     let id = state.next_reorg_plan_id.fetch_add(1, Ordering::Relaxed);
-    let view = reorg_plan_view(id, &plan, &misplaced, "proposed", None);
+    let view = reorg_plan_view(id, &plan, &misplaced, "proposed", None, None);
     state.reorg_plans.lock().await.insert(
         id,
         StoredReorgPlan {
@@ -2080,6 +2111,7 @@ async fn ai_reorganize_scan<R: tauri::Runtime>(
             root_path,
             status: "proposed",
             apply_outcome: None,
+            undo_outcome: None,
         },
     );
     Ok(view)
@@ -2091,7 +2123,14 @@ async fn list_ai_reorg_plans(state: tauri::State<'_, AppState>) -> Result<Vec<Re
     let mut views: Vec<ReorgPlanView> = plans
         .iter()
         .map(|(id, stored)| {
-            reorg_plan_view(*id, &stored.plan, &stored.misplaced, stored.status, stored.apply_outcome.as_ref())
+            reorg_plan_view(
+                *id,
+                &stored.plan,
+                &stored.misplaced,
+                stored.status,
+                stored.apply_outcome.as_ref(),
+                stored.undo_outcome.as_ref(),
+            )
         })
         .collect();
     views.sort_by_key(|v| v.id);
@@ -2099,10 +2138,11 @@ async fn list_ai_reorg_plans(state: tauri::State<'_, AppState>) -> Result<Vec<Re
 }
 
 /// Applies every non-conflicting item in a still-`proposed` plan (see
-/// `reorganize::apply_plan` — renames only, never a delete, never an
-/// overwrite), records a notification either way, and kicks off a rescan so
-/// the library picks up the new layout. Filesystem work runs on a blocking
-/// thread since `apply_plan` is synchronous I/O over potentially many files.
+/// `reorganize::apply_plan` — renames files, removes only emptied source
+/// directories, and never overwrites), records a notification either way,
+/// and kicks off a rescan so the library picks up the new layout. Filesystem
+/// work runs on a blocking thread since `apply_plan` is synchronous I/O over
+/// potentially many files.
 #[tauri::command]
 async fn approve_ai_reorg_plan<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
@@ -2120,7 +2160,7 @@ async fn approve_ai_reorg_plan<R: tauri::Runtime>(
         (
             stored.root_path.clone(),
             stored.plan.items.clone(),
-            reorg_plan_view(id, &stored.plan, &stored.misplaced, stored.status, None),
+            reorg_plan_view(id, &stored.plan, &stored.misplaced, stored.status, None, None),
         )
     };
 
@@ -2132,6 +2172,7 @@ async fn approve_ai_reorg_plan<R: tauri::Runtime>(
                 applied: 0,
                 skipped: 0,
                 errors: vec![format!("reorganization worker failed: {error}")],
+                applied_moves: Vec::new(),
             },
         };
 
@@ -2171,6 +2212,104 @@ async fn approve_ai_reorg_plan<R: tauri::Runtime>(
             tracing::warn!(%error, "could not save reorganize notification");
         }
         let _ = task_app.emit(AI_REORGANIZE_FINISHED_EVENT, event);
+    });
+
+    Ok(view)
+}
+
+/// Reverses exactly the successful moves recorded by an applied plan. The
+/// journal is replayed backwards and never overwrites a path that appeared
+/// after reorganization.
+#[tauri::command]
+async fn undo_ai_reorg_plan<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    id: u64,
+) -> Result<ReorgPlanView, String> {
+    let core = state.core(&app).await?;
+    let (root_path, applied_moves, view) = {
+        let mut plans = state.reorg_plans.lock().await;
+        let stored = plans
+            .get_mut(&id)
+            .ok_or_else(|| "reorganize plan not found".to_string())?;
+        if stored.status != "applied" {
+            return Err(format!("this plan is {}, not applied", stored.status));
+        }
+        let applied_moves = stored
+            .apply_outcome
+            .as_ref()
+            .map(|outcome| outcome.applied_moves.clone())
+            .unwrap_or_default();
+        if applied_moves.is_empty() {
+            return Err("this plan has no successfully applied moves to undo".to_string());
+        }
+        stored.status = "undoing";
+        (
+            stored.root_path.clone(),
+            applied_moves,
+            reorg_plan_view(
+                id,
+                &stored.plan,
+                &stored.misplaced,
+                stored.status,
+                stored.apply_outcome.as_ref(),
+                None,
+            ),
+        )
+    };
+
+    let task_app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let mut outcome = match tokio::task::spawn_blocking(move || {
+            reorganize::undo_plan(&root_path, &applied_moves)
+        })
+        .await
+        {
+            Ok(outcome) => outcome,
+            Err(error) => reorganize::ApplyOutcome {
+                applied: 0,
+                skipped: 0,
+                errors: vec![format!("reorganization undo worker failed: {error}")],
+                applied_moves: Vec::new(),
+            },
+        };
+
+        if let Err(error) = core.rescan(None).await {
+            outcome.errors.push(format!("library rescan failed: {error}"));
+        }
+
+        let event = {
+            let state = task_app.state::<AppState>();
+            let mut plans = state.reorg_plans.lock().await;
+            let Some(stored) = plans.get_mut(&id) else {
+                tracing::warn!(id, "reorganize plan disappeared while undoing");
+                return;
+            };
+            stored.status = "undone";
+            stored.undo_outcome = Some(outcome);
+            let summary = stored.undo_outcome.as_ref().expect("undo outcome was just stored");
+            ReorgFinishedEvent {
+                id,
+                root_label: stored.plan.root_label.clone(),
+                applied: summary.applied,
+                skipped: summary.skipped,
+                errors: summary.errors.clone(),
+            }
+        };
+
+        let level = if event.errors.is_empty() { "success" } else { "warning" };
+        let message = format!(
+            "Undid reorganization of \"{}\": {} file(s) restored, {} skipped.",
+            event.root_label, event.applied, event.skipped,
+        );
+        if let Err(error) = core
+            .library
+            .record_server_notification(level, "Reorganization undo finished", &message)
+            .await
+        {
+            tracing::warn!(%error, "could not save reorganization undo notification");
+        }
+        let _ = task_app.emit(AI_REORGANIZE_UNDONE_EVENT, event);
     });
 
     Ok(view)
@@ -3705,6 +3844,7 @@ fn main() {
             ai_reorganize_scan,
             list_ai_reorg_plans,
             approve_ai_reorg_plan,
+            undo_ai_reorg_plan,
             reject_ai_reorg_plan,
         ])
         .build(tauri::generate_context!())

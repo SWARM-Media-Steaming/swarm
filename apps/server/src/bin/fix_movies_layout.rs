@@ -356,7 +356,15 @@ async fn main() {
     }
 
     println!("=== Phase 1: reorganize (also flattens any nested Movies/Movies/) ===");
-    let plan = match reorganize::scan_root("Movies", &root, None, None).await {
+    let plan = match reorganize::scan_root_for_asset_type(
+        "Movies",
+        &root,
+        swarm_media::roots::MediaRootAssetType::Movies,
+        None,
+        None,
+    )
+    .await
+    {
         Ok(plan) => plan,
         Err(error) => {
             eprintln!("scan failed: {error}");

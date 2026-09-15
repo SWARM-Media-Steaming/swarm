@@ -1,6 +1,8 @@
 package app.swarm.tv.app.ui.screens
 
 import app.swarm.tv.app.data.LanServer
+import app.swarm.tv.core.rest.DeviceType
+import app.swarm.tv.core.rest.SwarmDevice
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
 
@@ -33,9 +35,30 @@ class ServerStatusTest {
     }
 
     @Test
+    fun `server picker omits offline historical roster entries`() {
+        val active = swarmDevice("active", DeviceType.SERVER, online = true)
+        val stale = swarmDevice("stale", DeviceType.SERVER, online = false)
+        val dualRole = swarmDevice("dual", DeviceType.BOTH, online = true)
+        val client = swarmDevice("client", DeviceType.CLIENT, online = true)
+
+        assertEquals(
+            listOf(active, dualRole),
+            visibleSwarmServers(listOf(active, stale, dualRole, client)),
+        )
+    }
+
+    @Test
     fun `server status uses user facing connection terms`() {
         assertEquals("connected", connectionStatusLabel(online = true, disconnected = false))
         assertEquals("offline", connectionStatusLabel(online = false, disconnected = false))
         assertEquals("disconnected", connectionStatusLabel(online = true, disconnected = true))
     }
+
+    private fun swarmDevice(id: String, type: DeviceType, online: Boolean) = SwarmDevice(
+        deviceId = id,
+        name = id,
+        deviceType = type,
+        certFingerprint = id.padEnd(64, '0'),
+        online = online,
+    )
 }

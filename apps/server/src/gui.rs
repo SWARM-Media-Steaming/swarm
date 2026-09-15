@@ -1934,6 +1934,7 @@ struct ReorgPlanView {
     root_label: String,
     items: Vec<reorganize::ReorgItem>,
     ai_assisted_count: u32,
+    tmdb_year_count: u32,
     conflict_count: u32,
     /// Deterministic Plex-conformance problems found in the root (issue
     /// #247) — surfaced to the AI tab alongside the proposed moves.
@@ -1964,6 +1965,7 @@ fn reorg_plan_view(
         root_label: plan.root_label.clone(),
         items: plan.items.clone(),
         ai_assisted_count: plan.ai_assisted_count,
+        tmdb_year_count: plan.tmdb_year_count,
         conflict_count: plan.conflict_count,
         validation: plan.validation.clone(),
         status: status.to_string(),
@@ -1990,7 +1992,9 @@ fn resolve_media_root(settings: &Settings, root_label: &str) -> Result<PathBuf, 
 /// click itself is the permission); an AI provider is used only for the
 /// long tail of filenames `classify` can't place at all (see
 /// `reorganize::scan_root`) — if none is configured, the scan still runs,
-/// just without that fallback.
+/// just without that fallback. A configured TMDb key is used only to
+/// backfill a movie's missing release year (issue #297) — if none is
+/// configured, the scan still runs with today's bare-title fallback.
 #[tauri::command]
 async fn ai_reorganize_scan<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
@@ -2001,7 +2005,11 @@ async fn ai_reorganize_scan<R: tauri::Runtime>(
     let settings = settings::load(&dir);
     let root_path = resolve_media_root(&settings, &root_label)?;
     let ai_client = ai_client_from_settings(&settings).await.ok();
-    let plan = reorganize::scan_root(&root_label, &root_path, ai_client.as_ref())
+    let tmdb_client = settings
+        .tmdb_api_key
+        .as_deref()
+        .map(|key| swarm_media::scrape::tmdb::TmdbClient::new(key.to_string()));
+    let plan = reorganize::scan_root(&root_label, &root_path, ai_client.as_ref(), tmdb_client.as_ref())
         .await
         .map_err(|e| e.to_string())?;
 

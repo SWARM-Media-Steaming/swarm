@@ -196,7 +196,7 @@ td.mono {
 .notification-icon-success { color: var(--green); }
 .ask-ai-btn { margin-left: 8px; }
 .ai-suggestion { margin-top: 5px; font-size: .76rem; }
-.ai-assisted-label { font-size: .68rem; }
+.ai-assisted-label, .tmdb-year-label { font-size: .68rem; }
 .ai-reorg-plan { margin-top: 12px; }
 .plan-summary { justify-content: space-between; align-items: center; }
 .plan-items, .plan-actions { margin-top: 8px; }

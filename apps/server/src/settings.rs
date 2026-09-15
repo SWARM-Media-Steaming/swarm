@@ -652,10 +652,11 @@ pub struct Settings {
     /// to >= 2 wherever it is consumed.
     #[serde(default = "default_hls_segment_seconds")]
     pub hls_segment_seconds: u32,
-    /// How the app applies new releases from GitHub: `"off"`, `"notify"`
-    /// (surface a banner; the user installs), or `"auto"` (download in the
-    /// background and install on the next quit — never mid-session, since the
-    /// server holds live playback connections). Defaults to `"notify"`.
+    /// How the app applies new releases from GitHub: `"notify"` (surface a
+    /// banner; the user installs) or `"auto"` ("Automatically" in the UI —
+    /// wait for zero active playback/transcode sessions, then download and
+    /// install). A literal `"off"` — removed in issue #309 — upgrades to
+    /// `"notify"` on load; see `load`. Defaults to `"notify"`.
     #[serde(default = "default_auto_update")]
     pub auto_update: String,
     /// Configured AI providers for the AI tab's advanced features (issue
@@ -762,6 +763,15 @@ pub fn load(app_data_dir: &Path) -> Settings {
             });
         }
     }
+    // Issue #309: "Don't check for updates" was removed from the UI — every
+    // update is either applied automatically once playback is idle, or the
+    // user is notified and installs manually. A pre-#309 settings.json still
+    // holding the literal "off" upgrades to "notify" in memory, same
+    // not-written-back-until-the-next-save pattern as the media_root upgrade
+    // above.
+    if settings.auto_update == "off" {
+        settings.auto_update = default_auto_update();
+    }
     settings
 }
 
@@ -824,6 +834,23 @@ mod tests {
         assert_eq!(loaded.hls_segment_seconds, 4);
         assert!(!loaded.comprehensive_check);
         assert!(!loaded.scan_music_tracks);
+    }
+
+    #[test]
+    fn auto_update_off_migrates_to_notify_on_load() {
+        let dir = std::env::temp_dir().join(format!(
+            "swarm-auto-update-settings-test-{}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            settings_path(&dir),
+            r#"{"media_roots":[],"tmdb_api_key":null,"auto_update":"off"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(load(&dir).auto_update, "notify");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

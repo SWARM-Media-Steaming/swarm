@@ -36,6 +36,13 @@ async fn auto_update_mode_persists_and_rejects_unknown_values() {
         "auto",
         "a rejected value leaves the previous one intact"
     );
+
+    // Issue #309: "off" was removed from the UI — an existing settings.json
+    // still holding it upgrades to "notify" on load (settings::tests), and
+    // this command no longer accepts setting it going forward either.
+    assert!(set_auto_update(app.clone(), "off".to_string())
+        .await
+        .is_err());
 }
 
 #[tokio::test]

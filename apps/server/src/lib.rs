@@ -853,9 +853,17 @@ impl ServerCore {
                 .service
                 .transcode_manager()
                 .upload_budget_enabled(),
-            active_playback_sessions: self.service.transcode_manager().active_sessions(),
+            active_playback_sessions: self.active_playback_sessions(),
             scanning: matches!(&*self.scan_status.borrow(), ScanState::Scanning),
         })
+    }
+
+    /// How many clients are actively streaming/transcoding right now. Used
+    /// both by [`Self::status`] (Metrics tab) and, per issue #309, as the
+    /// hard gate "Automatically" software-update installs wait on — never
+    /// disrupt a live stream to install an update.
+    pub fn active_playback_sessions(&self) -> usize {
+        self.service.transcode_manager().active_sessions()
     }
 
     /// Up to the last 60 minutes of real streaming-bandwidth samples, one

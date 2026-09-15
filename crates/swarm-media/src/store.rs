@@ -2836,7 +2836,7 @@ impl Library {
         let rows: Vec<Row> = sqlx::query_as(
             "SELECT id, device_id, device_name, entry_key, asset_title, kind, message, context, occurred_at_ms, received_at_ms, \
                     resolution_comments, resolved_at_ms, dismissed_at_ms \
-             FROM client_errors ORDER BY received_at_ms DESC",
+             FROM client_errors ORDER BY received_at_ms DESC, id DESC",
         )
         .fetch_all(&self.pool)
         .await?;

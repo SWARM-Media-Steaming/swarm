@@ -32,11 +32,27 @@ use swarm_media::subtitles::{parse_subtitle_name, subtitle_extension};
 /// never silently omitted from the plan.
 const MAX_AI_GUESSES: usize = 25;
 
+/// Common artwork extensions considered for orphan detection (issue #298),
+/// alongside `swarm_media::subtitles::subtitle_extension`. Deliberately a
+/// small, well-known set rather than every image format — this only needs
+/// to catch the loose poster/thumbnail leftovers a past rename left behind,
+/// not classify every image file in a library.
+const ORPHAN_ARTWORK_EXTS: &[&str] = &["jpg", "jpeg", "png"];
+
+/// The top-level holding folder orphaned sidecars are proposed into (issue
+/// #298) — never deleted, just moved out of the way so nothing else can
+/// collide with it (see `scan_root`'s orphan pass doc comment).
+const ORPHANED_FOLDER: &str = "_orphaned";
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ReorgItem {
     /// Path relative to the scanned root, forward-slashed.
     pub from: String,
     pub to: String,
+    /// `"video"`, `"subtitle"` (a sidecar riding along with its video), or
+    /// `"orphan"` (issue #298: a subtitle/artwork leftover with no matching
+    /// video anywhere in the root, proposed for a move into `_orphaned/`
+    /// rather than a rename).
     pub kind: &'static str,
     pub ai_assisted: bool,
     /// `Some("tmdb")` when `classify` found a movie title but no year in the
@@ -61,6 +77,9 @@ pub struct ReorgPlan {
     /// filename itself (see `ReorgItem::year_source`).
     pub tmdb_year_count: u32,
     pub conflict_count: u32,
+    /// Count of `kind == "orphan"` items — subtitle/artwork leftovers with
+    /// no matching video anywhere in the root (issue #298).
+    pub orphan_count: u32,
     /// Every deterministic Plex-conformance problem found in the root
     /// (issue #247) — the complete list, unlike the bounded best-effort
     /// subset a library scan reports. Each carries the current path, the
@@ -154,6 +173,18 @@ pub async fn scan_root(
         }
     }
 
+    for (orphan_from, orphan_to) in find_orphans(&video_files, &items) {
+        let conflict = conflict_reason(root, &orphan_to, &mut planned_targets);
+        items.push(ReorgItem {
+            from: orphan_from,
+            to: orphan_to,
+            kind: "orphan",
+            ai_assisted: false,
+            year_source: None,
+            conflict,
+        });
+    }
+
     // Deterministic Plex-conformance validation over every media file in
     // the root — movies, episodes, and tracks alike, not just the videos
     // considered for a move above.
@@ -170,14 +201,103 @@ pub async fn scan_root(
     }
 
     let conflict_count = items.iter().filter(|i| i.conflict.is_some()).count() as u32;
+    let orphan_count = items.iter().filter(|i| i.kind == "orphan").count() as u32;
     Ok(ReorgPlan {
         root_label: root_label.to_string(),
         items,
         ai_assisted_count,
         tmdb_year_count,
         conflict_count,
+        orphan_count,
         validation,
     })
+}
+
+/// Second pass over the walked file list (issue #298): every subtitle or
+/// common-artwork-extension file not already carried along as a sidecar by
+/// `find_sidecar_moves` above, whose base stem doesn't match *any* video
+/// anywhere in the root — not just the ones a rename was proposed for —
+/// gets proposed for a move into the `_orphaned/` holding folder, keeping
+/// its original relative path underneath so it can never collide with
+/// anything else already there. This is the on-disk shape of the leftover
+/// `.vtt`/`.jpg` files a past manual rename abandoned in place: the video
+/// they belonged to has since moved to its canonical folder under a
+/// different name, so nothing today points at them and `classify` never
+/// sees them as media to validate in the first place.
+///
+/// Matches on stem the same way `find_sidecar_moves` does: a subtitle's
+/// base stem is taken after `parse_subtitle_name` peels any trailing
+/// language/modifier token, exactly like matching a sidecar to its video at
+/// scan time; an artwork file's base stem is compared as-is, since none of
+/// this codebase's own artwork-writing conventions (see
+/// `swarm_media::scan::recovered_artwork_kind`) name a file after a movie's
+/// own stem directly — those already live under an `images/` sibling
+/// folder, which is skipped entirely here so real scraped/manual artwork is
+/// never mistaken for an orphan.
+fn find_orphans(all_files: &[PathBuf], items: &[ReorgItem]) -> Vec<(String, String)> {
+    let video_stems: HashSet<String> = all_files
+        .iter()
+        .filter_map(|relative| {
+            let unix_relative = to_unix(relative);
+            let (_, is_audio) = classify::media_extension(&unix_relative)?;
+            if is_audio {
+                return None;
+            }
+            Path::new(&unix_relative)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_lowercase())
+        })
+        .collect();
+
+    let already_accounted: HashSet<&str> = items.iter().map(|i| i.from.as_str()).collect();
+
+    let mut orphans = Vec::new();
+    for relative in all_files {
+        let unix_relative = to_unix(relative);
+        if classify::media_extension(&unix_relative).is_some() {
+            continue; // a video or audio file, not an orphan candidate
+        }
+        if in_images_dir(&unix_relative) || is_already_orphaned(&unix_relative) {
+            continue;
+        }
+        if already_accounted.contains(unix_relative.as_str()) {
+            continue;
+        }
+        let is_subtitle = subtitle_extension(&unix_relative).is_some();
+        let is_artwork = !is_subtitle
+            && unix_relative
+                .rsplit('.')
+                .next()
+                .is_some_and(|ext| ORPHAN_ARTWORK_EXTS.contains(&ext.to_lowercase().as_str()));
+        if !is_subtitle && !is_artwork {
+            continue;
+        }
+
+        let Some(stem) = Path::new(&unix_relative).file_stem().map(|s| s.to_string_lossy().to_string()) else {
+            continue;
+        };
+        let base_stem = if is_subtitle {
+            parse_subtitle_name(&stem).base_stem.to_lowercase()
+        } else {
+            stem.to_lowercase()
+        };
+        if video_stems.contains(&base_stem) {
+            continue; // still matches a video somewhere in the root
+        }
+
+        orphans.push((unix_relative.clone(), format!("{ORPHANED_FOLDER}/{unix_relative}")));
+    }
+    orphans
+}
+
+fn in_images_dir(relative: &str) -> bool {
+    Path::new(relative)
+        .components()
+        .any(|c| c.as_os_str().to_string_lossy().eq_ignore_ascii_case("images"))
+}
+
+fn is_already_orphaned(relative: &str) -> bool {
+    relative == ORPHANED_FOLDER || relative.starts_with(&format!("{ORPHANED_FOLDER}/"))
 }
 
 /// Backfills a movie's missing release year from TMDb before the canonical
@@ -561,6 +681,56 @@ mod tests {
         assert!(subtitles.iter().any(|item| item.to == "Heat (1995)/Heat (1995).en.srt"));
         assert!(subtitles.iter().any(|item| item.to == "Heat (1995)/Heat (1995).es.vtt"));
         assert!(subtitles.iter().all(|item| item.conflict.is_none()));
+        assert!(plan.items.iter().all(|item| item.kind != "orphan"));
+        assert_eq!(plan.orphan_count, 0);
+    }
+
+    // --- Orphaned sidecar detection (issue #298) ---
+
+    #[tokio::test]
+    async fn flags_a_leftover_subtitle_and_artwork_file_with_no_matching_video_as_orphaned() {
+        let dir = tempfile::tempdir().unwrap();
+        // The movie has already been reorganized into its canonical folder...
+        write(dir.path(), "Heat (1995)/Heat (1995).mkv", "x");
+        // ...but a subtitle and poster left over from the old
+        // "Heat.1995.1080p" naming scheme are still loose at the root,
+        // pointing at nothing.
+        write(dir.path(), "Heat.1995.1080p.vtt", "x");
+        write(dir.path(), "Heat.1995.1080p.jpg", "x");
+
+        let plan = scan_root("local", dir.path(), None, None).await.unwrap();
+
+        let orphans: Vec<_> = plan.items.iter().filter(|i| i.kind == "orphan").collect();
+        assert_eq!(orphans.len(), 2);
+        assert!(orphans.iter().any(|i| i.from == "Heat.1995.1080p.vtt" && i.to == "_orphaned/Heat.1995.1080p.vtt"));
+        assert!(orphans.iter().any(|i| i.from == "Heat.1995.1080p.jpg" && i.to == "_orphaned/Heat.1995.1080p.jpg"));
+        assert!(orphans.iter().all(|i| i.conflict.is_none()));
+        assert_eq!(plan.orphan_count, 2);
+    }
+
+    #[tokio::test]
+    async fn does_not_flag_a_sidecar_that_still_matches_a_video_as_orphaned() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "Heat.1995.mkv", "x");
+        write(dir.path(), "Heat.1995.en.srt", "x");
+
+        let plan = scan_root("local", dir.path(), None, None).await.unwrap();
+
+        assert!(plan.items.iter().any(|i| i.kind == "subtitle" && i.from == "Heat.1995.en.srt"));
+        assert!(plan.items.iter().all(|i| i.kind != "orphan"));
+        assert_eq!(plan.orphan_count, 0);
+    }
+
+    #[tokio::test]
+    async fn does_not_treat_scraped_artwork_under_an_images_folder_as_orphaned() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "Heat (1995)/Heat (1995).mkv", "x");
+        write(dir.path(), "Heat (1995)/images/heat-1995-tmdb-poster.jpg", "x");
+
+        let plan = scan_root("local", dir.path(), None, None).await.unwrap();
+
+        assert!(plan.items.iter().all(|i| i.kind != "orphan"));
+        assert_eq!(plan.orphan_count, 0);
     }
 
     #[tokio::test]

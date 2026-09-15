@@ -18,5 +18,18 @@ clients/tv-android/app/upload.keystore
 *.p12
 *.keystore
 deploy/**/.env
+# Terraform local/generated state — deploy/terraform/.gitignore covers this
+# too once it exists on a given checkout, but that file only landed on
+# ai-main so far (not yet promoted to main); this root-level copy protects
+# every branch in the meantime, and any other deploy/**/terraform work later.
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
 nohup.out
 /scripts/tests/tv_test_device.local.json

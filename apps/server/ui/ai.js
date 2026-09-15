@@ -287,7 +287,7 @@ function renderReorgPlans(plans) {
           .map(
             item => `
         <li>
-          <span class="mono">${esc(item.from)}</span> → <span class="mono">${esc(item.to)}</span>
+          <span class="mono">${esc(item.from)}</span> → ${item.destination_root_label ? `<strong>${esc(item.destination_root_label)}:</strong> ` : ""}<span class="mono">${esc(item.to)}</span>
           ${item.kind === "orphan" ? '<br><span class="orphan-label"><i class="bi bi-exclamation-triangle"></i> Orphaned — no matching video found, moved out of the way</span>' : ""}
           ${item.kind === "duplicate" ? '<br><span class="duplicate-label"><i class="bi bi-files"></i> Duplicate of an already-organized file — moved aside, original left untouched</span>' : ""}
           ${item.ai_assisted ? '<span class="muted ai-assisted-label"> (AI-assisted)</span>' : ""}
@@ -305,9 +305,9 @@ function renderReorgPlans(plans) {
             item => `
         <li>
           <span class="mono">${esc(item.path)}</span>
-          <br><span class="muted">Classified as ${esc(item.kind)} — belongs under “<strong>${esc(
+          <br><span class="muted">Classified as ${esc(item.kind)} — included in the reviewed plan for “<strong>${esc(
               item.correct_root_label
-            )}</strong>”, not moved automatically</span>
+            )}</strong>”</span>
         </li>`
           )
           .join("")}</ul>`

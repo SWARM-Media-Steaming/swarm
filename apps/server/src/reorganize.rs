@@ -22,7 +22,8 @@
 //! with no album either way is left out of the plan.
 
 use crate::ai::AiClient;
-use std::collections::HashSet;
+use futures_util::{stream, StreamExt};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use swarm_core::peer::MediaKind;
 use swarm_media::classify::{self, Classified};
@@ -60,6 +61,11 @@ pub struct ReorgItem {
     /// Path relative to the scanned root, forward-slashed.
     pub from: String,
     pub to: String,
+    /// Another configured root that owns `to`. `None` means the scanned
+    /// root. This keeps cross-library corrections explicit in review while
+    /// allowing the same apply journal and Undo path to handle them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub destination_root_label: Option<String>,
     /// `"video"`, `"track"` (issue #300: a music file proposed for a move
     /// to its canonical `Artist/Album/Track.ext` path), `"subtitle"` (a
     /// sidecar riding along with its video), `"orphan"` (issue #298: a
@@ -99,15 +105,11 @@ pub struct RootExpectation {
 }
 
 /// One file whose classified kind doesn't match the asset type of the root
-/// it's currently sitting under — e.g. a whole TV show bundle sitting
-/// inside a root configured for movies (issue #301, see
-/// `docs/PLEX_COMPATIBILITY_AUDIT.md`). Detection and reporting only:
-/// deliberately a distinct type from [`ReorgItem`] with no `conflict`
-/// field and no destination path on the *current* root, so it can never be
-/// folded into a [`ReorgPlan`]'s `items` or passed to `apply_plan` — a
-/// cross-root move needs copy+verify+delete against a possibly separate
-/// filesystem/mount, not a cheap `fs::rename`, and that's out of scope
-/// here on purpose (see the module doc comment).
+/// it's currently sitting under — e.g. a feature film inside a Shows root
+/// (issue #301, see `docs/PLEX_COMPATIBILITY_AUDIT.md`). Kept distinct from
+/// [`ReorgItem`] so detection remains read-only; [`plan_misplaced_moves`]
+/// performs the explicit, reviewed conversion when exactly one configured
+/// root owns the detected kind.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct MisplacedItem {
     /// Path relative to the scanned root, forward-slashed.
@@ -134,6 +136,27 @@ pub fn find_misplaced_content(
     root: &Path,
     all_roots: &[RootExpectation],
 ) -> std::io::Result<Vec<MisplacedItem>> {
+    find_misplaced_content_impl(root_label, root, all_roots, None)
+}
+
+/// Root-aware misplaced detection. In a Shows root, recognized extras stay
+/// episodes while year-bearing feature films remain movies, eliminating the
+/// old false report that every Aqua Teen featurette belonged in Movies.
+pub fn find_misplaced_content_for_asset_type(
+    root_label: &str,
+    root: &Path,
+    all_roots: &[RootExpectation],
+    asset_type: MediaRootAssetType,
+) -> std::io::Result<Vec<MisplacedItem>> {
+    find_misplaced_content_impl(root_label, root, all_roots, Some(asset_type))
+}
+
+fn find_misplaced_content_impl(
+    root_label: &str,
+    root: &Path,
+    all_roots: &[RootExpectation],
+    asset_type: Option<MediaRootAssetType>,
+) -> std::io::Result<Vec<MisplacedItem>> {
     let Some(current) = all_roots.iter().find(|r| r.label == root_label) else {
         return Ok(Vec::new());
     };
@@ -143,14 +166,33 @@ pub fn find_misplaced_content(
 
     let mut all_files = Vec::new();
     walk(root, root, &mut all_files)?;
+    let known_shows = asset_type
+        .filter(|kind| *kind == MediaRootAssetType::Shows)
+        .map_or_else(Vec::new, |_| known_show_roots(&all_files));
+    let no_damaged_owners = HashMap::new();
 
     let mut misplaced = Vec::new();
     for relative in &all_files {
         let unix_relative = to_unix(relative);
-        if classify::media_extension(&unix_relative).is_none() {
+        let Some((_, is_audio)) = classify::media_extension(&unix_relative) else {
+            continue;
+        };
+        // Video extras bundled with an album are valid music-library
+        // companions, not feature films merely because their extension is
+        // recognized by the generic video classifier.
+        if asset_type == Some(MediaRootAssetType::Music) && !is_audio {
             continue;
         }
-        let Some(classified) = classify::classify(&unix_relative) else {
+        let classified = match asset_type {
+            Some(MediaRootAssetType::Shows) => classify_for_reorganization(
+                &unix_relative,
+                MediaRootAssetType::Shows,
+                &known_shows,
+                &no_damaged_owners,
+            ),
+            _ => classify::classify(&unix_relative),
+        };
+        let Some(classified) = classified else {
             continue;
         };
         if classified.kind == current_expected {
@@ -173,6 +215,90 @@ pub fn find_misplaced_content(
         });
     }
     Ok(misplaced)
+}
+
+/// Builds reviewed moves from one root into the single configured root that
+/// owns each misplaced item. Cross-root moves use the same rename-only,
+/// no-overwrite semantics as ordinary reorganization and bring subtitle
+/// sidecars along with their video.
+pub async fn plan_misplaced_moves(
+    source_root: &Path,
+    destination_root: &Path,
+    destination_root_label: &str,
+    misplaced: &[MisplacedItem],
+) -> Vec<ReorgItem> {
+    let mut items = Vec::new();
+    let mut planned_targets = HashSet::new();
+    for finding in misplaced
+        .iter()
+        .filter(|item| item.correct_root_label == destination_root_label)
+    {
+        let Some((ext, is_audio)) = classify::media_extension(&finding.path) else {
+            continue;
+        };
+        if is_audio {
+            continue;
+        }
+        let Some(classified) = classify::classify(&finding.path) else {
+            continue;
+        };
+        let canonical = canonical_video_path(&classified, ext);
+        let (to, kind, target_root_label, conflict) = resolve_cross_root_destination(
+            source_root,
+            destination_root,
+            destination_root_label,
+            &finding.path,
+            &canonical,
+            "video",
+            &mut planned_targets,
+        )
+        .await;
+        items.push(ReorgItem {
+            from: finding.path.clone(),
+            to: to.clone(),
+            kind,
+            destination_root_label: target_root_label.clone(),
+            ai_assisted: false,
+            year_source: None,
+            conflict,
+        });
+
+        let sidecar_target = to;
+        for (sub_from, sub_to) in find_sidecar_moves(source_root, &finding.path, &sidecar_target) {
+            let (to, kind, sidecar_root_label, conflict) = if target_root_label.is_some() {
+                resolve_cross_root_destination(
+                    source_root,
+                    destination_root,
+                    destination_root_label,
+                    &sub_from,
+                    &sub_to,
+                    "subtitle",
+                    &mut planned_targets,
+                )
+                .await
+            } else {
+                let (to, kind, conflict) = resolve_destination(
+                    source_root,
+                    &sub_from,
+                    &sub_to,
+                    "subtitle",
+                    &mut planned_targets,
+                )
+                .await;
+                (to, kind, None, conflict)
+            };
+            items.push(ReorgItem {
+                from: sub_from,
+                to,
+                kind,
+                destination_root_label: sidecar_root_label,
+                ai_assisted: false,
+                year_source: None,
+                conflict,
+            });
+        }
+    }
+    items
 }
 
 fn media_kind_label(kind: MediaKind) -> &'static str {
@@ -243,6 +369,11 @@ pub async fn scan_root_for_asset_type(
     } else {
         Vec::new()
     };
+    let damaged_path_owners = if asset_type == MediaRootAssetType::Shows {
+        infer_damaged_path_owners(root, &video_files, &known_show_roots).await
+    } else {
+        HashMap::new()
+    };
 
     let mut items = Vec::new();
     let mut ai_assisted_count = 0u32;
@@ -262,6 +393,14 @@ pub async fn scan_root_for_asset_type(
             }
             continue;
         }
+        if asset_type == MediaRootAssetType::Music {
+            continue;
+        }
+        if asset_type == MediaRootAssetType::Movies
+            && classify::classify(&unix_relative).is_some_and(|item| item.kind != MediaKind::Movie)
+        {
+            continue;
+        }
 
         // `classify` deliberately has a best-effort movie fallback for every
         // recognized video extension. Keep that result even when it lacks a
@@ -271,6 +410,7 @@ pub async fn scan_root_for_asset_type(
             &unix_relative,
             asset_type,
             &known_show_roots,
+            &damaged_path_owners,
         ) else {
             continue;
         };
@@ -305,20 +445,22 @@ pub async fn scan_root_for_asset_type(
             resolve_destination(root, &unix_relative, &canonical, "video", &mut planned_targets).await;
         items.push(ReorgItem {
             from: unix_relative.clone(),
-            to,
+            to: to.clone(),
             kind,
+            destination_root_label: None,
             ai_assisted,
             year_source,
             conflict,
         });
 
-        for (sub_from, sub_to) in find_sidecar_moves(root, &unix_relative, &canonical) {
+        for (sub_from, sub_to) in find_sidecar_moves(root, &unix_relative, &to) {
             let (to, kind, conflict) =
                 resolve_destination(root, &sub_from, &sub_to, "subtitle", &mut planned_targets).await;
             items.push(ReorgItem {
                 from: sub_from,
                 to,
                 kind,
+                destination_root_label: None,
                 ai_assisted,
                 year_source,
                 conflict,
@@ -326,17 +468,77 @@ pub async fn scan_root_for_asset_type(
         }
     }
 
-    for (orphan_from, orphan_to) in find_orphans(&video_files, &items) {
-        let (to, kind, conflict) =
-            resolve_destination(root, &orphan_from, &orphan_to, "orphan", &mut planned_targets).await;
-        items.push(ReorgItem {
-            from: orphan_from,
-            to,
-            kind,
-            ai_assisted: false,
-            year_source: None,
-            conflict,
-        });
+    if asset_type == MediaRootAssetType::Shows {
+        let already_planned: HashSet<String> = items.iter().map(|item| item.from.clone()).collect();
+        for (alias_from, alias_to, kind) in artwork_only_show_alias_moves(
+            &video_files,
+            &known_show_roots,
+            &already_planned,
+        ) {
+            let (to, kind, conflict) = resolve_destination(
+                root,
+                &alias_from,
+                &alias_to,
+                kind,
+                &mut planned_targets,
+            )
+            .await;
+            items.push(ReorgItem {
+                from: alias_from,
+                to,
+                kind,
+                destination_root_label: None,
+                ai_assisted: false,
+                year_source: None,
+                conflict,
+            });
+        }
+    }
+
+    if asset_type == MediaRootAssetType::Movies {
+        for (sidecar_from, sidecar_to) in find_relocated_movie_sidecars(&video_files, &items) {
+            let (to, kind, conflict) = resolve_destination(
+                root,
+                &sidecar_from,
+                &sidecar_to,
+                "subtitle",
+                &mut planned_targets,
+            )
+            .await;
+            items.push(ReorgItem {
+                from: sidecar_from,
+                to,
+                kind,
+                destination_root_label: None,
+                ai_assisted: false,
+                year_source: None,
+                conflict,
+            });
+        }
+    }
+
+    // Album art and disc-bundled assets have conventions that are not
+    // movie/TV sidecars. Never sweep them into `_orphaned` in a Music root.
+    if asset_type != MediaRootAssetType::Music {
+        for (orphan_from, orphan_to) in find_orphans(&video_files, &items) {
+            let (to, kind, conflict) = resolve_destination(
+                root,
+                &orphan_from,
+                &orphan_to,
+                "orphan",
+                &mut planned_targets,
+            )
+            .await;
+            items.push(ReorgItem {
+                from: orphan_from,
+                to,
+                kind,
+                destination_root_label: None,
+                ai_assisted: false,
+                year_source: None,
+                conflict,
+            });
+        }
     }
 
     // Deterministic Plex-conformance validation over every media file in
@@ -345,13 +547,17 @@ pub async fn scan_root_for_asset_type(
     let mut validation = Vec::new();
     for relative in &video_files {
         let unix_relative = to_unix(relative);
-        if classify::media_extension(&unix_relative).is_none() {
+        let Some((_, is_audio)) = classify::media_extension(&unix_relative) else {
+            continue;
+        };
+        if asset_type == MediaRootAssetType::Music && !is_audio {
             continue;
         }
         let classified = classify_for_reorganization(
             &unix_relative,
             asset_type,
             &known_show_roots,
+            &damaged_path_owners,
         );
         if let Some(issue) = plex::validate_media_file(&unix_relative, classified.as_ref()) {
             validation.push(issue);
@@ -373,6 +579,81 @@ pub async fn scan_root_for_asset_type(
     })
 }
 
+fn artwork_only_show_alias_moves(
+    files: &[PathBuf],
+    known_shows: &[String],
+    already_planned: &HashSet<String>,
+) -> Vec<(String, String, &'static str)> {
+    let mut top_has_video = HashSet::new();
+    for relative in files {
+        let path = to_unix(relative);
+        let Some(top) = path.split('/').next() else { continue };
+        if classify::media_extension(&path).is_some_and(|(_, is_audio)| !is_audio) {
+            top_has_video.insert(top.to_ascii_lowercase());
+        }
+    }
+
+    let mut moves = Vec::new();
+    for relative in files {
+        let path = to_unix(relative);
+        if already_planned.contains(&path) {
+            continue;
+        }
+        let parts: Vec<&str> = path.split('/').collect();
+        let Some(alias) = parts.first().copied() else { continue };
+        if parts.len() < 2 || top_has_video.contains(&alias.to_ascii_lowercase()) {
+            continue;
+        }
+        let alias_key = normalized_show_key(alias);
+        let matching: Vec<&String> = known_shows
+            .iter()
+            .filter(|show| {
+                !show.eq_ignore_ascii_case(alias) && normalized_show_key(show) == alias_key
+            })
+            .collect();
+        if matching.len() != 1 {
+            continue;
+        }
+        let file_name = parts.last().copied().unwrap_or_default();
+        let kind = if subtitle_extension(file_name).is_some() {
+            "subtitle"
+        } else if file_name
+            .rsplit_once('.')
+            .is_some_and(|(_, ext)| ORPHAN_ARTWORK_EXTS.contains(&ext.to_ascii_lowercase().as_str()))
+        {
+            "artwork"
+        } else {
+            continue;
+        };
+        let mut remainder: Vec<String> = parts[1..].iter().map(|part| (*part).to_string()).collect();
+        if let Some(first) = remainder.first_mut() {
+            if let Some(season) = season_number_from_folder(first) {
+                *first = format!("Season {season:02}");
+            }
+        }
+        moves.push((
+            path,
+            format!("{}/{}", matching[0], remainder.join("/")),
+            kind,
+        ));
+    }
+    moves
+}
+
+fn normalized_show_key(name: &str) -> String {
+    name.chars()
+        .filter(|character| character.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn season_number_from_folder(folder: &str) -> Option<u32> {
+    let lower = folder.to_ascii_lowercase();
+    let rest = lower.strip_prefix("season")?.trim_start();
+    let digits: String = rest.chars().take_while(|character| character.is_ascii_digit()).collect();
+    (!digits.is_empty()).then(|| digits.parse().ok()).flatten()
+}
+
 /// Top-level directories already proven to be real shows by at least one
 /// numbered episode. These anchors let a second reorganization run repair
 /// the bad singleton folders created by the old algorithm, e.g.
@@ -390,6 +671,9 @@ fn known_show_roots(files: &[PathBuf]) -> Vec<String> {
         let Some(top) = path.split('/').next().filter(|part| !part.is_empty()) else {
             continue;
         };
+        if is_reserved_top_level(top) {
+            continue;
+        }
         if !roots.iter().any(|known: &String| known.eq_ignore_ascii_case(top)) {
             roots.push(top.to_string());
         }
@@ -398,10 +682,109 @@ fn known_show_roots(files: &[PathBuf]) -> Vec<String> {
     roots
 }
 
+fn is_reserved_top_level(name: &str) -> bool {
+    name.starts_with('_')
+        || plex::PlexExtraKind::from_dir_name(name).is_some()
+        || matches!(name.to_ascii_lowercase().as_str(), "extras" | "images" | "sample" | "samples")
+}
+
+/// Recovers owners inside a damaged top-level category only when ffprobe
+/// metadata names exactly one already proven show. A category can contain
+/// material from multiple shows, so ownership is recorded per video. An
+/// untagged video inherits its season/category group's owner only when every
+/// tagged video in that group agrees; mixed and wholly untagged groups stay
+/// untouched for review.
+async fn infer_damaged_path_owners(
+    root: &Path,
+    files: &[PathBuf],
+    known_shows: &[String],
+) -> HashMap<String, String> {
+    let mut candidates = Vec::new();
+    for relative in files {
+        let parts: Vec<String> = relative
+            .iter()
+            .map(|part| part.to_string_lossy().into_owned())
+            .collect();
+        let Some(top) = parts.first() else { continue };
+        if !is_reserved_top_level(top)
+            || !classify::media_extension(&to_unix(relative))
+                .is_some_and(|(_, is_audio)| !is_audio)
+        {
+            continue;
+        }
+        candidates.push(relative.clone());
+    }
+
+    let probed = stream::iter(candidates.iter().cloned())
+        .map(|relative| async move {
+            let title = swarm_media::probe::container_title(&root.join(&relative)).await;
+            (relative, title)
+        })
+        .buffer_unordered(8)
+        .collect::<Vec<_>>()
+        .await;
+
+    let mut owners = HashMap::new();
+    let mut group_owners: HashMap<(String, String), HashSet<String>> = HashMap::new();
+    for (relative, title) in probed {
+        let Some(title) = title else {
+            continue;
+        };
+        let matches: Vec<&String> = known_shows
+            .iter()
+            .filter(|show| metadata_title_names_show(&title, show))
+            .collect();
+        if matches.len() != 1 {
+            continue;
+        }
+        let path = to_unix(&relative);
+        let parts: Vec<&str> = path.split('/').collect();
+        let group = (
+            parts.first().unwrap_or(&"").to_ascii_lowercase(),
+            parts.get(1).unwrap_or(&"").to_ascii_lowercase(),
+        );
+        owners.insert(path.to_ascii_lowercase(), matches[0].clone());
+        group_owners.entry(group).or_default().insert(matches[0].clone());
+    }
+    for relative in candidates {
+        let path = to_unix(&relative);
+        if owners.contains_key(&path.to_ascii_lowercase()) {
+            continue;
+        }
+        let parts: Vec<&str> = path.split('/').collect();
+        let group = (
+            parts.first().unwrap_or(&"").to_ascii_lowercase(),
+            parts.get(1).unwrap_or(&"").to_ascii_lowercase(),
+        );
+        let Some(group_matches) = group_owners.get(&group) else {
+            continue;
+        };
+        if group_matches.len() == 1 {
+            owners.insert(
+                path.to_ascii_lowercase(),
+                group_matches.iter().next().expect("one owner").clone(),
+            );
+        }
+    }
+    owners
+}
+
+fn metadata_title_names_show(metadata_title: &str, show: &str) -> bool {
+    let title = metadata_title.trim();
+    title.len() >= show.len()
+        && title
+            .get(..show.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(show))
+        && title
+            .get(show.len()..)
+            .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with([' ', ':', '-', '(']))
+}
+
 fn classify_for_reorganization(
     relative_path: &str,
     asset_type: MediaRootAssetType,
     known_shows: &[String],
+    damaged_path_owners: &HashMap<String, String>,
 ) -> Option<Classified> {
     let generic = classify::classify(relative_path)?;
     if asset_type != MediaRootAssetType::Shows {
@@ -409,8 +792,29 @@ fn classify_for_reorganization(
     }
 
     let top = relative_path.split('/').next()?;
+    if let Some(owner) = damaged_path_owners.get(&relative_path.to_ascii_lowercase()) {
+        let mut repaired = generic;
+        let path = Path::new(relative_path);
+        let stem = path.file_stem()?.to_string_lossy().trim().to_string();
+        repaired.kind = MediaKind::Episode;
+        repaired.title = stem.clone();
+        repaired.show_title = Some(owner.clone());
+        repaired.season = season_from_relative_path(relative_path).or(Some(0));
+        repaired.episode = None;
+        repaired.episode_end = None;
+        repaired.extra_kind = Some(
+            plex::PlexExtraKind::from_dir_name(top)
+                .unwrap_or(plex::PlexExtraKind::Other)
+                .slug(),
+        );
+        repaired.extra_title = Some(stem);
+        repaired.extra_parent_title = None;
+        repaired.extra_parent_dir = None;
+        return Some(repaired);
+    }
+
     let top_is_known_show = known_shows.iter().any(|show| show.eq_ignore_ascii_case(top));
-    if generic.kind == MediaKind::Episode || top_is_known_show {
+    if top_is_known_show {
         return classify::classify_for_asset_type(relative_path, asset_type).or(Some(generic));
     }
 
@@ -418,26 +822,81 @@ fn classify_for_reorganization(
     // not a TV extra. Likewise the common Dragon Ball `M01` movie notation.
     // Leave these as movies so the existing cross-root detector points them
     // at the configured Movies library instead of hiding them under a show.
-    if generic.year.is_some() || looks_like_numbered_movie(top) {
+    if contains_explicit_release_year(top) || looks_like_numbered_movie(top) {
         return Some(generic);
     }
 
-    let parent = known_shows.iter().find(|show| {
-        top.get(..show.len()).is_some_and(|prefix| prefix.eq_ignore_ascii_case(show))
-            && top.get(show.len()..).is_some_and(|suffix| suffix.starts_with(" - "))
-    })?;
-    let suffix = top[parent.len() + 3..].trim();
-    let mut repaired = classify::classify_for_asset_type(relative_path, asset_type)?;
-    repaired.show_title = Some(parent.clone());
-    repaired.season = Some(0);
-    repaired.episode = None;
-    repaired.episode_end = None;
-    let extra_kind = infer_extra_kind(suffix);
-    repaired.extra_kind = Some(extra_kind.slug());
-    repaired.extra_title = Some(clean_bug_split_extra_title(suffix));
-    repaired.extra_parent_title = None;
-    repaired.extra_parent_dir = None;
-    Some(repaired)
+    // A reserved Plex category is never itself a show. If metadata did not
+    // identify a safe owner above, leave the item in place for review rather
+    // than canonically preserving the broken `Featurettes/Season ...` root.
+    if is_reserved_top_level(top) {
+        return None;
+    }
+
+    let parent = known_shows
+        .iter()
+        .find_map(|show| split_known_show_extra(top, show).map(|suffix| (show, suffix)));
+    if let Some((parent, suffix)) = parent {
+        let mut repaired = classify::classify_for_asset_type(relative_path, asset_type)?;
+        repaired.show_title = Some(parent.clone());
+        repaired.season = season_from_relative_path(relative_path).or(Some(0));
+        repaired.episode = None;
+        repaired.episode_end = None;
+        let extra_kind = infer_extra_kind(suffix);
+        repaired.extra_kind = Some(extra_kind.slug());
+        repaired.extra_title = Some(clean_bug_split_extra_title(suffix));
+        repaired.extra_parent_title = None;
+        repaired.extra_parent_dir = None;
+        return Some(repaired);
+    }
+
+    if generic.kind == MediaKind::Episode {
+        return classify::classify_for_asset_type(relative_path, asset_type).or(Some(generic));
+    }
+    None
+}
+
+fn split_known_show_extra<'a>(folder: &'a str, show: &str) -> Option<&'a str> {
+    let prefix = folder.get(..show.len())?;
+    if !prefix.eq_ignore_ascii_case(show) {
+        return None;
+    }
+    let suffix = folder.get(show.len()..)?.trim();
+    if let Some(suffix) = suffix.strip_prefix('-') {
+        return Some(suffix.trim());
+    }
+    let lower = suffix.to_ascii_lowercase();
+    [
+        "side story",
+        "ova",
+        "special",
+        "featurette",
+        "behind the scenes",
+    ]
+        .iter()
+        .any(|marker| lower.starts_with(marker))
+        .then_some(suffix)
+        .or_else(|| lower.contains("picture drama").then_some(suffix))
+}
+
+fn season_from_relative_path(relative_path: &str) -> Option<u32> {
+    relative_path.split('/').find_map(|part| {
+        let rest = part.trim().to_ascii_lowercase();
+        let digits = rest.strip_prefix("season")?.trim_start();
+        let digits: String = digits.chars().take_while(|c| c.is_ascii_digit()).collect();
+        (!digits.is_empty()).then(|| digits.parse().ok()).flatten()
+    })
+}
+
+fn contains_explicit_release_year(folder: &str) -> bool {
+    folder
+        .char_indices()
+        .filter_map(|(index, _)| folder.get(index..index + 4))
+        .any(|candidate| {
+            candidate
+                .parse::<u32>()
+                .is_ok_and(|year| (1900..=2099).contains(&year))
+        })
 }
 
 fn looks_like_numbered_movie(folder: &str) -> bool {
@@ -564,6 +1023,82 @@ fn find_orphans(all_files: &[PathBuf], items: &[ReorgItem]) -> Vec<(String, Stri
     orphans
 }
 
+/// Finds loose movie subtitles whose old pre-reorganization filename no
+/// longer exactly matches the canonical video stem. A normalized title is
+/// used only when it identifies exactly one video in the entire root; that
+/// uniqueness requirement prevents remakes and similarly named films from
+/// being guessed. The original language/Whisper suffix is preserved.
+fn find_relocated_movie_sidecars(
+    all_files: &[PathBuf],
+    items: &[ReorgItem],
+) -> Vec<(String, String)> {
+    let mut videos_by_title: HashMap<String, Vec<String>> = HashMap::new();
+    for relative in all_files {
+        let path = to_unix(relative);
+        let Some((_, is_audio)) = classify::media_extension(&path) else {
+            continue;
+        };
+        if is_audio {
+            continue;
+        }
+        let Some(classified) = classify::classify(&path) else {
+            continue;
+        };
+        let key = normalized_title_key(&classified.title);
+        if !key.is_empty() {
+            videos_by_title.entry(key).or_default().push(path);
+        }
+    }
+
+    let already_accounted: HashSet<&str> = items.iter().map(|item| item.from.as_str()).collect();
+    let mut moves = Vec::new();
+    for relative in all_files {
+        let from = to_unix(relative);
+        if already_accounted.contains(from.as_str()) || is_already_orphaned(&from) {
+            continue;
+        }
+        let Some(extension) = subtitle_extension(&from) else {
+            continue;
+        };
+        let Some(stem) = Path::new(&from).file_stem().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        let parsed = parse_subtitle_name(stem);
+        let synthetic_video = format!("{}.mkv", parsed.base_stem);
+        let Some(sidecar_title) = classify::classify(&synthetic_video) else {
+            continue;
+        };
+        let Some(matches) = videos_by_title.get(&normalized_title_key(&sidecar_title.title)) else {
+            continue;
+        };
+        if matches.len() != 1 {
+            continue;
+        }
+        let video = Path::new(&matches[0]);
+        let Some(video_stem) = video.file_stem().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        let suffix = stem.strip_prefix(&parsed.base_stem).unwrap_or("");
+        let target = video
+            .parent()
+            .unwrap_or_else(|| Path::new(""))
+            .join(format!("{video_stem}{suffix}.{extension}"));
+        let target = to_unix(&target);
+        if target != from {
+            moves.push((from, target));
+        }
+    }
+    moves
+}
+
+fn normalized_title_key(title: &str) -> String {
+    title
+        .chars()
+        .filter(|character| character.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
 fn in_images_dir(relative: &str) -> bool {
     Path::new(relative)
         .components()
@@ -632,6 +1167,7 @@ async fn plan_track(
         from: relative.to_string(),
         to,
         kind,
+        destination_root_label: None,
         ai_assisted: false,
         year_source: None,
         conflict,
@@ -687,7 +1223,10 @@ fn canonical_track_path(c: &Classified, ext: &str) -> Option<String> {
 /// accounted for. Returns the item's final `to`, `kind`, and `conflict` —
 /// `kind` stays `default_kind` unless the destination turns out to be a
 /// confirmed content duplicate (issue #299), in which case it becomes
-/// `"duplicate"` and `to` is redirected into `DUPLICATES_FOLDER`.
+/// `"duplicate"` and `to` is redirected into `DUPLICATES_FOLDER`. A
+/// different-content collision is preserved as an alternate version beside
+/// the canonical file; it is never overwritten and no obsolete season
+/// folder has to remain solely because two encodes share an episode number.
 async fn resolve_destination(
     root: &Path,
     source: &str,
@@ -700,20 +1239,94 @@ async fn resolve_destination(
         if files_are_identical(root.join(source), dest_path).await {
             return duplicate_destination(source, planned_targets);
         }
-        return (
-            target.to_string(),
-            default_kind,
-            Some("a file already exists at the destination".to_string()),
-        );
+        return alternate_destination(root, source, target, default_kind, planned_targets);
     }
     if !planned_targets.insert(target.to_string()) {
-        return (
-            target.to_string(),
-            default_kind,
-            Some("likely a duplicate — another item in this plan already targets this path".to_string()),
-        );
+        return alternate_destination(root, source, target, default_kind, planned_targets);
     }
     (target.to_string(), default_kind, None)
+}
+
+async fn resolve_cross_root_destination(
+    source_root: &Path,
+    destination_root: &Path,
+    destination_root_label: &str,
+    source: &str,
+    target: &str,
+    default_kind: &'static str,
+    planned_targets: &mut HashSet<String>,
+) -> (String, &'static str, Option<String>, Option<String>) {
+    let dest_path = destination_root.join(target);
+    if dest_path.exists() {
+        if files_are_identical(source_root.join(source), dest_path).await {
+            let (to, kind, conflict) = duplicate_destination(source, planned_targets);
+            return (to, kind, None, conflict);
+        }
+        let (to, kind, conflict) = alternate_destination(
+            destination_root,
+            source,
+            target,
+            default_kind,
+            planned_targets,
+        );
+        return (to, kind, Some(destination_root_label.to_string()), conflict);
+    }
+    if !planned_targets.insert(target.to_string()) {
+        let (to, kind, conflict) = alternate_destination(
+            destination_root,
+            source,
+            target,
+            default_kind,
+            planned_targets,
+        );
+        return (to, kind, Some(destination_root_label.to_string()), conflict);
+    }
+    (
+        target.to_string(),
+        default_kind,
+        Some(destination_root_label.to_string()),
+        None,
+    )
+}
+
+fn alternate_destination(
+    root: &Path,
+    source: &str,
+    target: &str,
+    kind: &'static str,
+    planned_targets: &mut HashSet<String>,
+) -> (String, &'static str, Option<String>) {
+    let target_path = Path::new(target);
+    let parent = target_path.parent().unwrap_or_else(|| Path::new(""));
+    let canonical_stem = target_path.file_stem().map_or_else(
+        || "alternate".to_string(),
+        |stem| stem.to_string_lossy().into_owned(),
+    );
+    let source_stem = Path::new(source)
+        .file_stem()
+        .map(|stem| sanitize(&stem.to_string_lossy()))
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or_else(|| "alternate".to_string());
+    let extension = target_path
+        .extension()
+        .map(|extension| format!(".{}", extension.to_string_lossy()))
+        .unwrap_or_default();
+    for suffix in 1..=10_000 {
+        let label = if suffix == 1 {
+            source_stem.clone()
+        } else {
+            format!("{source_stem} {suffix}")
+        };
+        let candidate = to_unix(&parent.join(format!("{canonical_stem} - {label}{extension}")));
+        if !root.join(&candidate).exists() && planned_targets.insert(candidate.clone()) {
+            return (candidate, kind, None);
+        }
+    }
+    (
+        target.to_string(),
+        kind,
+        Some("could not choose a unique alternate destination without overwriting".to_string()),
+    )
 }
 
 /// Redirects a confirmed duplicate's source into `_duplicates/<original
@@ -974,6 +1587,7 @@ fn to_unix(path: &Path) -> String {
 pub struct AppliedMove {
     pub from: String,
     pub to: String,
+    pub destination_root_label: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -993,6 +1607,14 @@ pub struct ApplyOutcome {
 /// be stale by the time a user approves it) rather than trusting the
 /// scan-time snapshot.
 pub fn apply_plan(root: &Path, items: &[ReorgItem]) -> ApplyOutcome {
+    apply_plan_with_roots(root, &HashMap::new(), items)
+}
+
+pub fn apply_plan_with_roots(
+    root: &Path,
+    destination_roots: &HashMap<String, PathBuf>,
+    items: &[ReorgItem],
+) -> ApplyOutcome {
     let mut outcome = ApplyOutcome::default();
     for item in items {
         if let Some(reason) = &item.conflict {
@@ -1001,7 +1623,21 @@ pub fn apply_plan(root: &Path, items: &[ReorgItem]) -> ApplyOutcome {
             continue;
         }
         let from = root.join(&item.from);
-        let to = root.join(&item.to);
+        let destination_root = match item.destination_root_label.as_deref() {
+            Some(label) => match destination_roots.get(label) {
+                Some(path) => path,
+                None => {
+                    outcome.skipped += 1;
+                    outcome.errors.push(format!(
+                        "{}: destination root \"{label}\" is no longer configured, skipped",
+                        item.from
+                    ));
+                    continue;
+                }
+            },
+            None => root,
+        };
+        let to = destination_root.join(&item.to);
         if !from.exists() {
             outcome.skipped += 1;
             outcome.errors.push(format!("{}: source no longer exists, skipped", item.from));
@@ -1027,6 +1663,7 @@ pub fn apply_plan(root: &Path, items: &[ReorgItem]) -> ApplyOutcome {
                 outcome.applied_moves.push(AppliedMove {
                     from: item.from.clone(),
                     to: item.to.clone(),
+                    destination_root_label: item.destination_root_label.clone(),
                 });
                 remove_empty_ancestors(root, from.parent());
             }
@@ -1043,9 +1680,31 @@ pub fn apply_plan(root: &Path, items: &[ReorgItem]) -> ApplyOutcome {
 /// Existing original paths are never overwritten; when one has reappeared,
 /// the moved file remains at its reorganized path and is reported as skipped.
 pub fn undo_plan(root: &Path, applied_moves: &[AppliedMove]) -> ApplyOutcome {
+    undo_plan_with_roots(root, &HashMap::new(), applied_moves)
+}
+
+pub fn undo_plan_with_roots(
+    root: &Path,
+    destination_roots: &HashMap<String, PathBuf>,
+    applied_moves: &[AppliedMove],
+) -> ApplyOutcome {
     let mut outcome = ApplyOutcome::default();
     for applied in applied_moves.iter().rev() {
-        let from = root.join(&applied.to);
+        let destination_root = match applied.destination_root_label.as_deref() {
+            Some(label) => match destination_roots.get(label) {
+                Some(path) => path,
+                None => {
+                    outcome.skipped += 1;
+                    outcome.errors.push(format!(
+                        "{}: destination root \"{label}\" is no longer configured, skipped",
+                        applied.to
+                    ));
+                    continue;
+                }
+            },
+            None => root,
+        };
+        let from = destination_root.join(&applied.to);
         let to = root.join(&applied.from);
         if !from.exists() {
             outcome.skipped += 1;
@@ -1079,8 +1738,9 @@ pub fn undo_plan(root: &Path, applied_moves: &[AppliedMove]) -> ApplyOutcome {
                 outcome.applied_moves.push(AppliedMove {
                     from: applied.to.clone(),
                     to: applied.from.clone(),
+                    destination_root_label: applied.destination_root_label.clone(),
                 });
-                remove_empty_ancestors(root, from.parent());
+                remove_empty_ancestors(destination_root, from.parent());
             }
             Err(error) => {
                 outcome.skipped += 1;
@@ -1256,6 +1916,124 @@ mod tests {
         }));
     }
 
+    #[test]
+    fn reserved_featurettes_root_is_recovered_under_the_metadata_identified_show() {
+        let known = vec!["The Office".to_string()];
+        let owners = HashMap::from([(
+            "featurettes/season 09/featurettes - s09e23.mkv".to_string(),
+            "The Office".to_string(),
+        )]);
+        let classified = classify_for_reorganization(
+            "Featurettes/Season 09/Featurettes - S09E23.mkv",
+            MediaRootAssetType::Shows,
+            &known,
+            &owners,
+        )
+        .expect("damaged category item should classify");
+
+        assert_eq!(classified.kind, MediaKind::Episode);
+        assert_eq!(classified.show_title.as_deref(), Some("The Office"));
+        assert_eq!(classified.season, Some(9));
+        assert_eq!(classified.episode, None);
+        assert_eq!(classified.extra_kind, Some("featurette"));
+        assert_eq!(
+            canonical_video_path(&classified, "mkv"),
+            "The Office/Season 09/Featurettes/Featurettes - S09E23.mkv"
+        );
+    }
+
+    #[test]
+    fn unowned_reserved_category_is_not_treated_as_a_show() {
+        assert!(classify_for_reorganization(
+            "Featurettes/Season 02/Featurettes - S02E01.mkv",
+            MediaRootAssetType::Shows,
+            &["Friends".to_string()],
+            &HashMap::new(),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn embedded_disc_title_matches_only_its_real_show_prefix() {
+        assert!(metadata_title_names_show(
+            "The Office: Season 9 (Disc 4)",
+            "The Office"
+        ));
+        assert!(!metadata_title_names_show(
+            "The Office: Season 9 (Disc 4)",
+            "Office"
+        ));
+        assert!(!metadata_title_names_show("Super Friends", "Friends"));
+    }
+
+    #[test]
+    fn old_ova_singleton_is_repaired_before_generic_episode_fallback() {
+        let known = vec!["Dragon Ball Z".to_string()];
+        let classified = classify_for_reorganization(
+            "Dragon Ball Z Side Story - OVA1 - Plan to Eradicate the Saiyans - Part 1/Dragon Ball Z Side Story - OVA1 - Plan to Eradicate the Saiyans - Part 1.mkv",
+            MediaRootAssetType::Shows,
+            &known,
+            &HashMap::new(),
+        )
+        .expect("OVA should classify as a show extra");
+
+        assert_eq!(classified.show_title.as_deref(), Some("Dragon Ball Z"));
+        assert_eq!(classified.episode, None);
+        assert!(canonical_video_path(&classified, "mkv").starts_with("Dragon Ball Z/Other/"));
+    }
+
+    #[test]
+    fn picture_drama_singleton_nests_under_its_known_series() {
+        let known = vec!["Mobile Suit Gundam Wing".to_string()];
+        let classified = classify_for_reorganization(
+            "Mobile Suit Gundam Wing Frozen Teardrop Picture Drama/Mobile Suit Gundam Wing Frozen Teardrop Picture Drama.mkv",
+            MediaRootAssetType::Shows,
+            &known,
+            &HashMap::new(),
+        )
+        .expect("picture drama should classify as a show extra");
+
+        assert_eq!(classified.show_title.as_deref(), Some("Mobile Suit Gundam Wing"));
+        assert!(canonical_video_path(&classified, "mkv")
+            .starts_with("Mobile Suit Gundam Wing/Other/"));
+    }
+
+    #[tokio::test]
+    async fn artwork_only_spelling_alias_merges_into_the_video_show_root() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "Dragon Ball SUPER/Season 05/Dragon Ball SUPER - S05E55.mkv",
+            "episode",
+        );
+        write(
+            dir.path(),
+            "Dragonball Super/Season 5 (2017-18)/images/episode-poster.jpg",
+            "artwork",
+        );
+
+        let plan = scan_root_for_asset_type(
+            "shows",
+            dir.path(),
+            MediaRootAssetType::Shows,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let artwork = plan
+            .items
+            .iter()
+            .find(|item| item.from.ends_with("episode-poster.jpg"))
+            .expect("artwork alias should be merged");
+        assert_eq!(
+            artwork.to,
+            "Dragon Ball SUPER/Season 05/images/episode-poster.jpg"
+        );
+        assert_eq!(artwork.kind, "artwork");
+    }
+
     #[tokio::test]
     async fn shows_root_keeps_feature_films_classified_as_movies() {
         let dir = tempfile::tempdir().unwrap();
@@ -1395,6 +2173,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn movies_root_repairs_a_uniquely_matching_old_whisper_subtitle() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "Black Widow (2021)/Black Widow (2021).mkv",
+            "movie",
+        );
+        write(
+            dir.path(),
+            "Black Widow (1080p)-whisper-english-subtitles.vtt",
+            "subtitle",
+        );
+
+        let plan = scan_root_for_asset_type(
+            "movies",
+            dir.path(),
+            MediaRootAssetType::Movies,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let subtitle = plan
+            .items
+            .iter()
+            .find(|item| item.kind == "subtitle")
+            .expect("old subtitle should follow its uniquely matching movie");
+        assert_eq!(
+            subtitle.to,
+            "Black Widow (2021)/Black Widow (2021)-whisper-english-subtitles.vtt"
+        );
+        assert!(plan.items.iter().all(|item| item.kind != "orphan"));
+    }
+
+    #[tokio::test]
+    async fn music_root_leaves_album_art_and_bundled_video_extras_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "Artist/Album/01 - Song.flac", "track");
+        write(dir.path(), "Artist/Album/cover.jpg", "artwork");
+        write(dir.path(), "Artist/Album/Extras/music-video.mpg", "video");
+
+        let plan = scan_root_for_asset_type(
+            "music",
+            dir.path(),
+            MediaRootAssetType::Music,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(plan.items.is_empty());
+        assert_eq!(plan.orphan_count, 0);
+        let roots = vec![
+            RootExpectation {
+                label: "music".into(),
+                expected_kind: Some(MediaKind::Track),
+            },
+            RootExpectation {
+                label: "movies".into(),
+                expected_kind: Some(MediaKind::Movie),
+            },
+        ];
+        assert!(find_misplaced_content_for_asset_type(
+            "music",
+            dir.path(),
+            &roots,
+            MediaRootAssetType::Music,
+        )
+        .unwrap()
+        .is_empty());
+    }
+
+    #[tokio::test]
     async fn does_not_flag_a_sidecar_that_still_matches_a_video_as_orphaned() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "Heat.1995.mkv", "x");
@@ -1420,15 +2273,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn flags_a_conflict_when_the_destination_already_exists() {
+    async fn preserves_a_different_existing_destination_as_an_alternate_version() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "Heat.1995.mkv", "x");
         write(dir.path(), "Heat (1995)/Heat (1995).mkv", "already here");
         let plan = scan_root("local", dir.path(), None, None).await.unwrap();
         let video = plan.items.iter().find(|i| i.kind == "video").expect("video item");
-        assert!(video.conflict.is_some());
+        assert!(video.conflict.is_none());
         assert_eq!(video.kind, "video");
-        assert_eq!(plan.conflict_count, 1);
+        assert!(video.to.starts_with("Heat (1995)/Heat (1995) - Heat.1995"));
+        assert_eq!(plan.conflict_count, 0);
         assert_eq!(plan.duplicate_count, 0);
     }
 
@@ -1459,7 +2313,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_conflict_with_different_content_is_left_as_a_plain_conflict_not_a_duplicate() {
+    async fn a_different_content_collision_is_preserved_as_an_alternate_not_a_duplicate() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "Heat (1995)/Heat (1995).mkv", "the real thing");
         write(dir.path(), "Heat.1995.BDRip.x264-GROUP.mkv", "an unrelated remux");
@@ -1468,13 +2322,11 @@ mod tests {
 
         let video = plan.items.iter().find(|i| i.kind == "video").expect("video item");
         assert_eq!(video.from, "Heat.1995.BDRip.x264-GROUP.mkv");
-        assert_eq!(
-            video.conflict.as_deref(),
-            Some("a file already exists at the destination")
-        );
+        assert!(video.conflict.is_none());
+        assert_eq!(video.to, "Heat (1995)/Heat (1995) - Heat.1995.BDRip.x264-GROUP.mkv");
         assert!(plan.items.iter().all(|i| i.kind != "duplicate"));
         assert_eq!(plan.duplicate_count, 0);
-        assert_eq!(plan.conflict_count, 1);
+        assert_eq!(plan.conflict_count, 0);
     }
 
     #[tokio::test]
@@ -1496,17 +2348,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn identifies_two_sources_with_the_same_target_as_likely_duplicates() {
+    async fn gives_two_sources_with_the_same_target_unique_destinations() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "Heat.1995.mp4", "x");
         write(dir.path(), "Heat (1995).mp4", "x");
         let plan = scan_root("local", dir.path(), None, None).await.unwrap();
-        let duplicate = plan
-            .items
-            .iter()
-            .find(|item| item.conflict.as_deref().is_some_and(|reason| reason.contains("another item")))
-            .expect("one move should be marked as a duplicate");
-        assert!(duplicate.conflict.as_deref().unwrap().contains("likely a duplicate"));
+        assert_eq!(plan.items.len(), 2);
+        assert!(plan.items.iter().all(|item| item.conflict.is_none()));
+        assert_ne!(plan.items[0].to, plan.items[1].to);
     }
 
     #[test]
@@ -1518,6 +2367,7 @@ mod tests {
                 from: "Heat.1995.mkv".to_string(),
                 to: "Heat (1995)/Heat (1995).mkv".to_string(),
                 kind: "video",
+                destination_root_label: None,
                 ai_assisted: false,
                 year_source: None,
                 conflict: None,
@@ -1526,6 +2376,7 @@ mod tests {
                 from: "does-not-exist.srt".to_string(),
                 to: "Heat (1995)/Heat (1995).srt".to_string(),
                 kind: "subtitle",
+                destination_root_label: None,
                 ai_assisted: false,
                 year_source: None,
                 conflict: Some("a file already exists at the destination".to_string()),
@@ -1550,6 +2401,7 @@ mod tests {
             from: "Heat.1995.mkv".to_string(),
             to: "Heat (1995)/Heat (1995).mkv".to_string(),
             kind: "video",
+            destination_root_label: None,
             ai_assisted: false,
             year_source: None,
             conflict: None,
@@ -1574,6 +2426,7 @@ mod tests {
                 from: "Aqua Teen Hunger Force - Deleted Scene.mkv".to_string(),
                 to: "Aqua Teen Hunger Force/Deleted Scenes/Deleted Scene.mkv".to_string(),
                 kind: "video",
+                destination_root_label: None,
                 ai_assisted: false,
                 year_source: None,
                 conflict: None,
@@ -1582,6 +2435,7 @@ mod tests {
                 from: "Aqua Teen Hunger Force - Deleted Scene.en.srt".to_string(),
                 to: "Aqua Teen Hunger Force/Deleted Scenes/Deleted Scene.en.srt".to_string(),
                 kind: "subtitle",
+                destination_root_label: None,
                 ai_assisted: false,
                 year_source: None,
                 conflict: None,
@@ -1590,6 +2444,7 @@ mod tests {
                 from: "missing.jpg".to_string(),
                 to: "Aqua Teen Hunger Force/poster.jpg".to_string(),
                 kind: "artwork",
+                destination_root_label: None,
                 ai_assisted: false,
                 year_source: None,
                 conflict: None,
@@ -1623,6 +2478,7 @@ mod tests {
             from: "Friends - Gag Reel.mkv".to_string(),
             to: "Friends/Featurettes/Gag Reel.mkv".to_string(),
             kind: "video",
+            destination_root_label: None,
             ai_assisted: false,
             year_source: None,
             conflict: None,
@@ -1697,7 +2553,7 @@ mod tests {
         assert!(plan.items.iter().all(|i| i.kind != "track"));
     }
 
-    // --- Wrong-media-root detection, report only (issue #301) ---
+    // --- Wrong-media-root detection and reviewed correction (issue #301) ---
 
     #[tokio::test]
     async fn flags_an_episode_shaped_file_under_a_movies_root_and_names_the_shows_root() {
@@ -1735,6 +2591,75 @@ mod tests {
         let misplaced = find_misplaced_content("Movies", dir.path(), &roots).unwrap();
 
         assert!(misplaced.is_empty());
+    }
+
+    #[test]
+    fn typed_shows_detection_keeps_extras_but_reports_a_feature_film() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "Aqua Teen Hunger Force/Season 01/Aqua Teen Hunger Force - S01E01.mkv",
+            "episode",
+        );
+        write(
+            dir.path(),
+            "Aqua Teen Hunger Force/Deleted Scenes/Dorm Room Extended.mkv",
+            "extra",
+        );
+        write(
+            dir.path(),
+            "Aqua Teen Hunger Force Colon Movie Film for Theaters (2007)/Aqua Teen Hunger Force Colon Movie Film for Theaters (2007).mkv",
+            "movie",
+        );
+        let roots = vec![
+            RootExpectation {
+                label: "shows".to_string(),
+                expected_kind: Some(MediaKind::Episode),
+            },
+            RootExpectation {
+                label: "movies".to_string(),
+                expected_kind: Some(MediaKind::Movie),
+            },
+        ];
+
+        let misplaced = find_misplaced_content_for_asset_type(
+            "shows",
+            dir.path(),
+            &roots,
+            MediaRootAssetType::Shows,
+        )
+        .unwrap();
+
+        assert_eq!(misplaced.len(), 1);
+        assert!(misplaced[0].path.contains("Colon Movie Film for Theaters"));
+    }
+
+    #[tokio::test]
+    async fn cross_root_movie_move_and_undo_are_journaled_and_safe() {
+        let shows = tempfile::tempdir().unwrap();
+        let movies = tempfile::tempdir().unwrap();
+        let path = "Aqua Teen Hunger Force Colon Movie Film for Theaters (2007)/Aqua Teen Hunger Force Colon Movie Film for Theaters (2007).mkv";
+        write(shows.path(), path, "movie");
+        let misplaced = vec![MisplacedItem {
+            path: path.to_string(),
+            kind: "movie",
+            current_root_label: "shows".to_string(),
+            correct_root_label: "movies".to_string(),
+        }];
+        let items = plan_misplaced_moves(shows.path(), movies.path(), "movies", &misplaced).await;
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].destination_root_label.as_deref(), Some("movies"));
+
+        let roots = HashMap::from([("movies".to_string(), movies.path().to_path_buf())]);
+        let applied = apply_plan_with_roots(shows.path(), &roots, &items);
+        assert_eq!(applied.applied, 1);
+        assert!(!shows.path().join(path).exists());
+        assert!(movies.path().join(path).exists());
+
+        let undone = undo_plan_with_roots(shows.path(), &roots, &applied.applied_moves);
+        assert_eq!(undone.applied, 1);
+        assert!(shows.path().join(path).exists());
+        assert!(!movies.path().join(path).exists());
     }
 
     #[tokio::test]
@@ -1781,13 +2706,10 @@ mod tests {
         assert!(misplaced.is_empty());
     }
 
-    /// Proves `MisplacedItem` is a structurally separate type from
-    /// `ReorgItem`, not merely a variant carrying a read-only flag:
-    /// `apply_plan`'s signature only accepts `&[ReorgItem]`, so this
-    /// assignment only compiles because the types are distinct — a
-    /// `Vec<MisplacedItem>` could not be substituted here.
+    /// Findings remain structurally separate from executable reviewed
+    /// moves; `plan_misplaced_moves` is the only conversion point.
     #[test]
-    fn misplaced_items_can_never_be_passed_to_apply_plan() {
+    fn misplaced_findings_cannot_be_applied_without_planning() {
         let _: fn(&Path, &[ReorgItem]) -> ApplyOutcome = apply_plan;
     }
 }

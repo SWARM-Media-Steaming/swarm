@@ -76,12 +76,12 @@ struct AppState {
 
 struct StoredReorgPlan {
     plan: reorganize::ReorgPlan,
-    /// Wrong-media-root findings for this same root (issue #301) — computed
-    /// once alongside `plan` at scan time, kept as its own field rather than
-    /// folded into `plan.items` since `reorganize::MisplacedItem` is a
-    /// structurally distinct, never-`apply_plan`-reachable type.
+    /// Wrong-media-root findings for this same root (issue #301), also
+    /// represented as reviewed cross-root moves in `plan.items` when the
+    /// owning configured root is unambiguous.
     misplaced: Vec<reorganize::MisplacedItem>,
     root_path: PathBuf,
+    destination_roots: HashMap<String, PathBuf>,
     status: &'static str,
     apply_outcome: Option<reorganize::ApplyOutcome>,
     undo_outcome: Option<reorganize::ApplyOutcome>,
@@ -1976,9 +1976,8 @@ struct ReorgPlanView {
     /// #247) — surfaced to the AI tab alongside the proposed moves.
     validation: Vec<swarm_media::plex::PlexValidationIssue>,
     /// Content classified as belonging under a *different* configured root
-    /// entirely (issue #301) — a separate, information-only report, never
-    /// mixed into `items`/`conflict_count`/etc. and never reachable by
-    /// `approve_ai_reorg_plan`.
+    /// entirely (issue #301). Unambiguous findings are also represented as
+    /// reviewed cross-root entries in `items`.
     misplaced: Vec<reorganize::MisplacedItem>,
     status: String,
     apply_summary: Option<ApplySummaryView>,
@@ -2068,7 +2067,7 @@ async fn ai_reorganize_scan<R: tauri::Runtime>(
         .tmdb_api_key
         .as_deref()
         .map(|key| swarm_media::scrape::tmdb::TmdbClient::new(key.to_string()));
-    let plan = reorganize::scan_root_for_asset_type(
+    let mut plan = reorganize::scan_root_for_asset_type(
         &root_label,
         &root_path,
         root_asset_type,
@@ -2078,12 +2077,11 @@ async fn ai_reorganize_scan<R: tauri::Runtime>(
     .await
     .map_err(|e| e.to_string())?;
 
-    // Cross-root "wrong library" detection (issue #301) — report only,
-    // computed against every currently-configured root, never folded into
-    // `plan.items`. Errors reading the root are ignored here rather than
-    // failing the whole scan: `scan_root` above already succeeded reading
-    // the same tree, so this is best-effort on top of a result the user is
-    // getting either way.
+    // Cross-root "wrong library" detection (issue #301). Root-aware
+    // classification keeps TV extras out of this list; unambiguous findings
+    // are folded into the reviewed plan and target their configured owning
+    // root. Errors reading the source remain best-effort because the main
+    // scan above already produced a useful plan.
     let all_roots: Vec<reorganize::RootExpectation> = settings
         .media_roots
         .iter()
@@ -2095,11 +2093,48 @@ async fn ai_reorganize_scan<R: tauri::Runtime>(
     let root_path_for_misplaced = root_path.clone();
     let root_label_for_misplaced = root_label.clone();
     let misplaced = tokio::task::spawn_blocking(move || {
-        reorganize::find_misplaced_content(&root_label_for_misplaced, &root_path_for_misplaced, &all_roots)
+        reorganize::find_misplaced_content_for_asset_type(
+            &root_label_for_misplaced,
+            &root_path_for_misplaced,
+            &all_roots,
+            root_asset_type,
+        )
     })
     .await
     .unwrap_or(Ok(Vec::new()))
     .unwrap_or_default();
+
+    let destination_roots: HashMap<String, PathBuf> = settings
+        .media_roots
+        .iter()
+        .filter(|root| root.label != root_label)
+        .map(|root| (root.label.clone(), PathBuf::from(&root.path)))
+        .collect();
+    let destination_labels: HashSet<String> = misplaced
+        .iter()
+        .map(|item| item.correct_root_label.clone())
+        .collect();
+    for destination_label in destination_labels {
+        let Some(destination_root) = destination_roots.get(&destination_label) else {
+            continue;
+        };
+        let cross_root_items = reorganize::plan_misplaced_moves(
+            &root_path,
+            destination_root,
+            &destination_label,
+            &misplaced,
+        )
+        .await;
+        let cross_root_sources: HashSet<&str> = cross_root_items
+            .iter()
+            .map(|item| item.from.as_str())
+            .collect();
+        plan.items
+            .retain(|item| !cross_root_sources.contains(item.from.as_str()));
+        plan.items.extend(cross_root_items);
+    }
+    plan.conflict_count = plan.items.iter().filter(|item| item.conflict.is_some()).count() as u32;
+    plan.duplicate_count = plan.items.iter().filter(|item| item.kind == "duplicate").count() as u32;
 
     let id = state.next_reorg_plan_id.fetch_add(1, Ordering::Relaxed);
     let view = reorg_plan_view(id, &plan, &misplaced, "proposed", None, None);
@@ -2109,6 +2144,7 @@ async fn ai_reorganize_scan<R: tauri::Runtime>(
             plan,
             misplaced,
             root_path,
+            destination_roots,
             status: "proposed",
             apply_outcome: None,
             undo_outcome: None,
@@ -2150,23 +2186,40 @@ async fn approve_ai_reorg_plan<R: tauri::Runtime>(
     id: u64,
 ) -> Result<ReorgPlanView, String> {
     let core = state.core(&app).await?;
-    let (root_path, items, view) = {
+    let (root_path, destination_roots, items, affected_labels, view) = {
         let mut plans = state.reorg_plans.lock().await;
         let stored = plans.get_mut(&id).ok_or_else(|| "reorganize plan not found".to_string())?;
         if stored.status != "proposed" {
             return Err(format!("this plan is already {}", stored.status));
         }
         stored.status = "applying";
+        let mut affected_labels = vec![stored.plan.root_label.clone()];
+        for label in stored
+            .plan
+            .items
+            .iter()
+            .filter_map(|item| item.destination_root_label.as_ref())
+        {
+            if !affected_labels.contains(label) {
+                affected_labels.push(label.clone());
+            }
+        }
         (
             stored.root_path.clone(),
+            stored.destination_roots.clone(),
             stored.plan.items.clone(),
+            affected_labels,
             reorg_plan_view(id, &stored.plan, &stored.misplaced, stored.status, None, None),
         )
     };
 
     let task_app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let mut outcome = match tokio::task::spawn_blocking(move || reorganize::apply_plan(&root_path, &items)).await {
+        let mut outcome = match tokio::task::spawn_blocking(move || {
+            reorganize::apply_plan_with_roots(&root_path, &destination_roots, &items)
+        })
+        .await
+        {
             Ok(outcome) => outcome,
             Err(error) => reorganize::ApplyOutcome {
                 applied: 0,
@@ -2176,7 +2229,7 @@ async fn approve_ai_reorg_plan<R: tauri::Runtime>(
             },
         };
 
-        if let Err(error) = core.rescan(None).await {
+        if let Err(error) = core.rescan_roots_by_label(&affected_labels, true).await {
             outcome.errors.push(format!("library rescan failed: {error}"));
         }
 
@@ -2227,7 +2280,7 @@ async fn undo_ai_reorg_plan<R: tauri::Runtime>(
     id: u64,
 ) -> Result<ReorgPlanView, String> {
     let core = state.core(&app).await?;
-    let (root_path, applied_moves, view) = {
+    let (root_path, destination_roots, applied_moves, affected_labels, view) = {
         let mut plans = state.reorg_plans.lock().await;
         let stored = plans
             .get_mut(&id)
@@ -2244,9 +2297,20 @@ async fn undo_ai_reorg_plan<R: tauri::Runtime>(
             return Err("this plan has no successfully applied moves to undo".to_string());
         }
         stored.status = "undoing";
+        let mut affected_labels = vec![stored.plan.root_label.clone()];
+        for label in applied_moves
+            .iter()
+            .filter_map(|item| item.destination_root_label.as_ref())
+        {
+            if !affected_labels.contains(label) {
+                affected_labels.push(label.clone());
+            }
+        }
         (
             stored.root_path.clone(),
+            stored.destination_roots.clone(),
             applied_moves,
+            affected_labels,
             reorg_plan_view(
                 id,
                 &stored.plan,
@@ -2261,7 +2325,7 @@ async fn undo_ai_reorg_plan<R: tauri::Runtime>(
     let task_app = app.clone();
     tauri::async_runtime::spawn(async move {
         let mut outcome = match tokio::task::spawn_blocking(move || {
-            reorganize::undo_plan(&root_path, &applied_moves)
+            reorganize::undo_plan_with_roots(&root_path, &destination_roots, &applied_moves)
         })
         .await
         {
@@ -2274,7 +2338,7 @@ async fn undo_ai_reorg_plan<R: tauri::Runtime>(
             },
         };
 
-        if let Err(error) = core.rescan(None).await {
+        if let Err(error) = core.rescan_roots_by_label(&affected_labels, true).await {
             outcome.errors.push(format!("library rescan failed: {error}"));
         }
 

@@ -97,6 +97,38 @@ struct FfprobeDisposition {
 struct FfprobeFormat {
     duration: Option<String>,
     bit_rate: Option<String>,
+    #[serde(default)]
+    tags: FfprobeTags,
+}
+
+/// Reads the container-level title without decoding media. Reorganization
+/// uses this narrowly to recover a show owner from damaged top-level
+/// `Featurettes`/`Deleted Scenes` folders when the original path no longer
+/// contains the show's name. Any missing tool, tag, or probe failure simply
+/// returns `None`; callers must never guess an owner from that.
+pub async fn container_title(path: &Path) -> Option<String> {
+    let output = tokio::process::Command::new(resolve_ffprobe_path())
+        .args([
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
+            "-show_entries",
+            "format_tags=title",
+        ])
+        .arg(path)
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let parsed: FfprobeOutput = serde_json::from_slice(&output.stdout).ok()?;
+    parsed
+        .format?
+        .tags
+        .title
+        .filter(|title| !title.trim().is_empty())
 }
 
 pub async fn probe(path: &Path) -> Option<MediaInfo> {

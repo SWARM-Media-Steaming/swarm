@@ -151,28 +151,52 @@ pub fn find_misplaced_content_for_asset_type(
     find_misplaced_content_impl(root_label, root, all_roots, Some(asset_type))
 }
 
+/// Reuses a root inventory already collected for the main cleanup pass.
+/// This avoids a second recursive SMB/NFS traversal solely to detect media
+/// stored under the wrong configured root.
+pub fn find_misplaced_content_for_asset_type_in_inventory(
+    root_label: &str,
+    inventory: &RootInventory,
+    all_roots: &[RootExpectation],
+    asset_type: MediaRootAssetType,
+) -> Vec<MisplacedItem> {
+    find_misplaced_content_in_files(root_label, &inventory.files, all_roots, Some(asset_type))
+}
+
 fn find_misplaced_content_impl(
     root_label: &str,
     root: &Path,
     all_roots: &[RootExpectation],
     asset_type: Option<MediaRootAssetType>,
 ) -> std::io::Result<Vec<MisplacedItem>> {
+    let inventory = RootInventory::collect(root)?;
+    Ok(find_misplaced_content_in_files(
+        root_label,
+        &inventory.files,
+        all_roots,
+        asset_type,
+    ))
+}
+
+fn find_misplaced_content_in_files(
+    root_label: &str,
+    all_files: &[PathBuf],
+    all_roots: &[RootExpectation],
+    asset_type: Option<MediaRootAssetType>,
+) -> Vec<MisplacedItem> {
     let Some(current) = all_roots.iter().find(|r| r.label == root_label) else {
-        return Ok(Vec::new());
+        return Vec::new();
     };
     let Some(current_expected) = current.expected_kind else {
-        return Ok(Vec::new());
+        return Vec::new();
     };
-
-    let mut all_files = Vec::new();
-    walk(root, root, &mut all_files)?;
     let known_shows = asset_type
         .filter(|kind| *kind == MediaRootAssetType::Shows)
-        .map_or_else(Vec::new, |_| known_show_roots(&all_files));
+        .map_or_else(Vec::new, |_| known_show_roots(all_files));
     let no_damaged_owners = HashMap::new();
 
     let mut misplaced = Vec::new();
-    for relative in &all_files {
+    for relative in all_files {
         let unix_relative = to_unix(relative);
         let Some((_, is_audio)) = classify::media_extension(&unix_relative) else {
             continue;
@@ -214,7 +238,7 @@ fn find_misplaced_content_impl(
             correct_root_label: correct.label.clone(),
         });
     }
-    Ok(misplaced)
+    misplaced
 }
 
 /// Builds reviewed moves from one root into the single configured root that
@@ -352,6 +376,27 @@ pub struct ReorgPlan {
     pub validation: Vec<PlexValidationIssue>,
 }
 
+/// One immutable directory inventory shared by every cleanup analysis for a
+/// configured root. Paths are relative to the root and sorted so planner
+/// output remains deterministic across platforms and filesystems.
+#[derive(Debug, Clone)]
+pub struct RootInventory {
+    files: Vec<PathBuf>,
+}
+
+impl RootInventory {
+    pub fn collect(root: &Path) -> std::io::Result<Self> {
+        let mut files = Vec::new();
+        walk(root, root, &mut files)?;
+        files.sort();
+        Ok(Self { files })
+    }
+
+    pub fn file_count(&self) -> usize {
+        self.files.len()
+    }
+}
+
 /// Walks `root` (a configured media root's real path) and proposes a
 /// rename/move for every video whose canonical path differs from its
 /// current one. `ai`, when given, is used only for files `classify` cannot
@@ -379,27 +424,59 @@ pub async fn scan_root_for_asset_type(
     ai: Option<&AiClient>,
     tmdb: Option<&TmdbClient>,
 ) -> std::io::Result<ReorgPlan> {
-    let mut video_files = Vec::new();
-    walk(root, root, &mut video_files)?;
-    video_files.sort();
+    let inventory = RootInventory::collect(root)?;
+    let mut tmdb_year_cache = HashMap::new();
+    scan_inventory_for_asset_type(
+        root_label,
+        root,
+        asset_type,
+        &inventory,
+        ai,
+        tmdb,
+        &mut tmdb_year_cache,
+    )
+    .await
+}
+
+/// Plans cleanup from an existing root inventory and a durable TMDb result
+/// cache. The caller can reuse the same inventory for misplaced-content
+/// detection and persist the updated cache after this returns.
+pub async fn scan_inventory_for_asset_type(
+    root_label: &str,
+    root: &Path,
+    asset_type: MediaRootAssetType,
+    inventory: &RootInventory,
+    ai: Option<&AiClient>,
+    tmdb: Option<&TmdbClient>,
+    tmdb_year_cache: &mut HashMap<String, Option<u32>>,
+) -> std::io::Result<ReorgPlan> {
+    let video_files = &inventory.files;
     let known_show_roots = if asset_type == MediaRootAssetType::Shows {
-        known_show_roots(&video_files)
+        known_show_roots(video_files)
     } else {
         Vec::new()
     };
     let damaged_path_owners = if asset_type == MediaRootAssetType::Shows {
-        infer_damaged_path_owners(root, &video_files, &known_show_roots).await
+        infer_damaged_path_owners(root, video_files, &known_show_roots).await
     } else {
         HashMap::new()
     };
+    prefetch_movie_years(
+        video_files,
+        asset_type,
+        &known_show_roots,
+        &damaged_path_owners,
+        tmdb,
+        tmdb_year_cache,
+    )
+    .await;
 
     let mut items = Vec::new();
     let mut ai_assisted_count = 0u32;
-    let mut tmdb_year_count = 0u32;
     let mut ai_budget = MAX_AI_GUESSES;
     let mut planned_targets: HashSet<String> = HashSet::new();
 
-    for relative in &video_files {
+    for relative in video_files {
         let unix_relative = to_unix(relative);
         let Some((ext, is_audio)) = classify::media_extension(&unix_relative) else {
             continue;
@@ -455,11 +532,8 @@ pub async fn scan_root_for_asset_type(
             continue;
         }
 
-        let (classified, year_source) = fill_missing_movie_year(classified, tmdb).await;
-        if year_source.is_some() {
-            tmdb_year_count += 1;
-        }
-
+        let (classified, year_source) =
+            fill_missing_movie_year(classified, tmdb, tmdb_year_cache).await;
         let canonical = canonical_video_path(&classified, ext);
         if canonical == unix_relative {
             continue;
@@ -614,7 +688,7 @@ pub async fn scan_root_for_asset_type(
     // the root — movies, episodes, and tracks alike, not just the videos
     // considered for a move above.
     let mut validation = Vec::new();
-    for relative in &video_files {
+    for relative in video_files {
         let unix_relative = to_unix(relative);
         let Some((_, is_audio)) = classify::media_extension(&unix_relative) else {
             continue;
@@ -642,6 +716,10 @@ pub async fn scan_root_for_asset_type(
     let conflict_count = items.iter().filter(|i| i.conflict.is_some()).count() as u32;
     let orphan_count = items.iter().filter(|i| i.kind == "orphan").count() as u32;
     let duplicate_count = items.iter().filter(|i| i.kind == "duplicate").count() as u32;
+    let tmdb_year_count = items
+        .iter()
+        .filter(|item| item.kind == "video" && item.year_source.is_some())
+        .count() as u32;
     Ok(ReorgPlan {
         root_label: root_label.to_string(),
         items,
@@ -1384,6 +1462,7 @@ fn is_already_orphaned(relative: &str) -> bool {
 async fn fill_missing_movie_year(
     classified: Classified,
     tmdb: Option<&TmdbClient>,
+    cache: &mut HashMap<String, Option<u32>>,
 ) -> (Classified, Option<&'static str>) {
     if classified.kind != MediaKind::Movie || classified.year.is_some() || classified.title.trim().is_empty() {
         return (classified, None);
@@ -1391,7 +1470,17 @@ async fn fill_missing_movie_year(
     let Some(client) = tmdb else {
         return (classified, None);
     };
-    match client.confident_movie_year(&classified.title).await {
+    let cache_key = tmdb_movie_year_cache_key(&classified.title);
+    let resolved = if let Some(year) = cache.get(&cache_key) {
+        Ok(*year)
+    } else {
+        let result = client.confident_movie_year(&classified.title).await;
+        if let Ok(year) = result {
+            cache.insert(cache_key, year);
+        }
+        result
+    };
+    match resolved {
         Ok(Some(year)) => (
             Classified {
                 year: Some(year),
@@ -1400,6 +1489,70 @@ async fn fill_missing_movie_year(
             Some("tmdb"),
         ),
         _ => (classified, None),
+    }
+}
+
+fn tmdb_movie_year_cache_key(title: &str) -> String {
+    let normalized: String = title
+        .chars()
+        .filter(|character| character.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect();
+    // Version the semantics in the key so a future confidence-algorithm
+    // change naturally bypasses older positive and negative resolutions.
+    format!("confident-v2:{normalized}")
+}
+
+async fn prefetch_movie_years(
+    files: &[PathBuf],
+    asset_type: MediaRootAssetType,
+    known_show_roots: &[String],
+    damaged_path_owners: &HashMap<String, String>,
+    tmdb: Option<&TmdbClient>,
+    cache: &mut HashMap<String, Option<u32>>,
+) {
+    let Some(client) = tmdb else {
+        return;
+    };
+    let mut pending = HashMap::new();
+    for relative in files {
+        let path = to_unix(relative);
+        let Some((_, is_audio)) = classify::media_extension(&path) else {
+            continue;
+        };
+        if is_audio || asset_type == MediaRootAssetType::Music {
+            continue;
+        }
+        let Some(classified) = classify_for_reorganization(
+            &path,
+            asset_type,
+            known_show_roots,
+            damaged_path_owners,
+        ) else {
+            continue;
+        };
+        let classified = repair_season_bonus_filename(&path, classified);
+        if classified.kind != MediaKind::Movie
+            || classified.year.is_some()
+            || classified.title.trim().is_empty()
+        {
+            continue;
+        }
+        let key = tmdb_movie_year_cache_key(&classified.title);
+        if !cache.contains_key(&key) {
+            pending.entry(key).or_insert(classified.title);
+        }
+    }
+
+    let resolutions = stream::iter(pending)
+        .map(|(key, title)| async move { (key, client.confident_movie_year(&title).await) })
+        .buffer_unordered(8)
+        .collect::<Vec<_>>()
+        .await;
+    for (key, result) in resolutions {
+        if let Ok(year) = result {
+            cache.insert(key, year);
+        }
     }
 }
 
@@ -1475,9 +1628,10 @@ fn canonical_track_path(c: &Classified, ext: &str) -> Option<String> {
     let artist = c.artist.as_deref().map(str::trim).filter(|s| !s.is_empty())?;
     let album = c.album.as_deref().map(str::trim).filter(|s| !s.is_empty())?;
     let title = sanitize(&c.title);
-    let file_name = match c.track_number {
-        Some(n) => format!("{n:02} - {title}.{ext}"),
-        None => format!("{title}.{ext}"),
+    let file_name = match (c.disc_number, c.track_number) {
+        (Some(disc), Some(track)) => format!("{disc}{track:02} - {title}.{ext}"),
+        (_, Some(track)) => format!("{track:02} - {title}.{ext}"),
+        (_, None) => format!("{title}.{ext}"),
     };
     Some(format!("{}/{}/{file_name}", sanitize(artist), sanitize(album)))
 }
@@ -1705,7 +1859,11 @@ async fn files_are_identical(a: PathBuf, b: PathBuf) -> bool {
 
 fn is_confident(c: &Classified) -> bool {
     match c.kind {
-        MediaKind::Movie => !c.title.trim().is_empty() && c.year.is_some(),
+        // A release year is optional identity enrichment, not evidence that
+        // the deterministic filename parser failed. TMDb handles that field;
+        // sending an otherwise complete movie through AI only adds latency
+        // and can rewrite capitalization or punctuation inconsistently.
+        MediaKind::Movie => !c.title.trim().is_empty(),
         MediaKind::Episode => {
             c.show_title.as_deref().is_some_and(|s| !s.trim().is_empty())
                 && c.season.is_some()
@@ -1804,6 +1962,7 @@ async fn guess_with_ai(client: &AiClient, relative_path: &str) -> Option<Classif
             artist: None,
             album: None,
             track_number: None,
+            disc_number: None,
             show_title: None,
             season: None,
             episode: None,
@@ -1829,6 +1988,7 @@ async fn guess_with_ai(client: &AiClient, relative_path: &str) -> Option<Classif
                 artist: None,
                 album: None,
                 track_number: None,
+                disc_number: None,
                 show_title: guess.show_title,
                 season: guess.season,
                 episode: guess.episode,
@@ -2585,6 +2745,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn repeated_movie_titles_share_one_tmdb_lookup_and_reuse_the_cache() {
+        use axum::routing::get;
+        use axum::Json;
+        use serde_json::json;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let handler_calls = Arc::clone(&calls);
+        let router = axum::Router::new().route(
+            "/search/movie",
+            get(move || {
+                let handler_calls = Arc::clone(&handler_calls);
+                async move {
+                    handler_calls.fetch_add(1, Ordering::Relaxed);
+                    Json(json!({"results": [
+                        {"id": 348, "title": "Alien", "original_title": "Alien", "release_date": "1979-05-25", "vote_count": 15000}
+                    ]}))
+                }
+            }),
+        );
+        let tmdb = spawn_mock_tmdb(router).await;
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "Alien/Alien.mp4", "first encode");
+        write(dir.path(), "Alien/Alien.mkv", "second encode");
+        let inventory = RootInventory::collect(dir.path()).unwrap();
+        let mut cache = HashMap::new();
+
+        scan_inventory_for_asset_type(
+            "movies",
+            dir.path(),
+            MediaRootAssetType::Movies,
+            &inventory,
+            None,
+            Some(&tmdb),
+            &mut cache,
+        )
+        .await
+        .unwrap();
+        scan_inventory_for_asset_type(
+            "movies",
+            dir.path(),
+            MediaRootAssetType::Movies,
+            &inventory,
+            None,
+            Some(&tmdb),
+            &mut cache,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert_eq!(cache.get("confident-v2:alien"), Some(&Some(1979)));
+    }
+
+    #[tokio::test]
     async fn real_house_scan_uses_the_original_title_to_select_1985() {
         use axum::routing::get;
         use axum::Json;
@@ -3195,7 +3411,30 @@ mod tests {
         let track = plan.items.iter().find(|item| item.from == from).unwrap();
         assert_eq!(
             track.to,
-            "Tiesto/2010 - Magikal Journey The Hits Collection 1998 - 2008 [MBB9929] 2CD/01 - 14 Tiesto - Goldrush.mp3"
+            "Tiesto/2010 - Magikal Journey The Hits Collection 1998 - 2008 [MBB9929] 2CD/114 - Tiesto - Goldrush.mp3"
+        );
+    }
+
+    #[tokio::test]
+    async fn multidisc_folder_uses_plex_disc_plus_track_filename() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = "ATB/Album/2011 - Distant Earth/CD2/03. Twisted Love.flac";
+        write(dir.path(), from, "track");
+
+        let plan = scan_root_for_asset_type(
+            "music",
+            dir.path(),
+            MediaRootAssetType::Music,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let track = plan.items.iter().find(|item| item.from == from).unwrap();
+        assert_eq!(
+            track.to,
+            "ATB/2011 - Distant Earth/203 - Twisted Love.flac"
         );
     }
 

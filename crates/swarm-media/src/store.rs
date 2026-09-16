@@ -458,6 +458,11 @@ impl Library {
                 modified_time INTEGER NOT NULL,
                 PRIMARY KEY (scan_id, relative_path)
             );
+            CREATE TABLE IF NOT EXISTS tmdb_movie_year_cache (
+                query_key TEXT PRIMARY KEY,
+                year INTEGER,
+                checked_at_ms INTEGER NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS asset_metadata_history (
                 fingerprint TEXT NOT NULL,
                 size INTEGER NOT NULL,
@@ -1471,6 +1476,53 @@ impl Library {
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(EntryRecord::from).collect())
+    }
+
+    /// Durable results for the cleanup planner's conservative movie-year
+    /// lookup. Positive matches are effectively immutable; unresolved and
+    /// ambiguous results expire after seven days so TMDb corrections can
+    /// eventually be observed without repeating hundreds of calls on every
+    /// cleanup scan.
+    pub async fn tmdb_movie_year_cache(&self) -> sqlx::Result<HashMap<String, Option<u32>>> {
+        const NEGATIVE_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1_000;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        let rows: Vec<(String, Option<i64>)> = sqlx::query_as(
+            "SELECT query_key, year FROM tmdb_movie_year_cache \
+             WHERE year IS NOT NULL OR checked_at_ms >= ?",
+        )
+        .bind(now - NEGATIVE_TTL_MS)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(key, year)| (key, year.map(|value| value as u32)))
+            .collect())
+    }
+
+    pub async fn cache_tmdb_movie_years(
+        &self,
+        resolutions: &HashMap<String, Option<u32>>,
+    ) -> sqlx::Result<()> {
+        let checked_at_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        let mut transaction = self.pool.begin().await?;
+        for (query_key, year) in resolutions {
+            sqlx::query(
+                "INSERT INTO tmdb_movie_year_cache (query_key, year, checked_at_ms) VALUES (?, ?, ?) \
+                 ON CONFLICT(query_key) DO UPDATE SET year = excluded.year, checked_at_ms = excluded.checked_at_ms",
+            )
+            .bind(query_key)
+            .bind(year.map(|value| value as i64))
+            .bind(checked_at_ms)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        transaction.commit().await
     }
 
     /// Make every movie/episode with a known duration eligible for local

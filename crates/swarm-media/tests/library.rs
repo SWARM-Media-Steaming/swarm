@@ -41,6 +41,24 @@ fn write(root: &Path, relative: &str, content: &[u8]) {
 }
 
 #[tokio::test]
+async fn tmdb_movie_year_cache_round_trips_positive_and_negative_results() {
+    let fx = fixture("tmdb-movie-year-cache").await;
+    let resolutions = std::collections::HashMap::from([
+        ("confident-v2:alien".to_string(), Some(1979)),
+        ("confident-v2:scream".to_string(), None),
+    ]);
+
+    fx.library
+        .cache_tmdb_movie_years(&resolutions)
+        .await
+        .unwrap();
+    let cached = fx.library.tmdb_movie_year_cache().await.unwrap();
+
+    assert_eq!(cached.get("confident-v2:alien"), Some(&Some(1979)));
+    assert_eq!(cached.get("confident-v2:scream"), Some(&None));
+}
+
+#[tokio::test]
 async fn cancelled_scan_stops_before_catalog_reconciliation() {
     let fx = fixture("cancelled-scan").await;
     write(&fx.root, "movie.mp4", b"media");

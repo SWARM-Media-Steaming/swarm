@@ -2363,15 +2363,40 @@ async fn ai_reorganize_scan<R: tauri::Runtime>(
         .tmdb_api_key
         .as_deref()
         .map(|key| swarm_media::scrape::tmdb::TmdbClient::new(key.to_string()));
-    let mut plan = reorganize::scan_root_for_asset_type(
+    let core = state.core(&app).await?;
+    let inventory_root = root_path.clone();
+    let inventory = tokio::task::spawn_blocking(move || {
+        reorganize::RootInventory::collect(&inventory_root)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())?;
+    let mut tmdb_year_cache = core
+        .library
+        .tmdb_movie_year_cache()
+        .await
+        .map_err(|error| error.to_string())?;
+    let cached_before = tmdb_year_cache.clone();
+    let mut plan = reorganize::scan_inventory_for_asset_type(
         &root_label,
         &root_path,
         root_asset_type,
+        &inventory,
         ai_client.as_ref(),
         tmdb_client.as_ref(),
+        &mut tmdb_year_cache,
     )
     .await
     .map_err(|e| e.to_string())?;
+    let cache_updates: HashMap<String, Option<u32>> = tmdb_year_cache
+        .iter()
+        .filter(|(key, year)| cached_before.get(*key) != Some(*year))
+        .map(|(key, year)| (key.clone(), *year))
+        .collect();
+    core.library
+        .cache_tmdb_movie_years(&cache_updates)
+        .await
+        .map_err(|error| error.to_string())?;
 
     // Cross-root "wrong library" detection (issue #301). Root-aware
     // classification keeps TV extras out of this list; unambiguous findings
@@ -2386,19 +2411,12 @@ async fn ai_reorganize_scan<R: tauri::Runtime>(
             expected_kind: expected_media_kind(r.asset_type),
         })
         .collect();
-    let root_path_for_misplaced = root_path.clone();
-    let root_label_for_misplaced = root_label.clone();
-    let misplaced = tokio::task::spawn_blocking(move || {
-        reorganize::find_misplaced_content_for_asset_type(
-            &root_label_for_misplaced,
-            &root_path_for_misplaced,
-            &all_roots,
-            root_asset_type,
-        )
-    })
-    .await
-    .unwrap_or(Ok(Vec::new()))
-    .unwrap_or_default();
+    let misplaced = reorganize::find_misplaced_content_for_asset_type_in_inventory(
+        &root_label,
+        &inventory,
+        &all_roots,
+        root_asset_type,
+    );
 
     let destination_roots: HashMap<String, PathBuf> = settings
         .media_roots

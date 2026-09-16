@@ -20,17 +20,17 @@ pub const VIDEO_EXTS: &[&str] = &[
 ];
 
 /// Disc-subfolder names absorbed into the parent album (e.g. `CD1`, `Disc 2`).
-fn is_disc_folder(name: &str) -> bool {
+fn disc_number_from_folder(name: &str) -> Option<u32> {
     let lower = name.to_lowercase();
     for prefix in ["cd", "disc", "disk"] {
         if let Some(rest) = lower.strip_prefix(prefix) {
             let rest = rest.trim_start_matches([' ', '-', '_']);
             if !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()) {
-                return true;
+                return rest.parse().ok();
             }
         }
     }
-    false
+    None
 }
 
 /// A release-type "category" folder some libraries insert between Artist and
@@ -436,6 +436,11 @@ pub struct Classified {
     pub artist: Option<String>,
     pub album: Option<String>,
     pub track_number: Option<u32>,
+    /// Multi-disc release number derived from `CD2`/`Disc 2` folders or a
+    /// leading `2-03` filename prefix. Used by the organizer to emit Plex's
+    /// required `203 - Track` filename without treating disc two as another
+    /// copy of track three.
+    pub disc_number: Option<u32>,
     pub show_title: Option<String>,
     pub season: Option<u32>,
     pub episode: Option<u32>,
@@ -478,6 +483,7 @@ fn blank_classified() -> Classified {
         artist: None,
         album: None,
         track_number: None,
+        disc_number: None,
         show_title: None,
         season: None,
         episode: None,
@@ -517,12 +523,20 @@ pub fn classify(relative_path: &str) -> Option<Classified> {
         .unwrap_or(file_name);
     // Directory chain above the file, with disc folders absorbed.
     let mut dirs: Vec<&str> = segments[..segments.len() - 1].to_vec();
-    if dirs.last().is_some_and(|d| is_disc_folder(d)) {
+    let disc_folder_number = dirs.last().and_then(|dir| disc_number_from_folder(dir));
+    if disc_folder_number.is_some() {
         dirs.pop();
     }
 
     if is_audio {
-        let (track_number, title) = split_track_number(stem);
+        let (filename_disc_number, track_number, title) = split_disc_track_number(stem)
+            .map_or_else(
+                || {
+                    let (track_number, title) = split_track_number(stem);
+                    (None, track_number, title)
+                },
+                |(disc, track, title)| (Some(disc), Some(track), title),
+            );
         // Folder convention: .../Artist/Album/track — anchored from the TOP
         // (artist = the first folder under the media root, album = the
         // second), not the bottom. Ported from batocera.drone's
@@ -587,6 +601,7 @@ pub fn classify(relative_path: &str) -> Option<Classified> {
             artist,
             album,
             track_number,
+            disc_number: disc_folder_number.or(filename_disc_number),
             ..blank_classified()
         });
     }
@@ -1220,6 +1235,32 @@ fn parse_nxnn_marker(stem: &str) -> Option<(u32, u32, &str)> {
 }
 
 /// Leading track number: `01 - Title`, `01. Title`, `01_Title`, `01 Title`.
+fn split_disc_track_number(stem: &str) -> Option<(u32, u32, String)> {
+    let first_digits: String = stem.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if first_digits.is_empty() || first_digits.len() > 2 {
+        return None;
+    }
+    let after_first = stem.get(first_digits.len()..)?;
+    let after_separator = after_first.strip_prefix('-')?;
+    let second_digits: String = after_separator
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    if second_digits.is_empty() || second_digits.len() > 3 {
+        return None;
+    }
+    let rest = after_separator.get(second_digits.len()..)?;
+    let title = rest.trim_start_matches([' ', '-', '.', '_']);
+    if title.is_empty() || title.len() == rest.len() {
+        return None;
+    }
+    Some((
+        first_digits.parse().ok()?,
+        second_digits.parse().ok()?,
+        clean_title(title),
+    ))
+}
+
 fn split_track_number(stem: &str) -> (Option<u32>, String) {
     let digits: String = stem.chars().take_while(|c| c.is_ascii_digit()).collect();
     if digits.is_empty() || digits.len() > 3 {
@@ -1647,6 +1688,15 @@ mod tests {
         assert_eq!(entry.album.as_deref(), Some("Album"));
         assert_eq!(entry.artist.as_deref(), Some("Artist"));
         assert_eq!(entry.track_number, Some(3));
+        assert_eq!(entry.disc_number, Some(2));
+    }
+
+    #[test]
+    fn disc_track_filename_preserves_both_numbers() {
+        let entry = classify("Artist/Album/1-14. Song.mp3").unwrap();
+        assert_eq!(entry.track_number, Some(14));
+        assert_eq!(entry.disc_number, Some(1));
+        assert_eq!(entry.title, "Song");
     }
 
     #[test]

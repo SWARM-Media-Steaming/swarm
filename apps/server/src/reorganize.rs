@@ -432,6 +432,7 @@ pub async fn scan_root_for_asset_type(
         ) else {
             continue;
         };
+        let deterministic = repair_season_bonus_filename(&unix_relative, deterministic);
         let (classified, ai_assisted) = if !is_confident(&deterministic) && ai_budget > 0 {
             if let Some(client) = ai {
                 ai_budget -= 1;
@@ -445,6 +446,14 @@ pub async fn scan_root_for_asset_type(
         } else {
             (deterministic, false)
         };
+
+        // Plex explicitly permits an episode title after SxxEyy. Do not
+        // rewrite an already-valid file merely because SWARM's shortest
+        // canonical basename omits that optional title. This also makes a
+        // second cleanup scan idempotent for existing alternate encodes.
+        if episode_path_is_already_plex_compatible(&unix_relative, &classified) {
+            continue;
+        }
 
         let (classified, year_source) = fill_missing_movie_year(classified, tmdb).await;
         if year_source.is_some() {
@@ -827,6 +836,26 @@ fn normalized_show_key(name: &str) -> String {
         .collect()
 }
 
+fn episode_path_is_already_plex_compatible(relative_path: &str, classified: &Classified) -> bool {
+    if classified.kind != MediaKind::Episode
+        || classified.extra_kind.is_some()
+        || classified.episode.is_none()
+    {
+        return false;
+    }
+    let Some(show) = classified.show_title.as_deref() else {
+        return false;
+    };
+    let parts: Vec<&str> = relative_path.split('/').collect();
+    let Some(root_show) = parts.first() else {
+        return false;
+    };
+    normalized_show_key(root_show) == normalized_show_key(show)
+        && parts
+            .iter()
+            .any(|part| season_number_from_folder(part) == classified.season)
+}
+
 fn season_number_from_folder(folder: &str) -> Option<u32> {
     let lower = folder.to_ascii_lowercase();
     let rest = lower.strip_prefix("season")?.trim_start();
@@ -1106,7 +1135,8 @@ fn infer_extra_kind(title: &str) -> plex::PlexExtraKind {
         plex::PlexExtraKind::DeletedScenes
     } else if [
         "behind the scene", "making of", "gag reel", "music video", "live performance",
-        "theme song", "clean opening", "clean ending", "nced", "ncop",
+        "theme song", "clean opening", "clean ending", "singalong", "original cut", "nced",
+        "ncop",
     ]
     .iter()
     .any(|token| lower.contains(token))
@@ -1115,6 +1145,60 @@ fn infer_extra_kind(title: &str) -> plex::PlexExtraKind {
     } else {
         plex::PlexExtraKind::Other
     }
+}
+
+fn repair_season_bonus_filename(relative_path: &str, mut classified: Classified) -> Classified {
+    if classified.kind != MediaKind::Episode || classified.extra_kind.is_some() {
+        return classified;
+    }
+    let stem = Path::new(relative_path)
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let lower = stem.to_ascii_lowercase();
+    let is_bonus = [
+        "deleted scene",
+        "deleted cold open",
+        "singalong",
+        "original cut",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker));
+    if !is_bonus {
+        return classified;
+    }
+
+    let show = classified.show_title.as_deref().unwrap_or_default();
+    let marker = format!(
+        "S{:02}E{:02}",
+        classified.season.unwrap_or(0),
+        classified.episode.unwrap_or(0)
+    );
+    let mut title = stem.as_str();
+    loop {
+        let before = title;
+        if title
+            .get(..show.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(show))
+        {
+            title = title[show.len()..].trim_start_matches([' ', '-', '_']);
+        }
+        if title
+            .get(..marker.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(&marker))
+        {
+            title = title[marker.len()..].trim_start_matches([' ', '-', '_']);
+        }
+        if title == before {
+            break;
+        }
+    }
+
+    classified.extra_kind = Some(infer_extra_kind(&stem).slug());
+    classified.extra_title = Some(title.trim().to_string());
+    classified.episode = None;
+    classified.episode_end = None;
+    classified
 }
 
 fn clean_bug_split_extra_title(suffix: &str) -> String {
@@ -2211,6 +2295,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn real_office_deleted_scene_in_a_season_moves_under_deleted_scenes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = "The Office/Season 07/The Office - S07E13 - S07E13 Ultimatum Deleted Scenes.mkv";
+        write(dir.path(), path, "deleted scene");
+
+        let plan = scan_root_for_asset_type(
+            "shows",
+            dir.path(),
+            MediaRootAssetType::Shows,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let item = plan.items.iter().find(|item| item.from == path).unwrap();
+        assert_eq!(
+            item.to,
+            "The Office/Season 07/Deleted Scenes/Ultimatum Deleted Scenes.mkv"
+        );
+    }
+
+    #[tokio::test]
+    async fn plex_valid_titled_x_files_episode_is_left_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = "The X-Files/Season 05/The X-Files - S05E07 - The X-Files (1993) - S05E07 - Emily (2) (1080p BluRay x265 Silence).mkv";
+        write(dir.path(), path, "episode");
+
+        let plan = scan_root_for_asset_type(
+            "shows",
+            dir.path(),
+            MediaRootAssetType::Shows,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(plan.items.iter().all(|item| item.from != path));
+    }
+
+    #[tokio::test]
     async fn shows_root_repairs_singleton_extra_folders_created_by_the_old_bug() {
         let dir = tempfile::tempdir().unwrap();
         write(
@@ -2456,6 +2582,44 @@ mod tests {
         tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
         let base = format!("http://{addr}");
         TmdbClient::with_base_urls("key", &base, &base)
+    }
+
+    #[tokio::test]
+    async fn real_house_scan_uses_the_original_title_to_select_1985() {
+        use axum::routing::get;
+        use axum::Json;
+        use serde_json::json;
+
+        let router = axum::Router::new().route(
+            "/search/movie",
+            get(|| async {
+                Json(json!({"results": [
+                    {"id": 25623, "title": "House", "original_title": "ハウス", "release_date": "1977-08-26", "vote_count": 700},
+                    {"id": 11415, "title": "House", "original_title": "House", "release_date": "1985-12-06", "vote_count": 1800}
+                ]}))
+            }),
+        );
+        let tmdb = spawn_mock_tmdb(router).await;
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "House/House.mp4", "movie");
+
+        let plan = scan_root_for_asset_type(
+            "movies",
+            dir.path(),
+            MediaRootAssetType::Movies,
+            None,
+            Some(&tmdb),
+        )
+        .await
+        .unwrap();
+
+        let item = plan
+            .items
+            .iter()
+            .find(|item| item.from == "House/House.mp4")
+            .unwrap();
+        assert_eq!(item.to, "House (1985)/House (1985).mp4");
+        assert_eq!(item.year_source, Some("tmdb"));
     }
 
     #[tokio::test]
@@ -3010,6 +3174,29 @@ mod tests {
             "Tiesto/2010 - Tiesto - Goldrush [Magik Muzik 886-0] WEB/02 - Goldrush (Edit).mp3"
         );
         assert!(!track.to.starts_with("Tiesto/Tiesto/"));
+    }
+
+    #[tokio::test]
+    async fn real_tiesto_compilation_keeps_the_release_below_multiple_wrappers() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = "Tiesto/albums/Compilation albums/2010 - Magikal Journey The Hits Collection 1998 - 2008 [MBB9929] 2CD/1-14. Tiesto - Goldrush.mp3";
+        write(dir.path(), from, "track");
+
+        let plan = scan_root_for_asset_type(
+            "music",
+            dir.path(),
+            MediaRootAssetType::Music,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let track = plan.items.iter().find(|item| item.from == from).unwrap();
+        assert_eq!(
+            track.to,
+            "Tiesto/2010 - Magikal Journey The Hits Collection 1998 - 2008 [MBB9929] 2CD/01 - 14 Tiesto - Goldrush.mp3"
+        );
     }
 
     #[tokio::test]

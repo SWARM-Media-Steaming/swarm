@@ -100,6 +100,21 @@ fn is_artist_collection_folder(folder: &str, artist: &str) -> bool {
     })
 }
 
+fn is_category_collection_folder(folder: &str) -> bool {
+    let words: Vec<&str> = folder
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect();
+    words.len() > 1 && words.iter().all(|word| is_category_folder(word))
+}
+
+fn is_music_release_wrapper(folder: &str, artist: &str) -> bool {
+    is_category_folder(folder)
+        || music_name_key(folder) == music_name_key(artist)
+        || is_artist_collection_folder(folder, artist)
+        || is_category_collection_folder(folder)
+}
+
 /// Real libraries often number these wrapper folders (`"3. Remixes"`,
 /// `"4. Bonus"`) rather than using the bare category name — confirmed
 /// against a real library where an artist's remix/bonus folders were laid
@@ -555,28 +570,15 @@ pub fn classify(relative_path: &str) -> Option<Classified> {
             let artist = dirs
                 .first()
                 .map(|s| clean_title(strip_discography_suffix(s)));
-            let album = match dirs.get(1) {
-                Some(second) if is_category_folder(second) && dirs.len() >= 3 => {
-                    if dirs.len() >= 4
-                        && music_name_key(dirs[2])
-                            == artist.as_deref().map_or_else(String::new, music_name_key)
-                    {
-                        Some(clean_title(dirs[3]))
-                    } else {
-                        Some(clean_title(dirs[2]))
-                    }
-                }
-                Some(second)
-                    if dirs.len() >= 3
-                        && artist
-                            .as_deref()
-                            .is_some_and(|artist| is_artist_collection_folder(second, artist)) =>
+            let album = artist.as_deref().and_then(|artist| {
+                let mut album_index = 1;
+                while album_index + 1 < dirs.len()
+                    && is_music_release_wrapper(dirs[album_index], artist)
                 {
-                    Some(clean_title(dirs[2]))
+                    album_index += 1;
                 }
-                Some(second) => Some(clean_title(second)),
-                None => None,
-            };
+                dirs.get(album_index).map(|album| clean_title(album))
+            });
             (artist, album, track_number, title)
         };
         return Some(Classified {
@@ -1704,6 +1706,19 @@ mod tests {
         assert_eq!(
             entry.album.as_deref(),
             Some("2010 - Tiesto - Goldrush [Magik Muzik 886-0] WEB")
+        );
+    }
+
+    #[test]
+    fn nested_category_wrappers_keep_the_real_compilation_release() {
+        let entry = classify(
+            "Tiesto/albums/Compilation albums/2010 - Magikal Journey The Hits Collection 1998 - 2008 [MBB9929] 2CD/1-14. Tiesto - Goldrush.mp3",
+        )
+        .unwrap();
+        assert_eq!(entry.artist.as_deref(), Some("Tiesto"));
+        assert_eq!(
+            entry.album.as_deref(),
+            Some("2010 - Magikal Journey The Hits Collection 1998 - 2008 [MBB9929] 2CD")
         );
     }
 

@@ -259,7 +259,10 @@ impl TmdbClient {
                 .as_deref()
                 .or(hit.original_name.as_deref())
                 .unwrap_or_default();
-            normalize_for_match(candidate_title) == norm_query || normalize_for_match(original_title) == norm_query
+            let normalized_original = normalize_for_match(original_title);
+            normalized_original == norm_query
+                || (normalized_original.is_empty()
+                    && normalize_for_match(candidate_title) == norm_query)
         });
 
         let Some(hit) = exact_matches.next() else {
@@ -1168,6 +1171,37 @@ mod tests {
         let client = TmdbClient::with_base_urls("key", &base, &base);
         let year = client.confident_movie_year("Scream").await.unwrap();
         assert_eq!(year, None);
+    }
+
+    #[tokio::test]
+    async fn confident_movie_year_rejects_a_localized_title_for_a_different_original() {
+        let router = Router::new().route(
+            "/search/movie",
+            get(|| async {
+                Json(json!({"results": [
+                    {"id": 25623, "title": "House", "original_title": "ハウス", "release_date": "1977-08-26", "vote_count": 700},
+                    {"id": 11415, "title": "House", "original_title": "House", "release_date": "1985-12-06", "vote_count": 1800}
+                ]}))
+            }),
+        );
+        let base = spawn_mock(router).await;
+        let client = TmdbClient::with_base_urls("key", &base, &base);
+        assert_eq!(client.confident_movie_year("House").await.unwrap(), Some(1985));
+    }
+
+    #[tokio::test]
+    async fn confident_movie_year_accepts_a_matching_foreign_original_title() {
+        let router = Router::new().route(
+            "/search/movie",
+            get(|| async {
+                Json(json!({"results": [
+                    {"id": 25623, "title": "House", "original_title": "ハウス", "release_date": "1977-08-26", "vote_count": 700}
+                ]}))
+            }),
+        );
+        let base = spawn_mock(router).await;
+        let client = TmdbClient::with_base_urls("key", &base, &base);
+        assert_eq!(client.confident_movie_year("ハウス").await.unwrap(), Some(1977));
     }
 
     #[tokio::test]

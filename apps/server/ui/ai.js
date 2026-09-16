@@ -257,12 +257,13 @@ document.getElementById("runScrapeAssistNowBtn").addEventListener("click", async
 // checkbox (`reorgExcluded`, keyed by plan id, holding the excluded `from`
 // paths) so a file can be left out of the approved run. Once a plan finishes
 // applying or undoing, its id goes into `reorgConfirmedIds` so it drops out
-// of the rendered list for good — the panel resets to just the root picker
-// and "Scan for cleanup", with a plain-text confirmation of what happened
+// of the rendered list for good — the panel resets to the all-library scan
+// control, with a plain-text confirmation of what happened
 // shown briefly above it (in addition to the toast, which can be missed).
 let reorgExcluded = {};
 let reorgConfirmedIds = new Set();
 let reorgConfirmTimer = null;
+let reorgCleanupRoots = [];
 
 function showReorgConfirmation(message, hasErrors) {
   const el = document.getElementById("aiReorgConfirmMsg");
@@ -279,10 +280,16 @@ function showReorgConfirmation(message, hasErrors) {
 async function refreshReorganize(settings) {
   try {
     const roots = await invoke("list_media_roots");
-    document.getElementById("aiReorganizeRootSelect").innerHTML = roots
-      .map(r => `<option value="${esc(r.label)}">${esc(r.label)}</option>`)
-      .join("");
+    reorgCleanupRoots = roots.filter(root => ["movies", "shows", "music"].includes(root.asset_type));
+    const summary = document.getElementById("aiReorganizeRootsSummary");
+    const scanButton = document.getElementById("aiReorganizeScanBtn");
+    summary.textContent = reorgCleanupRoots.length
+      ? `Scans all ${reorgCleanupRoots.length} configured Movies, Shows, and Music ${reorgCleanupRoots.length === 1 ? "library" : "libraries"}.`
+      : "Add a Movies, Shows, or Music library to scan for cleanup.";
+    scanButton.disabled = reorgCleanupRoots.length === 0;
   } catch (err) {
+    reorgCleanupRoots = [];
+    document.getElementById("aiReorganizeScanBtn").disabled = true;
     showToast(String(err), "error");
   }
 
@@ -471,18 +478,45 @@ listen("ai-reorganize-undone", async ({ payload }) => {
 
 document.getElementById("aiReorganizeScanBtn").addEventListener("click", async () => {
   const btn = document.getElementById("aiReorganizeScanBtn");
-  const rootLabel = document.getElementById("aiReorganizeRootSelect").value;
-  if (!rootLabel) {
-    showToast("Add a media root first.", "error");
+  const status = document.getElementById("aiReorgScanStatus");
+  let roots;
+  try {
+    roots = (await invoke("list_media_roots")).filter(root => ["movies", "shows", "music"].includes(root.asset_type));
+  } catch (err) {
+    showToast(String(err), "error");
+    return;
+  }
+  if (!roots.length) {
+    showToast("Add a Movies, Shows, or Music library first.", "error");
     return;
   }
   btn.disabled = true;
-  const progressToast = showToast("Scanning the media root and preparing a reorganization plan…", "progress", { duration: 0 });
+  const progressToast = showToast(`Scanning all ${roots.length} media libraries for cleanup…`, "progress", { duration: 0 });
+  const failures = [];
+  let completed = 0;
   try {
-    await invoke("ai_reorganize_scan", { rootLabel });
+    status.className = "note";
+    for (const root of roots) {
+      const progress = `Scanning ${completed + 1} of ${roots.length}: ${root.label}…`;
+      status.textContent = progress;
+      progressToast?.querySelector(".toast-message")?.replaceChildren(progress);
+      try {
+        await invoke("ai_reorganize_scan", { rootLabel: root.label });
+      } catch (err) {
+        failures.push(`${root.label}: ${String(err)}`);
+      }
+      completed += 1;
+    }
     await refreshAi();
-  } catch (err) {
-    showToast(String(err), "error");
+    if (failures.length) {
+      status.textContent = `Scan finished: ${completed - failures.length} of ${roots.length} libraries produced review plans. ${failures.join(" | ")}`;
+      status.className = "note error";
+      showToast(`Cleanup scan finished with ${failures.length} ${failures.length === 1 ? "error" : "errors"}.`, "warning");
+    } else {
+      status.textContent = `Scan complete: review the ${roots.length} library plans below.`;
+      status.className = "note";
+      showToast(`Cleanup scan complete for all ${roots.length} libraries.`, "success");
+    }
   } finally {
     btn.disabled = false;
     dismissToast(progressToast);

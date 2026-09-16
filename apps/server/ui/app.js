@@ -223,7 +223,7 @@ const INFO_TOPICS = {
   },
   "reorganize-media": {
     icon: "bi-folder-symlink-fill", title: "Reorganize media",
-    body: "Scan a media root and propose consistent folder names and file locations (subtitles included) so both the scanner and you can read your library easily. Leftover subtitle/artwork files with no matching video anywhere in the root are proposed for a move into an _orphaned/ holding folder instead of a rename. Content that actually belongs under a different configured root (e.g. a TV show sitting in a Movies root) is called out separately below and is report-only — SWARM never moves anything across roots automatically. Uncheck \"Include\" on any item you don't want touched — everything else still applies. Nothing changes until you review and approve the plan — SWARM only ever renames/moves files here, never deletes.",
+    body: "Scan every configured Movies, Shows, and Music library and propose consistent folder names and file locations (subtitles included) so both the scanner and you can read your library easily. Each library gets its own review plan. Leftover subtitle/artwork files with no matching video are proposed for a move into an _orphaned/ holding folder. Content that belongs under another configured library is shown as a cross-library move in the review. Uncheck \"Include\" on any item you don't want touched — everything else still applies. Nothing changes until you review and approve each plan; SWARM never overwrites media files.",
   },
   "approve-tv": {
     icon: "bi-shield-check", title: "Approve a TV",

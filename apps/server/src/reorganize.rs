@@ -1810,6 +1810,13 @@ fn find_sidecar_moves(root: &Path, video_relative: &str, video_target: &str) -> 
     moves
 }
 
+/// Recursively collects every file under `dir` (relative to `root`), never
+/// descending into a dot-prefixed directory or, at the root's own top
+/// level, a reserved containment folder (`_orphaned`, `_duplicates`,
+/// `_cleanup`, `_cleanup_leftovers`, or any other `_`-prefixed holding
+/// folder — see `is_reserved_top_level` — issue #319: a rescan must never
+/// re-propose files this tool, or an earlier one-off migration, already
+/// moved out of the way).
 fn walk(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
@@ -1817,7 +1824,11 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> 
         let file_type = entry.file_type()?;
         if file_type.is_dir() {
             let name = entry.file_name();
-            if name.to_string_lossy().starts_with('.') {
+            let name = name.to_string_lossy();
+            if name.starts_with('.') {
+                continue;
+            }
+            if dir == root && name.starts_with('_') {
                 continue;
             }
             walk(root, &path, out)?;
@@ -2677,6 +2688,26 @@ mod tests {
 
         assert!(plan.items.iter().all(|i| i.kind != "orphan"));
         assert_eq!(plan.orphan_count, 0);
+    }
+
+    #[tokio::test]
+    async fn ignores_cleanup_containment_folders_at_the_root() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "Heat.1995.BDRip.x264-GROUP.mkv", "x");
+        // Legacy quarantine folders (this tool's own `_orphaned`/`_duplicates`,
+        // and `fix_movies_layout`'s `_cleanup_leftovers/`) plus a generic
+        // `_cleanup/` holding folder — none of these should ever surface a
+        // reorganize candidate from a rescan (issue #319).
+        write(dir.path(), "_cleanup/Se7en.1995.BDRip.x264-GROUP.mkv", "y");
+        write(dir.path(), "_cleanup_leftovers/Se7en.1995.BDRip.x264-GROUP.mkv", "y");
+        write(dir.path(), "_orphaned/some-poster.jpg", "y");
+        write(dir.path(), "_duplicates/Se7en.1995.BDRip.x264-GROUP.mkv", "y");
+
+        let plan = scan_root("local", dir.path(), None, None).await.unwrap();
+
+        assert_eq!(plan.items.len(), 1);
+        assert_eq!(plan.items[0].from, "Heat.1995.BDRip.x264-GROUP.mkv");
+        assert_eq!(plan.items[0].to, "Heat (1995)/Heat (1995).mkv");
     }
 
     #[tokio::test]

@@ -215,6 +215,18 @@ td.mono {
 .plan-summary { justify-content: space-between; align-items: center; }
 .plan-actions { margin-top: 8px; }
 
+/* Reorganize media: category tabs (Movies/Shows/Music) split the review
+   list instead of stacking every root's plan cards in one long column —
+   same active/hover language as the sidebar's .tabnav .nav-item, laid out
+   as a horizontal pill row instead of a vertical stack. */
+.reorg-category-tabs { gap: 6px; margin: 4px 0 14px; }
+.reorg-category-tab {
+  appearance: none; border: 1px solid var(--line-soft); background: transparent; cursor: pointer;
+  padding: 7px 14px; border-radius: 999px; color: var(--muted); font-size: .76rem; font-weight: 650;
+}
+.reorg-category-tab:hover { color: var(--text); background: color-mix(in srgb, var(--text) 3.5%, transparent); }
+.reorg-category-tab.tab-active { color: var(--text); background: color-mix(in srgb, var(--violet) 18%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--violet) 14%, transparent); border-color: transparent; }
+
 /* Reorganize media: review table (issue #319) — each proposed move is a
    table row instead of a grid of cards, so a large batch reads as one
    scannable list; a per-plan max-height forces the table itself to scroll

@@ -283,6 +283,29 @@ let reorgPageOffset = {}; // planId -> current item offset
 let reorgPlanTotal = {}; // planId -> total items matching the current search
 let reorgRequestSeq = {}; // planId -> latest items-fetch request number, to drop stale responses
 
+// Plans are split into a tab per media type instead of stacking every
+// root's card in one long column — a library with both a movies mess and a
+// shows mess used to bury one plan under the other's (possibly huge) item
+// table. Tabs are derived from `reorgCleanupRoots` (so a tab only appears
+// for a media type that actually has a configured library), not from the
+// plans themselves, so an empty tab still has somewhere to say "nothing to
+// review" rather than vanishing.
+const REORG_CATEGORIES = [
+  { key: "movies", label: "Movies" },
+  { key: "shows", label: "Shows" },
+  { key: "music", label: "Music" },
+];
+let reorgLastPlans = []; // last fetched plan list, re-rendered on a tab switch without a refetch
+let reorgActiveCategory = null;
+
+// A plan's category comes from the asset type of the root it was scanned
+// from, not the plan itself — `null` when that root is no longer configured
+// (e.g. removed after the scan), in which case the plan is shown under
+// every tab rather than silently hidden.
+function reorgPlanCategory(plan) {
+  return reorgCleanupRoots.find(root => root.label === plan.root_label)?.asset_type ?? null;
+}
+
 function showReorgConfirmation(message, hasErrors) {
   const el = document.getElementById("aiReorgConfirmMsg");
   if (!el) return;
@@ -320,11 +343,53 @@ async function refreshReorganize(settings) {
   renderReorgPlans(plans);
 }
 
+function renderReorgCategoryTabs(activePlans) {
+  const tabsWrap = document.getElementById("aiReorgCategoryTabs");
+  const presentCategories = REORG_CATEGORIES.filter(category =>
+    reorgCleanupRoots.some(root => root.asset_type === category.key)
+  );
+  if (presentCategories.length === 0) {
+    tabsWrap.classList.add("d-none");
+    tabsWrap.innerHTML = "";
+    return;
+  }
+  if (!presentCategories.some(category => category.key === reorgActiveCategory)) {
+    reorgActiveCategory = presentCategories[0].key;
+  }
+  tabsWrap.classList.remove("d-none");
+  tabsWrap.innerHTML = presentCategories
+    .map(category => {
+      const count = activePlans.filter(plan => reorgPlanCategory(plan) === category.key).length;
+      const isActive = category.key === reorgActiveCategory;
+      return `<button type="button" class="reorg-category-tab${isActive ? " tab-active" : ""}" data-category="${category.key}" role="tab" aria-selected="${isActive}">${esc(category.label)}${count ? ` <span class="muted">(${count})</span>` : ""}</button>`;
+    })
+    .join("");
+  tabsWrap.querySelectorAll(".reorg-category-tab").forEach(btn => {
+    btn.addEventListener("click", () => {
+      if (btn.dataset.category === reorgActiveCategory) return;
+      reorgActiveCategory = btn.dataset.category;
+      renderReorgPlans(reorgLastPlans);
+    });
+  });
+}
+
 function renderReorgPlans(plans) {
+  reorgLastPlans = plans || [];
   const wrap = document.getElementById("aiReorgPlansList");
-  const visiblePlans = (plans || []).filter(plan => !reorgConfirmedIds.has(plan.id));
-  if (visiblePlans.length === 0) {
+  const activePlans = reorgLastPlans.filter(plan => !reorgConfirmedIds.has(plan.id));
+  renderReorgCategoryTabs(activePlans);
+  if (activePlans.length === 0) {
     wrap.innerHTML = "";
+    document.getElementById("aiReorgSearchWrap")?.classList.add("d-none");
+    return;
+  }
+  const visiblePlans = activePlans.filter(plan => {
+    const category = reorgPlanCategory(plan);
+    return category === null || category === reorgActiveCategory;
+  });
+  if (visiblePlans.length === 0) {
+    const categoryLabel = REORG_CATEGORIES.find(c => c.key === reorgActiveCategory)?.label || reorgActiveCategory;
+    wrap.innerHTML = `<p class="muted">Nothing to review under ${esc(categoryLabel)} right now.</p>`;
     document.getElementById("aiReorgSearchWrap")?.classList.add("d-none");
     return;
   }

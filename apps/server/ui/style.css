@@ -215,17 +215,24 @@ td.mono {
 .plan-summary { justify-content: space-between; align-items: center; }
 .plan-actions { margin-top: 8px; }
 
-/* Reorganize media: full-width review grid (issue #312) — each proposed
-   move is its own card in a responsive column/row layout instead of a
-   single scrolling list, and carries its own include/exclude toggle so a
-   file can be left out of the approved run without rejecting the whole
-   plan. */
-.reorg-items-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 10px; margin: 8px 0 14px; }
-.reorg-item-card { display: flex; flex-direction: column; gap: 6px; transition: opacity .15s ease; }
-.reorg-item-excluded { opacity: .5; }
+/* Reorganize media: review table (issue #319) — each proposed move is a
+   table row instead of a grid of cards, so a large batch reads as one
+   scannable list; a per-plan max-height forces the table itself to scroll
+   rather than stretching the whole view, and each row still carries its
+   own include/exclude toggle so a file can be left out of the approved run
+   without rejecting the whole plan. */
+.reorg-items-table-wrap { max-height: 420px; overflow-y: auto; margin: 8px 0 14px; border: 1px solid var(--line-soft); border-radius: 8px; }
+.reorg-items-table-wrap table { font-size: .8rem; }
+.reorg-items-table-wrap thead th { position: sticky; top: 0; background: var(--panel-2); }
+.reorg-items-table-wrap tr:first-child td { border-top: none; }
+.reorg-item-include { width: 90px; vertical-align: top; }
+.reorg-item-row { transition: opacity .15s ease; }
+.reorg-item-row.reorg-item-excluded { opacity: .5; }
+.reorg-item-row.search-hidden { display: none; }
 .reorg-item-select { margin: 0; }
-.reorg-item-paths { font-size: .8rem; line-height: 1.4; overflow-wrap: anywhere; }
-.reorg-item-arrow { color: var(--muted); margin: 0 5px; }
+.reorg-item-paths { line-height: 1.5; overflow-wrap: anywhere; }
+.reorg-item-from, .reorg-item-to { display: block; }
+.reorg-item-label { display: inline-block; min-width: 34px; font-weight: 650; letter-spacing: .04em; }
 .media-view-toggle { margin-bottom: 14px; }
 .media-view-toggle > button { flex: 0 0 auto; }
 .card-meta { margin-top: 3px; font-size: .7rem; }
@@ -908,7 +915,9 @@ li.info-trigger:hover { background: var(--surface-muted); }
   .topbar-actions { display: none; }
   .view-stack { padding: 22px 20px 36px; }
   #tabPanel-metrics, #tabPanel-settings, #tabPanel-swarm, #tabPanel-notifications, #tabPanel-ai { grid-template-columns: 1fr; }
-  .grid, .about-features, .scrape-assist-grid, .reorg-items-grid { grid-template-columns: 1fr; }
+  .grid, .about-features, .scrape-assist-grid { grid-template-columns: 1fr; }
+  .reorg-items-table-wrap { max-height: 320px; }
+  .reorg-item-include { width: 64px; }
   .media-root-warning { align-items: flex-start; flex-wrap: wrap; }
   .media-root-warning-copy { flex-basis: calc(100% - 42px); }
   .media-root-row, .client-error-row { flex-direction: column; }

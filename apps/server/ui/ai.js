@@ -264,6 +264,15 @@ let reorgExcluded = {};
 let reorgConfirmedIds = new Set();
 let reorgConfirmTimer = null;
 let reorgCleanupRoots = [];
+// Issue #319: an approve/undo toast must stay open for the whole
+// background apply/undo run (not just the default toast duration), so the
+// in-progress toast for each plan id is kept here and dismissed by the
+// matching "ai-reorganize-finished"/"ai-reorganize-undone" listener below.
+let reorgActionToasts = {};
+// Issue #319: filters visible item rows across every rendered plan's
+// table without touching the search `<input>` itself (see the same
+// "never rebuild the search box on keystroke" rule in media.js).
+let reorgSearchQuery = "";
 
 function showReorgConfirmation(message, hasErrors) {
   const el = document.getElementById("aiReorgConfirmMsg");
@@ -307,6 +316,7 @@ function renderReorgPlans(plans) {
   const visiblePlans = (plans || []).filter(plan => !reorgConfirmedIds.has(plan.id));
   if (visiblePlans.length === 0) {
     wrap.innerHTML = "";
+    document.getElementById("aiReorgSearchWrap")?.classList.add("d-none");
     return;
   }
   wrap.innerHTML = visiblePlans
@@ -322,25 +332,36 @@ function renderReorgPlans(plans) {
         undone: ["bi-check-circle", "Reorganization undone"]
       }[plan.status] || ["bi-info-circle", plan.status];
       const itemsHtml = plan.items.length
-        ? `<div class="reorg-items-grid">${plan.items
+        ? `<div class="table-scroll reorg-items-table-wrap">
+        <table class="reorg-items-table">
+          <thead><tr><th>Include</th><th>From / To</th></tr></thead>
+          <tbody>${plan.items
             .map(item => {
               const excludable = !item.conflict;
               const isExcluded = excludable && reorgExcluded[plan.id]?.has(item.from);
               const checkboxHtml = excludable
                 ? `<label class="checkbox-label reorg-item-select"><input type="checkbox" class="reorg-item-toggle" data-plan-id="${plan.id}" data-from="${esc(item.from)}" ${isExcluded ? "" : "checked"}>Include</label>`
                 : "";
+              const searchKey = esc(`${item.from} ${item.to}`.toLowerCase());
               return `
-        <div class="service-card reorg-item-card${isExcluded ? " reorg-item-excluded" : ""}">
-          ${checkboxHtml}
-          <div class="reorg-item-paths mono">${esc(item.from)}<span class="reorg-item-arrow">→</span>${item.destination_root_label ? `<strong>${esc(item.destination_root_label)}:</strong> ` : ""}${esc(item.to)}</div>
-          ${item.kind === "orphan" ? '<span class="orphan-label"><i class="bi bi-exclamation-triangle"></i> Orphaned — no matching video found, moved out of the way</span>' : ""}
-          ${item.kind === "duplicate" ? '<span class="duplicate-label"><i class="bi bi-files"></i> Duplicate of an already-organized file — moved aside, original left untouched</span>' : ""}
-          ${item.ai_assisted ? '<span class="muted ai-assisted-label">AI-assisted</span>' : ""}
-          ${item.year_source === "tmdb" ? '<span class="muted tmdb-year-label">Year via TMDb</span>' : ""}
-          ${item.conflict ? `<span class="issue-reason">${esc(item.conflict)} — left in place</span>` : ""}
-        </div>`;
+        <tr class="reorg-item-row${isExcluded ? " reorg-item-excluded" : ""}" data-search="${searchKey}">
+          <td class="reorg-item-include">${checkboxHtml}</td>
+          <td>
+            <div class="reorg-item-paths mono">
+              <div class="reorg-item-from"><span class="reorg-item-label muted">FROM</span> ${esc(item.from)}</div>
+              <div class="reorg-item-to"><span class="reorg-item-label muted">TO</span> ${item.destination_root_label ? `<strong>${esc(item.destination_root_label)}:</strong> ` : ""}${esc(item.to)}</div>
+            </div>
+            ${item.kind === "orphan" ? '<span class="orphan-label"><i class="bi bi-exclamation-triangle"></i> Orphaned — no matching video found, moved out of the way</span>' : ""}
+            ${item.kind === "duplicate" ? '<span class="duplicate-label"><i class="bi bi-files"></i> Duplicate of an already-organized file — moved aside, original left untouched</span>' : ""}
+            ${item.ai_assisted ? '<span class="muted ai-assisted-label">AI-assisted</span>' : ""}
+            ${item.year_source === "tmdb" ? '<span class="muted tmdb-year-label">Year via TMDb</span>' : ""}
+            ${item.conflict ? `<span class="issue-reason">${esc(item.conflict)} — left in place</span>` : ""}
+          </td>
+        </tr>`;
             })
-            .join("")}</div>`
+            .join("")}</tbody>
+        </table>
+      </div>`
         : '<p class="muted">Nothing to reorganize — this root already looks consistent.</p>';
       const misplacedHtml =
         plan.misplaced && plan.misplaced.length
@@ -402,7 +423,7 @@ function renderReorgPlans(plans) {
       if (!reorgExcluded[id]) reorgExcluded[id] = new Set();
       if (cb.checked) reorgExcluded[id].delete(from);
       else reorgExcluded[id].add(from);
-      cb.closest(".reorg-item-card")?.classList.toggle("reorg-item-excluded", !cb.checked);
+      cb.closest(".reorg-item-row")?.classList.toggle("reorg-item-excluded", !cb.checked);
     });
   });
   wrap.querySelectorAll(".approve-reorg-btn").forEach(btn => {
@@ -410,25 +431,39 @@ function renderReorgPlans(plans) {
       const id = Number(btn.dataset.planId);
       const excludedPaths = Array.from(reorgExcluded[id] || []);
       btn.disabled = true;
+      // Issue #319: stays open until the "ai-reorganize-finished" event for
+      // this id dismisses it — the background apply run can take far longer
+      // than a toast's default duration.
+      reorgActionToasts[id] = showToast("Reorganization started in the background. You’ll be notified when it finishes.", "progress", { duration: 0 });
       try {
         await invoke("approve_ai_reorg_plan", { id, excludedPaths });
-        showToast("Reorganization started in the background. You’ll be notified when it finishes.", "progress");
         await refreshAi();
       } catch (err) {
         showToast(String(err), "error");
         btn.disabled = false;
+        dismissToast(reorgActionToasts[id]);
+        delete reorgActionToasts[id];
       }
     });
   });
   wrap.querySelectorAll(".reject-reorg-btn").forEach(btn => {
     btn.addEventListener("click", async () => {
       const id = Number(btn.dataset.planId);
+      btn.disabled = true;
+      const progressToast = showToast("Rejecting plan…", "progress", { duration: 0 });
       try {
         await invoke("reject_ai_reorg_plan", { id });
         delete reorgExcluded[id];
+        // Issue #319: once rejection completes, drop the plan from the
+        // panel/table for good, same as an applied or undone plan.
+        reorgConfirmedIds.add(id);
+        showToast("Plan rejected.", "success");
         await refreshAi();
       } catch (err) {
         showToast(String(err), "error");
+        btn.disabled = false;
+      } finally {
+        dismissToast(progressToast);
       }
     });
   });
@@ -436,19 +471,40 @@ function renderReorgPlans(plans) {
     btn.addEventListener("click", async () => {
       const id = Number(btn.dataset.planId);
       btn.disabled = true;
+      reorgActionToasts[id] = showToast("Undo started in the background. You’ll be notified when it finishes.", "progress", { duration: 0 });
       try {
         await invoke("undo_ai_reorg_plan", { id });
-        showToast("Undo started in the background. You’ll be notified when it finishes.", "progress");
         await refreshAi();
       } catch (err) {
         showToast(String(err), "error");
         btn.disabled = false;
+        dismissToast(reorgActionToasts[id]);
+        delete reorgActionToasts[id];
       }
     });
   });
+
+  applyReorgSearchFilter();
+  document.getElementById("aiReorgSearchWrap")?.classList.toggle("d-none", visiblePlans.length === 0);
 }
 
+// Issue #319: filters rows client-side by from/to path text, leaving the
+// search `<input>` itself untouched so a keystroke never loses focus.
+function applyReorgSearchFilter() {
+  const query = reorgSearchQuery.trim().toLowerCase();
+  document.querySelectorAll("#aiReorgPlansList .reorg-item-row").forEach(row => {
+    row.classList.toggle("search-hidden", Boolean(query) && !row.dataset.search.includes(query));
+  });
+}
+
+document.getElementById("aiReorgSearchInput")?.addEventListener("input", event => {
+  reorgSearchQuery = event.target.value;
+  applyReorgSearchFilter();
+});
+
 listen("ai-reorganize-finished", async ({ payload }) => {
+  dismissToast(reorgActionToasts[payload.id]);
+  delete reorgActionToasts[payload.id];
   const hasErrors = payload.errors?.length > 0;
   const detail = payload.applied + " file(s) moved, " + payload.skipped + " skipped.";
   showToast(
@@ -463,6 +519,8 @@ listen("ai-reorganize-finished", async ({ payload }) => {
 });
 
 listen("ai-reorganize-undone", async ({ payload }) => {
+  dismissToast(reorgActionToasts[payload.id]);
+  delete reorgActionToasts[payload.id];
   const hasErrors = payload.errors?.length > 0;
   const detail = payload.applied + " file(s) restored, " + payload.skipped + " skipped.";
   showToast(

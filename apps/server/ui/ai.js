@@ -306,6 +306,14 @@ function renderReorgPlans(plans) {
     .slice()
     .reverse()
     .map(plan => {
+      const statusDetails = {
+        proposed: ["bi-clipboard-check", "Ready for review"],
+        applying: ["bi-arrow-repeat", "Reorganization in progress…"],
+        applied: ["bi-check-circle-fill", "Reorganization complete"],
+        rejected: ["bi-x-circle", "Plan rejected"],
+        undoing: ["bi-arrow-counterclockwise", "Undo in progress…"],
+        undone: ["bi-check-circle", "Reorganization undone"]
+      }[plan.status] || ["bi-info-circle", plan.status];
       const itemsHtml = plan.items.length
         ? `<div class="reorg-items-grid">${plan.items
             .map(item => {
@@ -362,9 +370,14 @@ function renderReorgPlans(plans) {
             : "";
       return `
         <div class="service-card ai-reorg-plan">
+          <div class="reorg-status reorg-status-${esc(plan.status)}" role="status">
+            <i class="bi ${statusDetails[0]}"></i>
+            <strong>${esc(statusDetails[1])}</strong>
+            ${plan.status === "applied" && plan.apply_summary ? `<span>${plan.apply_summary.applied} moved, ${plan.apply_summary.skipped} skipped</span>` : ""}
+          </div>
           <div class="row plan-summary">
             <strong>${esc(plan.root_label)}</strong>
-            <span class="muted">${plan.items.length} item(s), ${plan.ai_assisted_count} AI-assisted, ${plan.tmdb_year_count} TMDb-year, ${plan.orphan_count} orphaned, ${plan.duplicate_count} duplicate(s), ${plan.conflict_count} conflict(s) — <em>${esc(plan.status)}</em></span>
+            <span class="muted">${plan.items.length} item(s), ${plan.ai_assisted_count} AI-assisted, ${plan.tmdb_year_count} TMDb-year, ${plan.orphan_count} orphaned, ${plan.duplicate_count} duplicate(s), ${plan.conflict_count} conflict(s)</span>
           </div>
           ${itemsHtml}
           ${misplacedHtml}

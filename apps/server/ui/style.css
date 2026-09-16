@@ -205,6 +205,11 @@ td.mono {
 .orphan-label { font-size: .68rem; color: color-mix(in srgb, var(--amber) 78%, var(--text)); }
 .duplicate-label { font-size: .68rem; color: color-mix(in srgb, var(--cyan) 78%, var(--text)); }
 .ai-reorg-plan { margin-top: 12px; }
+.reorg-status { display: flex; align-items: center; gap: 8px; margin: -4px -4px 12px; padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: 8px; background: color-mix(in srgb, var(--cyan) 7%, transparent); }
+.reorg-status span { margin-left: auto; color: var(--muted); font-size: .72rem; }
+.reorg-status-applying, .reorg-status-undoing { color: color-mix(in srgb, var(--cyan) 78%, var(--text)); }
+.reorg-status-applied, .reorg-status-undone { color: color-mix(in srgb, var(--green) 78%, var(--text)); background: color-mix(in srgb, var(--green) 9%, transparent); }
+.reorg-status-rejected { color: var(--muted); }
 .misplaced-heading { color: color-mix(in srgb, var(--amber) 78%, var(--text)); }
 .issue-list.misplaced-items { background: color-mix(in srgb, var(--amber) 6%, transparent); }
 .plan-summary { justify-content: space-between; align-items: center; }

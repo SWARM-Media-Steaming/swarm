@@ -469,7 +469,33 @@ pub async fn scan_root_for_asset_type(
     }
 
     if asset_type == MediaRootAssetType::Shows {
-        let already_planned: HashSet<String> = items.iter().map(|item| item.from.clone()).collect();
+        let mut already_planned: HashSet<String> =
+            items.iter().map(|item| item.from.clone()).collect();
+        for (alias_from, alias_to, kind) in nfo_declared_show_alias_moves(
+            root,
+            &video_files,
+            &known_show_roots,
+            &already_planned,
+        ) {
+            let (to, kind, conflict) = resolve_destination(
+                root,
+                &alias_from,
+                &alias_to,
+                kind,
+                &mut planned_targets,
+            )
+            .await;
+            already_planned.insert(alias_from.clone());
+            items.push(ReorgItem {
+                from: alias_from,
+                to,
+                kind,
+                destination_root_label: None,
+                ai_assisted: false,
+                year_source: None,
+                conflict,
+            });
+        }
         for (alias_from, alias_to, kind) in artwork_only_show_alias_moves(
             &video_files,
             &known_show_roots,
@@ -638,6 +664,120 @@ fn artwork_only_show_alias_moves(
         ));
     }
     moves
+}
+
+/// Uses a top-level `tvshow.nfo` title as the authoritative series name
+/// when an older organizer stripped a year-like suffix from the video
+/// folder. For example, `Sealab 2021/tvshow.nfo` declares the actual show
+/// title while the videos were incorrectly moved to `Sealab/`. Every file
+/// from both roots is planned under the declared title, with season folders
+/// normalized, so artwork, metadata, subtitles, and episodes converge.
+fn nfo_declared_show_alias_moves(
+    root: &Path,
+    files: &[PathBuf],
+    known_shows: &[String],
+    already_planned: &HashSet<String>,
+) -> Vec<(String, String, &'static str)> {
+    let mut declarations = Vec::new();
+    for relative in files {
+        let parts: Vec<String> = relative
+            .iter()
+            .map(|part| part.to_string_lossy().into_owned())
+            .collect();
+        if parts.len() != 2 || !parts[1].eq_ignore_ascii_case("tvshow.nfo") {
+            continue;
+        }
+        let Ok(document) = std::fs::read_to_string(root.join(relative)) else {
+            continue;
+        };
+        let Some(title) = xml_element_text(&document, "title") else {
+            continue;
+        };
+        let title_key = normalized_show_key(&title);
+        let base_key = trailing_year_like_title(&title)
+            .map(normalized_show_key)
+            .unwrap_or_default();
+        let matching: Vec<&String> = known_shows
+            .iter()
+            .filter(|show| {
+                let show_key = normalized_show_key(show);
+                show_key == title_key || (!base_key.is_empty() && show_key == base_key)
+            })
+            .collect();
+        if matching.len() == 1 && !matching[0].eq_ignore_ascii_case(&title) {
+            declarations.push((parts[0].clone(), matching[0].clone(), title));
+        }
+    }
+
+    let mut moves = Vec::new();
+    for (metadata_root, video_root, canonical_title) in declarations {
+        for relative in files {
+            let path = to_unix(relative);
+            if already_planned.contains(&path) {
+                continue;
+            }
+            let parts: Vec<&str> = path.split('/').collect();
+            let Some(top) = parts.first().copied() else { continue };
+            if !top.eq_ignore_ascii_case(&metadata_root)
+                && !top.eq_ignore_ascii_case(&video_root)
+            {
+                continue;
+            }
+            let mut remainder: Vec<String> =
+                parts[1..].iter().map(|part| (*part).to_string()).collect();
+            if let Some(first) = remainder.first_mut() {
+                if let Some(season) = season_number_from_folder(first) {
+                    *first = format!("Season {season:02}");
+                }
+            }
+            let target = format!("{canonical_title}/{}", remainder.join("/"));
+            if path == target {
+                continue;
+            }
+            moves.push((path.clone(), target, reorg_kind_for_path(&path)));
+        }
+    }
+    moves
+}
+
+fn reorg_kind_for_path(path: &str) -> &'static str {
+    if let Some((_, is_audio)) = classify::media_extension(path) {
+        if is_audio { "track" } else { "video" }
+    } else if subtitle_extension(path).is_some() {
+        "subtitle"
+    } else if path.rsplit_once('.').is_some_and(|(_, extension)| {
+        ORPHAN_ARTWORK_EXTS.contains(&extension.to_ascii_lowercase().as_str())
+    }) {
+        "artwork"
+    } else {
+        "metadata"
+    }
+}
+
+fn xml_element_text(document: &str, element: &str) -> Option<String> {
+    let lower = document.to_ascii_lowercase();
+    let opening = format!("<{element}>");
+    let closing = format!("</{element}>");
+    let start = lower.find(&opening)? + opening.len();
+    let end = lower.get(start..)?.find(&closing)? + start;
+    let value = document.get(start..end)?.trim();
+    (!value.is_empty()).then(|| {
+        value
+            .replace("&amp;", "&")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&apos;", "'")
+    })
+}
+
+fn trailing_year_like_title(title: &str) -> Option<&str> {
+    let (base, suffix) = title.trim().rsplit_once(' ')?;
+    suffix
+        .parse::<u32>()
+        .ok()
+        .filter(|year| (1900..=2099).contains(year))
+        .map(|_| base.trim())
 }
 
 fn normalized_show_key(name: &str) -> String {
@@ -1616,6 +1756,7 @@ pub fn apply_plan_with_roots(
     items: &[ReorgItem],
 ) -> ApplyOutcome {
     let mut outcome = ApplyOutcome::default();
+    let mut source_parents = Vec::new();
     for item in items {
         if let Some(reason) = &item.conflict {
             outcome.skipped += 1;
@@ -1665,13 +1806,19 @@ pub fn apply_plan_with_roots(
                     to: item.to.clone(),
                     destination_root_label: item.destination_root_label.clone(),
                 });
-                remove_empty_ancestors(root, from.parent());
+                if let Some(parent) = from.parent() {
+                    source_parents.push(parent.to_path_buf());
+                }
             }
             Err(error) => {
                 outcome.skipped += 1;
                 outcome.errors.push(format!("{}: move failed ({error}), left in place", item.from));
             }
         }
+    }
+    remove_empty_source_dirs(root, &source_parents);
+    if outcome.applied > 0 {
+        remove_empty_directory_trees(root, root);
     }
     outcome
 }
@@ -1689,6 +1836,7 @@ pub fn undo_plan_with_roots(
     applied_moves: &[AppliedMove],
 ) -> ApplyOutcome {
     let mut outcome = ApplyOutcome::default();
+    let mut source_parents: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
     for applied in applied_moves.iter().rev() {
         let destination_root = match applied.destination_root_label.as_deref() {
             Some(label) => match destination_roots.get(label) {
@@ -1740,7 +1888,12 @@ pub fn undo_plan_with_roots(
                     to: applied.from.clone(),
                     destination_root_label: applied.destination_root_label.clone(),
                 });
-                remove_empty_ancestors(destination_root, from.parent());
+                if let Some(parent) = from.parent() {
+                    source_parents
+                        .entry(destination_root.to_path_buf())
+                        .or_default()
+                        .push(parent.to_path_buf());
+                }
             }
             Err(error) => {
                 outcome.skipped += 1;
@@ -1751,20 +1904,61 @@ pub fn undo_plan_with_roots(
             }
         }
     }
+    for (source_root, parents) in source_parents {
+        remove_empty_source_dirs(&source_root, &parents);
+    }
     outcome
 }
 
-fn remove_empty_ancestors(root: &Path, start: Option<&Path>) {
-    let mut current = start.map(Path::to_path_buf);
-    while let Some(dir) = current {
-        if dir == root || !dir.starts_with(root) {
-            break;
+fn remove_empty_source_dirs(root: &Path, starts: &[PathBuf]) {
+    let mut candidates = HashSet::new();
+    for start in starts {
+        let mut current = Some(start.as_path());
+        while let Some(dir) = current {
+            if dir == root || !dir.starts_with(root) {
+                break;
+            }
+            candidates.insert(dir.to_path_buf());
+            current = dir.parent();
         }
-        let parent = dir.parent().map(Path::to_path_buf);
-        if std::fs::remove_dir(&dir).is_err() {
-            break;
+    }
+    let mut candidates: Vec<PathBuf> = candidates.into_iter().collect();
+    candidates.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    for dir in candidates {
+        let _ = std::fs::remove_dir(dir);
+    }
+}
+
+/// Removes empty directory trees left by an earlier partial run. Only
+/// `remove_dir` is used, so a directory containing any file, symlink, or
+/// unreadable entry is preserved. The configured media root itself is never
+/// removed.
+fn remove_empty_directory_trees(root: &Path, directory: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return false;
+    };
+    let mut empty = true;
+    for entry in entries {
+        let Ok(entry) = entry else {
+            empty = false;
+            continue;
+        };
+        let Ok(file_type) = entry.file_type() else {
+            empty = false;
+            continue;
+        };
+        if file_type.is_dir() {
+            if !remove_empty_directory_trees(root, &entry.path()) {
+                empty = false;
+            }
+        } else {
+            empty = false;
         }
-        current = parent;
+    }
+    if empty && directory != root {
+        std::fs::remove_dir(directory).is_ok()
+    } else {
+        false
     }
 }
 
@@ -2032,6 +2226,51 @@ mod tests {
             "Dragon Ball SUPER/Season 05/images/episode-poster.jpg"
         );
         assert_eq!(artwork.kind, "artwork");
+    }
+
+    #[tokio::test]
+    async fn nfo_title_merges_a_year_named_show_with_its_stripped_video_root() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "Sealab/Season 01/Sealab - S01E01.mkv",
+            "episode",
+        );
+        write(
+            dir.path(),
+            "Sealab 2021/tvshow.nfo",
+            "<tvshow><title>Sealab 2021</title><year>2000</year></tvshow>",
+        );
+        write(
+            dir.path(),
+            "Sealab 2021/Season 1/images/episode-poster.jpg",
+            "artwork",
+        );
+
+        let plan = scan_root_for_asset_type(
+            "shows",
+            dir.path(),
+            MediaRootAssetType::Shows,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(plan.items.iter().any(|item| {
+            item.from == "Sealab/Season 01/Sealab - S01E01.mkv"
+                && item.to == "Sealab 2021/Season 01/Sealab - S01E01.mkv"
+                && item.kind == "video"
+        }));
+        assert!(plan.items.iter().any(|item| {
+            item.from == "Sealab 2021/Season 1/images/episode-poster.jpg"
+                && item.to == "Sealab 2021/Season 01/images/episode-poster.jpg"
+                && item.kind == "artwork"
+        }));
+        assert!(plan
+            .items
+            .iter()
+            .all(|item| item.from != "Sealab 2021/tvshow.nfo"));
     }
 
     #[tokio::test]
@@ -2390,6 +2629,42 @@ mod tests {
             fs::read_to_string(dir.path().join("Heat (1995)/Heat (1995).mkv")).unwrap(),
             "original content"
         );
+    }
+
+    #[test]
+    fn apply_plan_removes_empty_sibling_trees_after_all_moves_finish() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "Old Show/Extras A/one.jpg", "one");
+        write(dir.path(), "Old Show/Extras B/two.jpg", "two");
+        fs::create_dir_all(dir.path().join("Stale Show/Old Extras/Empty")).unwrap();
+        let items = vec![
+            ReorgItem {
+                from: "Old Show/Extras A/one.jpg".to_string(),
+                to: "New Show/Extras A/one.jpg".to_string(),
+                kind: "artwork",
+                destination_root_label: None,
+                ai_assisted: false,
+                year_source: None,
+                conflict: None,
+            },
+            ReorgItem {
+                from: "Old Show/Extras B/two.jpg".to_string(),
+                to: "New Show/Extras B/two.jpg".to_string(),
+                kind: "artwork",
+                destination_root_label: None,
+                ai_assisted: false,
+                year_source: None,
+                conflict: None,
+            },
+        ];
+
+        let outcome = apply_plan(dir.path(), &items);
+
+        assert_eq!(outcome.applied, 2);
+        assert!(!dir.path().join("Old Show").exists());
+        assert!(!dir.path().join("Stale Show").exists());
+        assert!(dir.path().join("New Show/Extras A/one.jpg").exists());
+        assert!(dir.path().join("New Show/Extras B/two.jpg").exists());
     }
 
     #[test]

@@ -2258,7 +2258,14 @@ struct ApplySummaryView {
 struct ReorgPlanView {
     id: u64,
     root_label: String,
+    /// Full item list — only populated for a single freshly-produced view
+    /// (the direct result of a scan/approve/undo action); empty in
+    /// `list_ai_reorg_plans`, which is polled far more often and renders
+    /// the item grid by paging through `list_reorg_plan_items` instead, so
+    /// it never ships every item of every plan on every refresh. Use
+    /// `item_count` for a plan's total, which is always populated.
     items: Vec<reorganize::ReorgItem>,
+    item_count: u32,
     ai_assisted_count: u32,
     tmdb_year_count: u32,
     conflict_count: u32,
@@ -2299,11 +2306,13 @@ fn reorg_plan_view(
     status: &str,
     outcome: Option<&reorganize::ApplyOutcome>,
     undo_outcome: Option<&reorganize::ApplyOutcome>,
+    include_items: bool,
 ) -> ReorgPlanView {
     ReorgPlanView {
         id,
         root_label: plan.root_label.clone(),
-        items: plan.items.clone(),
+        items: if include_items { plan.items.clone() } else { Vec::new() },
+        item_count: plan.items.len() as u32,
         ai_assisted_count: plan.ai_assisted_count,
         tmdb_year_count: plan.tmdb_year_count,
         conflict_count: plan.conflict_count,
@@ -2451,7 +2460,7 @@ async fn ai_reorganize_scan<R: tauri::Runtime>(
     plan.duplicate_count = plan.items.iter().filter(|item| item.kind == "duplicate").count() as u32;
 
     let id = state.next_reorg_plan_id.fetch_add(1, Ordering::Relaxed);
-    let view = reorg_plan_view(id, &plan, &misplaced, "proposed", None, None);
+    let view = reorg_plan_view(id, &plan, &misplaced, "proposed", None, None, true);
     state.reorg_plans.lock().await.insert(
         id,
         StoredReorgPlan {
@@ -2480,11 +2489,55 @@ async fn list_ai_reorg_plans(state: tauri::State<'_, AppState>) -> Result<Vec<Re
                 stored.status,
                 stored.apply_outcome.as_ref(),
                 stored.undo_outcome.as_ref(),
+                false,
             )
         })
         .collect();
     views.sort_by_key(|v| v.id);
     Ok(views)
+}
+
+/// One page of a plan's items, optionally filtered by a case-insensitive
+/// substring match against `from`/`to` — matching runs over the plan's
+/// *entire* item list before paging, so search always covers everything,
+/// not just whatever page happens to be loaded. `limit` is clamped so a
+/// single response stays bounded regardless of what the caller passes.
+#[derive(Debug, serde::Serialize)]
+struct ReorgPlanItemsPage {
+    items: Vec<reorganize::ReorgItem>,
+    total: u32,
+}
+
+#[tauri::command]
+async fn list_reorg_plan_items(
+    state: tauri::State<'_, AppState>,
+    id: u64,
+    offset: u32,
+    limit: u32,
+    search: Option<String>,
+) -> Result<ReorgPlanItemsPage, String> {
+    let plans = state.reorg_plans.lock().await;
+    let stored = plans.get(&id).ok_or_else(|| "reorganize plan not found".to_string())?;
+    let query = search.unwrap_or_default().trim().to_lowercase();
+    let matches: Vec<&reorganize::ReorgItem> = stored
+        .plan
+        .items
+        .iter()
+        .filter(|item| {
+            query.is_empty()
+                || item.from.to_lowercase().contains(&query)
+                || item.to.to_lowercase().contains(&query)
+        })
+        .collect();
+    let total = matches.len() as u32;
+    let limit = limit.clamp(1, 200) as usize;
+    let items = matches
+        .into_iter()
+        .skip(offset as usize)
+        .take(limit)
+        .cloned()
+        .collect();
+    Ok(ReorgPlanItemsPage { items, total })
 }
 
 /// Applies every non-conflicting, non-excluded item in a still-`proposed`
@@ -2535,7 +2588,7 @@ async fn approve_ai_reorg_plan<R: tauri::Runtime>(
             stored.destination_roots.clone(),
             items,
             affected_labels,
-            reorg_plan_view(id, &stored.plan, &stored.misplaced, stored.status, None, None),
+            reorg_plan_view(id, &stored.plan, &stored.misplaced, stored.status, None, None, false),
         )
     };
 
@@ -2644,6 +2697,7 @@ async fn undo_ai_reorg_plan<R: tauri::Runtime>(
                 stored.status,
                 stored.apply_outcome.as_ref(),
                 None,
+                false,
             ),
         )
     };
@@ -4233,6 +4287,7 @@ fn main() {
             run_scrape_assist_now,
             ai_reorganize_scan,
             list_ai_reorg_plans,
+            list_reorg_plan_items,
             approve_ai_reorg_plan,
             undo_ai_reorg_plan,
             reject_ai_reorg_plan,

@@ -269,10 +269,19 @@ let reorgCleanupRoots = [];
 // in-progress toast for each plan id is kept here and dismissed by the
 // matching "ai-reorganize-finished"/"ai-reorganize-undone" listener below.
 let reorgActionToasts = {};
-// Issue #319: filters visible item rows across every rendered plan's
-// table without touching the search `<input>` itself (see the same
-// "never rebuild the search box on keystroke" rule in media.js).
+// A plan's item grid is paged 50 at a time via `list_reorg_plan_items`
+// (offset/limit against that plan's full item list, which only ever lives
+// in server memory — see `reorg_plans` in gui.rs) instead of the whole
+// plan being shipped to and rendered into the DOM at once. The search box
+// re-queries that same command with the search term, so a match is found
+// across every item in the plan, not just whatever page happens to be
+// loaded, and resets every visible plan back to its first page.
+const REORG_PAGE_SIZE = 50;
 let reorgSearchQuery = "";
+let reorgSearchDebounce = null;
+let reorgPageOffset = {}; // planId -> current item offset
+let reorgPlanTotal = {}; // planId -> total items matching the current search
+let reorgRequestSeq = {}; // planId -> latest items-fetch request number, to drop stale responses
 
 function showReorgConfirmation(message, hasErrors) {
   const el = document.getElementById("aiReorgConfirmMsg");
@@ -331,36 +340,17 @@ function renderReorgPlans(plans) {
         undoing: ["bi-arrow-counterclockwise", "Undo in progress…"],
         undone: ["bi-check-circle", "Reorganization undone"]
       }[plan.status] || ["bi-info-circle", plan.status];
-      const itemsHtml = plan.items.length
+      const itemsHtml = plan.item_count
         ? `<div class="table-scroll reorg-items-table-wrap">
         <table class="reorg-items-table">
           <thead><tr><th>Include</th><th>From / To</th></tr></thead>
-          <tbody>${plan.items
-            .map(item => {
-              const excludable = !item.conflict;
-              const isExcluded = excludable && reorgExcluded[plan.id]?.has(item.from);
-              const checkboxHtml = excludable
-                ? `<label class="checkbox-label reorg-item-select"><input type="checkbox" class="reorg-item-toggle" data-plan-id="${plan.id}" data-from="${esc(item.from)}" ${isExcluded ? "" : "checked"}>Include</label>`
-                : "";
-              const searchKey = esc(`${item.from} ${item.to}`.toLowerCase());
-              return `
-        <tr class="reorg-item-row${isExcluded ? " reorg-item-excluded" : ""}" data-search="${searchKey}">
-          <td class="reorg-item-include">${checkboxHtml}</td>
-          <td>
-            <div class="reorg-item-paths mono">
-              <div class="reorg-item-from"><span class="reorg-item-label muted">FROM</span> ${esc(item.from)}</div>
-              <div class="reorg-item-to"><span class="reorg-item-label muted">TO</span> ${item.destination_root_label ? `<strong>${esc(item.destination_root_label)}:</strong> ` : ""}${esc(item.to)}</div>
-            </div>
-            ${item.kind === "orphan" ? '<span class="orphan-label"><i class="bi bi-exclamation-triangle"></i> Orphaned — no matching video found, moved out of the way</span>' : ""}
-            ${item.kind === "duplicate" ? '<span class="duplicate-label"><i class="bi bi-files"></i> Duplicate of an already-organized file — moved aside, original left untouched</span>' : ""}
-            ${item.ai_assisted ? '<span class="muted ai-assisted-label">AI-assisted</span>' : ""}
-            ${item.year_source === "tmdb" ? '<span class="muted tmdb-year-label">Year via TMDb</span>' : ""}
-            ${item.conflict ? `<span class="issue-reason">${esc(item.conflict)} — left in place</span>` : ""}
-          </td>
-        </tr>`;
-            })
-            .join("")}</tbody>
+          <tbody id="reorg-items-tbody-${plan.id}"><tr><td colspan="2" class="muted">Loading…</td></tr></tbody>
         </table>
+      </div>
+      <div class="row reorg-pager">
+        <span class="muted reorg-pager-status" id="reorg-pager-status-${plan.id}"></span>
+        <button class="secondary-button compact reorg-page-prev" data-plan-id="${plan.id}" disabled><i class="bi bi-chevron-left"></i>Prev</button>
+        <button class="secondary-button compact reorg-page-next" data-plan-id="${plan.id}" disabled>Next<i class="bi bi-chevron-right"></i></button>
       </div>`
         : '<p class="muted">Nothing to reorganize — this root already looks consistent.</p>';
       const misplacedHtml =
@@ -397,7 +387,7 @@ function renderReorgPlans(plans) {
             ? `<button class="secondary-button undo-reorg-btn" data-plan-id="${plan.id}"><i class="bi bi-arrow-counterclockwise"></i>Undo</button>`
             : "";
       return `
-        <div class="service-card ai-reorg-plan">
+        <div class="service-card ai-reorg-plan" data-plan-id="${plan.id}">
           <div class="reorg-status reorg-status-${esc(plan.status)}" role="status">
             <i class="bi ${statusDetails[0]}"></i>
             <strong>${esc(statusDetails[1])}</strong>
@@ -405,7 +395,7 @@ function renderReorgPlans(plans) {
           </div>
           <div class="row plan-summary">
             <strong>${esc(plan.root_label)}</strong>
-            <span class="muted">${plan.items.length} item(s), ${plan.ai_assisted_count} AI-assisted, ${plan.tmdb_year_count} TMDb-year, ${plan.orphan_count} orphaned, ${plan.duplicate_count} duplicate(s), ${plan.conflict_count} conflict(s)</span>
+            <span class="muted">${plan.item_count} item(s), ${plan.ai_assisted_count} AI-assisted, ${plan.tmdb_year_count} TMDb-year, ${plan.orphan_count} orphaned, ${plan.duplicate_count} duplicate(s), ${plan.conflict_count} conflict(s)</span>
           </div>
           ${itemsHtml}
           ${misplacedHtml}
@@ -416,14 +406,18 @@ function renderReorgPlans(plans) {
     })
     .join("");
 
-  wrap.querySelectorAll(".reorg-item-toggle").forEach(cb => {
-    cb.addEventListener("change", () => {
-      const id = Number(cb.dataset.planId);
-      const from = cb.dataset.from;
-      if (!reorgExcluded[id]) reorgExcluded[id] = new Set();
-      if (cb.checked) reorgExcluded[id].delete(from);
-      else reorgExcluded[id].add(from);
-      cb.closest(".reorg-item-row")?.classList.toggle("reorg-item-excluded", !cb.checked);
+  wrap.querySelectorAll(".reorg-page-prev").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const id = Number(btn.dataset.planId);
+      reorgPageOffset[id] = Math.max(0, (reorgPageOffset[id] || 0) - REORG_PAGE_SIZE);
+      loadReorgPlanItems(id);
+    });
+  });
+  wrap.querySelectorAll(".reorg-page-next").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const id = Number(btn.dataset.planId);
+      reorgPageOffset[id] = (reorgPageOffset[id] || 0) + REORG_PAGE_SIZE;
+      loadReorgPlanItems(id);
     });
   });
   wrap.querySelectorAll(".approve-reorg-btn").forEach(btn => {
@@ -454,6 +448,9 @@ function renderReorgPlans(plans) {
       try {
         await invoke("reject_ai_reorg_plan", { id });
         delete reorgExcluded[id];
+        delete reorgPageOffset[id];
+        delete reorgPlanTotal[id];
+        delete reorgRequestSeq[id];
         // Issue #319: once rejection completes, drop the plan from the
         // panel/table for good, same as an applied or undone plan.
         reorgConfirmedIds.add(id);
@@ -484,22 +481,111 @@ function renderReorgPlans(plans) {
     });
   });
 
-  applyReorgSearchFilter();
   document.getElementById("aiReorgSearchWrap")?.classList.toggle("d-none", visiblePlans.length === 0);
+
+  // Kick off (or continue, at whatever page was already open) the item
+  // fetch for every visible plan that actually has items — the table body
+  // itself starts as a "Loading…" placeholder above.
+  for (const plan of visiblePlans) {
+    if (plan.item_count) loadReorgPlanItems(plan.id);
+  }
 }
 
-// Issue #319: filters rows client-side by from/to path text, leaving the
-// search `<input>` itself untouched so a keystroke never loses focus.
-function applyReorgSearchFilter() {
-  const query = reorgSearchQuery.trim().toLowerCase();
-  document.querySelectorAll("#aiReorgPlansList .reorg-item-row").forEach(row => {
-    row.classList.toggle("search-hidden", Boolean(query) && !row.dataset.search.includes(query));
-  });
+function renderReorgItemRow(planId, item) {
+  const excludable = !item.conflict;
+  const isExcluded = excludable && reorgExcluded[planId]?.has(item.from);
+  const checkboxHtml = excludable
+    ? `<label class="checkbox-label reorg-item-select"><input type="checkbox" class="reorg-item-toggle" data-from="${esc(item.from)}" ${isExcluded ? "" : "checked"}>Include</label>`
+    : "";
+  return `
+    <tr class="reorg-item-row${isExcluded ? " reorg-item-excluded" : ""}">
+      <td class="reorg-item-include">${checkboxHtml}</td>
+      <td>
+        <div class="reorg-item-paths mono">
+          <div class="reorg-item-from"><span class="reorg-item-label muted">FROM</span> ${esc(item.from)}</div>
+          <div class="reorg-item-to"><span class="reorg-item-label muted">TO</span> ${item.destination_root_label ? `<strong>${esc(item.destination_root_label)}:</strong> ` : ""}${esc(item.to)}</div>
+        </div>
+        ${item.kind === "orphan" ? '<span class="orphan-label"><i class="bi bi-exclamation-triangle"></i> Orphaned — no matching video found, moved out of the way</span>' : ""}
+        ${item.kind === "duplicate" ? '<span class="duplicate-label"><i class="bi bi-files"></i> Duplicate of an already-organized file — moved aside, original left untouched</span>' : ""}
+        ${item.ai_assisted ? '<span class="muted ai-assisted-label">AI-assisted</span>' : ""}
+        ${item.year_source === "tmdb" ? '<span class="muted tmdb-year-label">Year via TMDb</span>' : ""}
+        ${item.conflict ? `<span class="issue-reason">${esc(item.conflict)} — left in place</span>` : ""}
+      </td>
+    </tr>`;
 }
 
+// Fetches one 50-item page of `planId`'s items (filtered server-side by
+// `reorgSearchQuery` against the plan's *entire* item list, not just what's
+// currently loaded) and renders it into that plan's table body. `renderReorgPlans`
+// rebuilds the whole plans list (and its pager buttons) on every refresh, so
+// this never caches element references across the `await` — it re-queries
+// by id/data-plan-id once the fetch resolves, so it always lands on
+// whatever's actually live in the DOM rather than a detached element from
+// before a rebuild. `reorgRequestSeq` drops a response that's been
+// superseded by a newer request for the same plan (e.g. two quick Prev/Next
+// clicks), so results can never apply out of order.
+async function loadReorgPlanItems(planId) {
+  const seq = (reorgRequestSeq[planId] = (reorgRequestSeq[planId] || 0) + 1);
+  const startPrevBtn = document.querySelector(`.reorg-page-prev[data-plan-id="${planId}"]`);
+  const startNextBtn = document.querySelector(`.reorg-page-next[data-plan-id="${planId}"]`);
+  if (startPrevBtn) startPrevBtn.disabled = true;
+  if (startNextBtn) startNextBtn.disabled = true;
+  const offset = reorgPageOffset[planId] || 0;
+  try {
+    const page = await invoke("list_reorg_plan_items", {
+      id: planId,
+      offset,
+      limit: REORG_PAGE_SIZE,
+      search: reorgSearchQuery,
+    });
+    if (reorgRequestSeq[planId] !== seq) return; // superseded by a newer request
+    reorgPlanTotal[planId] = page.total;
+    const tbody = document.getElementById(`reorg-items-tbody-${planId}`);
+    // The plan may have been approved/rejected/undone (and dropped from the
+    // rendered list) while this fetch was in flight.
+    if (!tbody) return;
+    tbody.innerHTML = page.items.length
+      ? page.items.map(item => renderReorgItemRow(planId, item)).join("")
+      : `<tr><td colspan="2" class="muted">${reorgSearchQuery.trim() ? "No items match your search." : "Nothing on this page."}</td></tr>`;
+    tbody.querySelectorAll(".reorg-item-toggle").forEach(cb => {
+      cb.addEventListener("change", () => {
+        const from = cb.dataset.from;
+        if (!reorgExcluded[planId]) reorgExcluded[planId] = new Set();
+        if (cb.checked) reorgExcluded[planId].delete(from);
+        else reorgExcluded[planId].add(from);
+        cb.closest(".reorg-item-row")?.classList.toggle("reorg-item-excluded", !cb.checked);
+      });
+    });
+    const statusEl = document.getElementById(`reorg-pager-status-${planId}`);
+    if (statusEl) {
+      statusEl.textContent = page.total === 0 ? "" : `${offset + 1}–${offset + page.items.length} of ${page.total}`;
+    }
+    const prevBtn = document.querySelector(`.reorg-page-prev[data-plan-id="${planId}"]`);
+    const nextBtn = document.querySelector(`.reorg-page-next[data-plan-id="${planId}"]`);
+    if (prevBtn) prevBtn.disabled = offset <= 0;
+    if (nextBtn) nextBtn.disabled = offset + REORG_PAGE_SIZE >= page.total;
+  } catch (err) {
+    if (reorgRequestSeq[planId] !== seq) return;
+    const tbody = document.getElementById(`reorg-items-tbody-${planId}`);
+    if (tbody) tbody.innerHTML = `<tr><td colspan="2" class="error">${esc(String(err))}</td></tr>`;
+    showToast(String(err), "error");
+  }
+}
+
+// Debounced so every keystroke doesn't fire its own backend query; once it
+// settles, every currently-rendered plan resets to its first page and
+// re-fetches against the new search term — search always runs over each
+// plan's full item set, never just whatever page was on screen.
 document.getElementById("aiReorgSearchInput")?.addEventListener("input", event => {
   reorgSearchQuery = event.target.value;
-  applyReorgSearchFilter();
+  clearTimeout(reorgSearchDebounce);
+  reorgSearchDebounce = setTimeout(() => {
+    document.querySelectorAll("#aiReorgPlansList .ai-reorg-plan").forEach(card => {
+      const id = Number(card.dataset.planId);
+      reorgPageOffset[id] = 0;
+      loadReorgPlanItems(id);
+    });
+  }, 250);
 });
 
 listen("ai-reorganize-finished", async ({ payload }) => {
@@ -515,6 +601,9 @@ listen("ai-reorganize-finished", async ({ payload }) => {
   showReorgConfirmation(`“${payload.root_label}” reorganized — ${detail}`, hasErrors);
   reorgConfirmedIds.add(payload.id);
   delete reorgExcluded[payload.id];
+  delete reorgPageOffset[payload.id];
+  delete reorgPlanTotal[payload.id];
+  delete reorgRequestSeq[payload.id];
   await Promise.all([refreshAi(), refreshLibrary(), refreshNotificationBadge()]);
 });
 
@@ -531,6 +620,9 @@ listen("ai-reorganize-undone", async ({ payload }) => {
   showReorgConfirmation(`“${payload.root_label}” undo — ${detail}`, hasErrors);
   reorgConfirmedIds.add(payload.id);
   delete reorgExcluded[payload.id];
+  delete reorgPageOffset[payload.id];
+  delete reorgPlanTotal[payload.id];
+  delete reorgRequestSeq[payload.id];
   await Promise.all([refreshAi(), refreshLibrary(), refreshNotificationBadge()]);
 });
 

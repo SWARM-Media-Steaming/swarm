@@ -228,8 +228,9 @@ td.mono {
 .reorg-item-include { width: 90px; vertical-align: top; }
 .reorg-item-row { transition: opacity .15s ease; }
 .reorg-item-row.reorg-item-excluded { opacity: .5; }
-.reorg-item-row.search-hidden { display: none; }
 .reorg-item-select { margin: 0; }
+.reorg-pager { align-items: center; margin: -6px 0 14px; }
+.reorg-pager-status { flex: 1 1 auto; font-size: .72rem; min-width: 0; }
 .reorg-item-paths { line-height: 1.5; overflow-wrap: anywhere; }
 .reorg-item-from, .reorg-item-to { display: block; }
 .reorg-item-label { display: inline-block; min-width: 34px; font-weight: 650; letter-spacing: .04em; }

@@ -17,8 +17,9 @@
 use super::harness::{empty_media_root_dir, test_app, test_app_with_media_root};
 use crate::{
     add_media_root, ai_reorganize_scan, ai_scrape_assist, approve_ai_reorg_plan, get_settings,
-    list_ai_reorg_plans, list_scrape_issues, reject_ai_reorg_plan, run_scrape_assist_now,
-    set_ai_provider_api_key, set_ai_provider_enabled, set_ai_provider_model, test_ai_provider,
+    list_ai_reorg_plans, list_reorg_plan_items, list_scrape_issues, reject_ai_reorg_plan,
+    run_scrape_assist_now, set_ai_provider_api_key, set_ai_provider_enabled,
+    set_ai_provider_model, test_ai_provider,
 };
 use tauri::Manager;
 
@@ -169,6 +170,69 @@ async fn ai_reorganize_scan_proposes_a_plan_for_a_messy_filename_with_no_ai_need
     let plans = list_ai_reorg_plans(app.state()).await.expect("list_ai_reorg_plans should succeed");
     assert_eq!(plans.len(), 1);
     assert_eq!(plans[0].id, plan.id);
+    // `list_ai_reorg_plans` is polled far more often than a plan is scanned,
+    // so it must not ship every item of every plan on every refresh — the
+    // item grid pages through `list_reorg_plan_items` instead (see ai.js).
+    assert!(plans[0].items.is_empty(), "list_ai_reorg_plans should not carry full item lists");
+    assert_eq!(plans[0].item_count, 1);
+}
+
+#[tokio::test]
+async fn list_reorg_plan_items_pages_and_searches_across_the_full_item_set() {
+    let (test_app, root_dir) = test_app_with_media_root().await;
+    let app = test_app.handle();
+
+    for name in ["Heat.1995.mkv", "Se7en.1995.mkv", "Alien.1979.mkv"] {
+        std::fs::write(root_dir.path().join(name), b"fake video bytes").expect("write fixture movie file");
+    }
+
+    let plan = ai_reorganize_scan(app.clone(), app.state(), "Movies".to_string())
+        .await
+        .expect("ai_reorganize_scan should succeed");
+    assert_eq!(plan.item_count, 3);
+
+    // Paging: two pages of at most 2 items each cover the whole set exactly
+    // once, and `total` reflects the full (unfiltered) item count on every
+    // page, not just what was returned.
+    let first_page = list_reorg_plan_items(app.state(), plan.id, 0, 2, None)
+        .await
+        .expect("list_reorg_plan_items should succeed");
+    assert_eq!(first_page.items.len(), 2);
+    assert_eq!(first_page.total, 3);
+
+    let second_page = list_reorg_plan_items(app.state(), plan.id, 2, 2, None)
+        .await
+        .expect("list_reorg_plan_items should succeed");
+    assert_eq!(second_page.items.len(), 1);
+    assert_eq!(second_page.total, 3);
+
+    let mut seen: Vec<String> = first_page
+        .items
+        .iter()
+        .chain(second_page.items.iter())
+        .map(|item| item.from.clone())
+        .collect();
+    seen.sort();
+    assert_eq!(seen, vec!["Alien.1979.mkv", "Heat.1995.mkv", "Se7en.1995.mkv"]);
+
+    // Search matches against the full item set, not the page in front of
+    // it, and is case-insensitive.
+    let searched = list_reorg_plan_items(app.state(), plan.id, 0, 50, Some("heat".to_string()))
+        .await
+        .expect("list_reorg_plan_items should succeed");
+    assert_eq!(searched.total, 1);
+    assert_eq!(searched.items[0].from, "Heat.1995.mkv");
+
+    let no_match = list_reorg_plan_items(app.state(), plan.id, 0, 50, Some("nonexistent".to_string()))
+        .await
+        .expect("list_reorg_plan_items should succeed");
+    assert_eq!(no_match.total, 0);
+    assert!(no_match.items.is_empty());
+
+    let error = list_reorg_plan_items(app.state(), plan.id + 1, 0, 50, None)
+        .await
+        .expect_err("an unknown plan id should be rejected");
+    assert!(error.contains("not found"));
 }
 
 /// Issue #301: a TV show bundle sitting in a `Movies`-typed root, with a

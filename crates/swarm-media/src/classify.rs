@@ -82,6 +82,24 @@ const CATEGORY_FOLDER_NAMES: &[&str] = &[
     "bonuses",
 ];
 
+fn music_name_key(name: &str) -> String {
+    name.to_ascii_lowercase()
+        .replace(" and ", " & ")
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .collect()
+}
+
+fn is_artist_collection_folder(folder: &str, artist: &str) -> bool {
+    let lower = folder.to_ascii_lowercase();
+    CATEGORY_FOLDER_NAMES.iter().any(|category| {
+        lower
+            .strip_suffix(category)
+            .map(|prefix| prefix.trim_end_matches([' ', '-', '_']))
+            .is_some_and(|prefix| music_name_key(prefix) == music_name_key(artist))
+    })
+}
+
 /// Real libraries often number these wrapper folders (`"3. Remixes"`,
 /// `"4. Bonus"`) rather than using the bare category name — confirmed
 /// against a real library where an artist's remix/bonus folders were laid
@@ -539,6 +557,21 @@ pub fn classify(relative_path: &str) -> Option<Classified> {
                 .map(|s| clean_title(strip_discography_suffix(s)));
             let album = match dirs.get(1) {
                 Some(second) if is_category_folder(second) && dirs.len() >= 3 => {
+                    if dirs.len() >= 4
+                        && music_name_key(dirs[2])
+                            == artist.as_deref().map_or_else(String::new, music_name_key)
+                    {
+                        Some(clean_title(dirs[3]))
+                    } else {
+                        Some(clean_title(dirs[2]))
+                    }
+                }
+                Some(second)
+                    if dirs.len() >= 3
+                        && artist
+                            .as_deref()
+                            .is_some_and(|artist| is_artist_collection_folder(second, artist)) =>
+                {
                     Some(clean_title(dirs[2]))
                 }
                 Some(second) => Some(clean_title(second)),
@@ -846,11 +879,11 @@ pub fn classify(relative_path: &str) -> Option<Classified> {
 /// to distinguish deeply nested bonus clips from standalone movies.
 ///
 /// Root typing is authoritative: every video in a Shows root belongs to the
-/// first show directory, explicitly numbered files remain normal episodes,
-/// and every unnumbered clip is an extra. Recognized Plex extra directories
-/// provide the category; otherwise it falls into Plex's `Other` category.
-/// Extras below a season folder retain that season, while show-level extras
-/// use season 0 (Specials).
+/// first show directory. A recognized Plex extras directory is authoritative
+/// even when a legacy filename happens to contain an episode marker; other
+/// explicitly numbered files remain normal episodes, and every unnumbered
+/// clip falls into Plex's `Other` category. Extras below a season folder
+/// retain that season, while show-level extras use season 0 (Specials).
 pub fn classify_for_asset_type(
     relative_path: &str,
     asset_type: MediaRootAssetType,
@@ -890,15 +923,25 @@ pub fn classify_for_asset_type(
             classified.kind = MediaKind::Episode;
             classified.show_title = Some(show_title);
 
-            // An SxxEyy/NxNN/Ep marker is explicit episode identity even if
-            // the file happens to live beneath a Featurettes folder. This
-            // is common for genuine season-0 specials in existing libraries.
-            if classified.episode.is_none() {
-                let stem = file_name
-                    .rsplit_once('.')
-                    .map_or(file_name, |(stem, _)| stem);
-                let clip_stem = extract_bracket_tags(stem).0;
-                let recognized = episode_extra_from_dirs(dirs, file_name, &clip_stem);
+            let stem = file_name
+                .rsplit_once('.')
+                .map_or(file_name, |(stem, _)| stem);
+            let clip_stem = extract_bracket_tags(stem).0;
+            let recognized = episode_extra_from_dirs(dirs, file_name, &clip_stem);
+
+            if let Some(extra) = recognized {
+                let season = find_ancestor_season(dirs).map_or(0, |(_, season, _)| season);
+                classified.season = Some(season);
+                classified.episode = None;
+                classified.episode_end = None;
+                classified.extra_kind = Some(extra.kind.slug());
+                classified.extra_title = Some(extra.title);
+                classified.extra_relative_path = Some(extra.relative_path);
+                classified.extra_category_path = Some(extra.category_path)
+                    .filter(|path| !path.is_empty());
+                classified.extra_parent_title = None;
+                classified.extra_parent_dir = None;
+            } else if classified.episode.is_none() {
                 let season = find_ancestor_season(dirs).map_or(0, |(_, season, _)| season);
                 let category_start = dirs
                     .iter()
@@ -914,29 +957,11 @@ pub fn classify_for_asset_type(
 
                 classified.season = Some(season);
                 classified.episode_end = None;
-                classified.extra_kind = Some(
-                    recognized
-                        .as_ref()
-                        .map_or(crate::plex::PlexExtraKind::Other.slug(), |extra| {
-                            extra.kind.slug()
-                        }),
-                );
-                classified.extra_title = Some(
-                    recognized
-                        .as_ref()
-                        .map_or_else(|| clean_title(&clip_stem), |extra| extra.title.clone()),
-                );
-                classified.extra_relative_path = Some(
-                    recognized
-                        .as_ref()
-                        .map_or(extra_relative_path, |extra| extra.relative_path.clone()),
-                );
-                classified.extra_category_path = Some(
-                    recognized
-                        .as_ref()
-                        .map_or(fallback_category, |extra| extra.category_path.clone()),
-                )
-                .filter(|path| !path.is_empty());
+                classified.extra_kind = Some(crate::plex::PlexExtraKind::Other.slug());
+                classified.extra_title = Some(clean_title(&clip_stem));
+                classified.extra_relative_path = Some(extra_relative_path);
+                classified.extra_category_path = Some(fallback_category)
+                    .filter(|path| !path.is_empty());
                 classified.extra_parent_title = None;
                 classified.extra_parent_dir = None;
             }
@@ -1669,6 +1694,29 @@ mod tests {
         assert_eq!(entry.album.as_deref(), Some("Distant Earth"));
     }
 
+    #[test]
+    fn nested_singles_artist_wrapper_uses_the_release_not_the_repeated_artist() {
+        let entry = classify(
+            "Tiesto/Singles/Tiesto/2010 - Tiesto - Goldrush [Magik Muzik 886-0] WEB/02 - Goldrush (Edit).mp3",
+        )
+        .unwrap();
+        assert_eq!(entry.artist.as_deref(), Some("Tiesto"));
+        assert_eq!(
+            entry.album.as_deref(),
+            Some("2010 - Tiesto - Goldrush [Magik Muzik 886-0] WEB")
+        );
+    }
+
+    #[test]
+    fn artist_named_singles_collection_uses_its_child_release_as_album() {
+        let entry = classify(
+            "Gabriel & Dresden/Gabriel and Dresden - Singles/2004 - Arcadia/01 - Arcadia.mp3",
+        )
+        .unwrap();
+        assert_eq!(entry.artist.as_deref(), Some("Gabriel & Dresden"));
+        assert_eq!(entry.album.as_deref(), Some("2004 - Arcadia"));
+    }
+
     /// A category-named folder is only a wrapper when there's a real album
     /// segment beneath it to skip to — `Artist/Album/track.ext` (nothing
     /// after "Album") keeps "Album" as the literal album name rather than
@@ -2122,16 +2170,17 @@ mod tests {
     }
 
     #[test]
-    fn typed_shows_root_does_not_turn_numbered_specials_into_extras() {
+    fn typed_shows_root_keeps_numbered_files_inside_featurettes_as_extras() {
         let entry = classify_for_asset_type(
-            "Aqua Teen Hunger Force/Featurettes/S00E02 Boston [youtube rip].mp4",
+            "The Office/Season 02/Featurettes/Featurettes - S02E04.mkv",
             MediaRootAssetType::Shows,
         )
         .unwrap();
-        assert_eq!(entry.show_title.as_deref(), Some("Aqua Teen Hunger Force"));
-        assert_eq!(entry.season, Some(0));
-        assert_eq!(entry.episode, Some(2));
-        assert_eq!(entry.extra_kind, None);
+        assert_eq!(entry.show_title.as_deref(), Some("The Office"));
+        assert_eq!(entry.season, Some(2));
+        assert_eq!(entry.episode, None);
+        assert_eq!(entry.extra_kind, Some("featurette"));
+        assert_eq!(entry.extra_title.as_deref(), Some("Featurettes - S02E04"));
     }
 
     #[test]

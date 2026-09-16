@@ -243,16 +243,30 @@ pub async fn plan_misplaced_moves(
             continue;
         };
         let canonical = canonical_video_path(&classified, ext);
-        let (to, kind, target_root_label, conflict) = resolve_cross_root_destination(
-            source_root,
-            destination_root,
-            destination_root_label,
-            &finding.path,
-            &canonical,
-            "video",
-            &mut planned_targets,
-        )
-        .await;
+        let (to, kind, target_root_label, conflict) = if classified.kind == MediaKind::Movie {
+            resolve_cross_root_movie_destination(
+                source_root,
+                destination_root,
+                destination_root_label,
+                &finding.path,
+                &canonical,
+                "video",
+                &mut planned_targets,
+            )
+            .await
+        } else {
+            resolve_cross_root_destination(
+                source_root,
+                destination_root,
+                destination_root_label,
+                &finding.path,
+                &canonical,
+                "video",
+                &mut planned_targets,
+            )
+            .await
+        };
+        let video_has_conflict = conflict.is_some();
         items.push(ReorgItem {
             from: finding.path.clone(),
             to: to.clone(),
@@ -262,6 +276,10 @@ pub async fn plan_misplaced_moves(
             year_source: None,
             conflict,
         });
+
+        if video_has_conflict {
+            continue;
+        }
 
         let sidecar_target = to;
         for (sub_from, sub_to) in find_sidecar_moves(source_root, &finding.path, &sidecar_target) {
@@ -441,8 +459,20 @@ pub async fn scan_root_for_asset_type(
             ai_assisted_count += 1;
         }
 
-        let (to, kind, conflict) =
-            resolve_destination(root, &unix_relative, &canonical, "video", &mut planned_targets).await;
+        let (to, kind, conflict) = if classified.kind == MediaKind::Movie {
+            resolve_movie_destination(
+                root,
+                &unix_relative,
+                &canonical,
+                "video",
+                &mut planned_targets,
+            )
+            .await
+        } else {
+            resolve_destination(root, &unix_relative, &canonical, "video", &mut planned_targets)
+                .await
+        };
+        let video_has_conflict = conflict.is_some();
         items.push(ReorgItem {
             from: unix_relative.clone(),
             to: to.clone(),
@@ -452,6 +482,10 @@ pub async fn scan_root_for_asset_type(
             year_source,
             conflict,
         });
+
+        if video_has_conflict {
+            continue;
+        }
 
         for (sub_from, sub_to) in find_sidecar_moves(root, &unix_relative, &to) {
             let (to, kind, conflict) =
@@ -589,6 +623,12 @@ pub async fn scan_root_for_asset_type(
             validation.push(issue);
         }
     }
+
+    // A source path can only be acted on once. This is a final fail-safe for
+    // overlapping repair passes and prevents repeated scans from presenting
+    // one movie as several numbered alternate destinations.
+    let mut seen_sources = HashSet::new();
+    items.retain(|item| seen_sources.insert(item.from.clone()));
 
     let conflict_count = items.iter().filter(|i| i.conflict.is_some()).count() as u32;
     let orphan_count = items.iter().filter(|i| i.kind == "orphan").count() as u32;
@@ -1387,6 +1427,39 @@ async fn resolve_destination(
     (target.to_string(), default_kind, None)
 }
 
+/// Movie collisions are ambiguous: two files classifying to the same title
+/// and year might be editions, disc parts, stale copies, or bad matches.
+/// Never invent `Movie - Source 7.ext` names for them. A byte-identical file
+/// is still safely quarantined as a duplicate; differing content stays put
+/// as an explicit conflict for review.
+async fn resolve_movie_destination(
+    root: &Path,
+    source: &str,
+    target: &str,
+    default_kind: &'static str,
+    planned_targets: &mut HashSet<String>,
+) -> (String, &'static str, Option<String>) {
+    let destination = root.join(target);
+    if destination.exists() {
+        if files_are_identical(root.join(source), destination).await {
+            return duplicate_destination(source, planned_targets);
+        }
+        return (
+            target.to_string(),
+            default_kind,
+            Some("another, different movie file already occupies this title and year; left in place for review".to_string()),
+        );
+    }
+    if !planned_targets.insert(target.to_string()) {
+        return (
+            target.to_string(),
+            default_kind,
+            Some("another movie in this scan resolves to the same title and year; left in place for review".to_string()),
+        );
+    }
+    (target.to_string(), default_kind, None)
+}
+
 async fn resolve_cross_root_destination(
     source_root: &Path,
     destination_root: &Path,
@@ -1420,6 +1493,44 @@ async fn resolve_cross_root_destination(
             planned_targets,
         );
         return (to, kind, Some(destination_root_label.to_string()), conflict);
+    }
+    (
+        target.to_string(),
+        default_kind,
+        Some(destination_root_label.to_string()),
+        None,
+    )
+}
+
+async fn resolve_cross_root_movie_destination(
+    source_root: &Path,
+    destination_root: &Path,
+    destination_root_label: &str,
+    source: &str,
+    target: &str,
+    default_kind: &'static str,
+    planned_targets: &mut HashSet<String>,
+) -> (String, &'static str, Option<String>, Option<String>) {
+    let destination = destination_root.join(target);
+    if destination.exists() {
+        if files_are_identical(source_root.join(source), destination).await {
+            let (to, kind, conflict) = duplicate_destination(source, planned_targets);
+            return (to, kind, None, conflict);
+        }
+        return (
+            target.to_string(),
+            default_kind,
+            Some(destination_root_label.to_string()),
+            Some("another, different movie file already occupies this title and year; left in place for review".to_string()),
+        );
+    }
+    if !planned_targets.insert(target.to_string()) {
+        return (
+            target.to_string(),
+            default_kind,
+            Some(destination_root_label.to_string()),
+            Some("another movie in this scan resolves to the same title and year; left in place for review".to_string()),
+        );
     }
     (
         target.to_string(),
@@ -2070,6 +2181,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn real_office_numbered_featurette_is_already_canonical_and_stays_put() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = "The Office/Season 02/Featurettes/Featurettes - S02E04.mkv";
+        write(dir.path(), path, "featurette");
+
+        let plan = scan_root_for_asset_type(
+            "shows",
+            dir.path(),
+            MediaRootAssetType::Shows,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(plan.items.iter().all(|item| item.from != path));
+    }
+
+    #[tokio::test]
     async fn shows_root_repairs_singleton_extra_folders_created_by_the_old_bug() {
         let dir = tempfile::tempdir().unwrap();
         write(
@@ -2345,6 +2475,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn real_halloween_5_scan_produces_one_canonical_destination_without_numbering() {
+        use axum::routing::get;
+        use axum::Json;
+        use serde_json::json;
+
+        let router = axum::Router::new().route(
+            "/search/movie",
+            get(|| async {
+                Json(json!({"results": [
+                    {"id": 11361, "title": "Halloween 5: The Revenge of Michael Myers", "release_date": "1989-10-12", "popularity": 20.0, "vote_count": 1300}
+                ]}))
+            }),
+        );
+        let tmdb = spawn_mock_tmdb(router).await;
+        let dir = tempfile::tempdir().unwrap();
+        let from = "Halloween 5 The Revenge of Michael Myers/Halloween 5 The Revenge of Michael Myers.mp4";
+        write(dir.path(), from, "movie");
+
+        let plan = scan_root_for_asset_type(
+            "movies",
+            dir.path(),
+            MediaRootAssetType::Movies,
+            None,
+            Some(&tmdb),
+        )
+        .await
+        .unwrap();
+
+        let matching: Vec<_> = plan.items.iter().filter(|item| item.from == from).collect();
+        assert_eq!(matching.len(), 1);
+        assert_eq!(
+            matching[0].to,
+            "Halloween 5 The Revenge of Michael Myers (1989)/Halloween 5 The Revenge of Michael Myers (1989).mp4"
+        );
+        assert!(matching[0].conflict.is_none());
+    }
+
+    #[tokio::test]
     async fn an_ambiguous_tmdb_match_leaves_the_year_unfilled() {
         use axum::routing::get;
         use axum::Json;
@@ -2512,16 +2680,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn preserves_a_different_existing_destination_as_an_alternate_version() {
+    async fn leaves_a_different_existing_movie_destination_as_a_conflict() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "Heat.1995.mkv", "x");
         write(dir.path(), "Heat (1995)/Heat (1995).mkv", "already here");
         let plan = scan_root("local", dir.path(), None, None).await.unwrap();
         let video = plan.items.iter().find(|i| i.kind == "video").expect("video item");
-        assert!(video.conflict.is_none());
+        assert!(video.conflict.is_some());
         assert_eq!(video.kind, "video");
-        assert!(video.to.starts_with("Heat (1995)/Heat (1995) - Heat.1995"));
-        assert_eq!(plan.conflict_count, 0);
+        assert_eq!(video.to, "Heat (1995)/Heat (1995).mkv");
+        assert_eq!(plan.conflict_count, 1);
         assert_eq!(plan.duplicate_count, 0);
     }
 
@@ -2552,7 +2720,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_different_content_collision_is_preserved_as_an_alternate_not_a_duplicate() {
+    async fn a_different_movie_collision_is_left_in_place_for_review() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "Heat (1995)/Heat (1995).mkv", "the real thing");
         write(dir.path(), "Heat.1995.BDRip.x264-GROUP.mkv", "an unrelated remux");
@@ -2561,11 +2729,11 @@ mod tests {
 
         let video = plan.items.iter().find(|i| i.kind == "video").expect("video item");
         assert_eq!(video.from, "Heat.1995.BDRip.x264-GROUP.mkv");
-        assert!(video.conflict.is_none());
-        assert_eq!(video.to, "Heat (1995)/Heat (1995) - Heat.1995.BDRip.x264-GROUP.mkv");
+        assert!(video.conflict.is_some());
+        assert_eq!(video.to, "Heat (1995)/Heat (1995).mkv");
         assert!(plan.items.iter().all(|i| i.kind != "duplicate"));
         assert_eq!(plan.duplicate_count, 0);
-        assert_eq!(plan.conflict_count, 0);
+        assert_eq!(plan.conflict_count, 1);
     }
 
     #[tokio::test]
@@ -2587,14 +2755,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn gives_two_sources_with_the_same_target_unique_destinations() {
+    async fn multiple_movie_sources_never_get_invented_numbered_destinations() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "Heat.1995.mp4", "x");
         write(dir.path(), "Heat (1995).mp4", "x");
         let plan = scan_root("local", dir.path(), None, None).await.unwrap();
         assert_eq!(plan.items.len(), 2);
-        assert!(plan.items.iter().all(|item| item.conflict.is_none()));
-        assert_ne!(plan.items[0].to, plan.items[1].to);
+        assert_eq!(plan.items.iter().filter(|item| item.conflict.is_some()).count(), 1);
+        assert_eq!(plan.items[0].to, "Heat (1995)/Heat (1995).mp4");
+        assert_eq!(plan.items[1].to, "Heat (1995)/Heat (1995).mp4");
     }
 
     #[test]
@@ -2786,6 +2955,30 @@ mod tests {
         assert_eq!(track.to, "Artist/2003 - Some Album/01 - Track.mp3");
         assert!(track.conflict.is_none());
         assert!(!track.ai_assisted);
+    }
+
+    #[tokio::test]
+    async fn real_tiesto_nested_single_keeps_its_release_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = "Tiesto/Singles/Tiesto/2010 - Tiesto - Goldrush [Magik Muzik 886-0] WEB/02 - Goldrush (Edit).mp3";
+        write(dir.path(), from, "track");
+
+        let plan = scan_root_for_asset_type(
+            "music",
+            dir.path(),
+            MediaRootAssetType::Music,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let track = plan.items.iter().find(|item| item.from == from).unwrap();
+        assert_eq!(
+            track.to,
+            "Tiesto/2010 - Tiesto - Goldrush [Magik Muzik 886-0] WEB/02 - Goldrush (Edit).mp3"
+        );
+        assert!(!track.to.starts_with("Tiesto/Tiesto/"));
     }
 
     #[tokio::test]

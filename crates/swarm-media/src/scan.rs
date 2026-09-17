@@ -375,6 +375,14 @@ async fn scan_roots_scoped_inner(
     let mut subtitle_sidecars: Vec<SubtitleSidecar> = Vec::new();
     for root in &walked_roots {
         check_cancelled(cancel.as_deref())?;
+        // A disabled music root contributes no manifest entries and must not
+        // participate in deletion reconciliation. Do not recursively walk it
+        // merely to reject every track afterward: on a large SMB library that
+        // otherwise turns an intentionally-disabled feature into minutes of
+        // read_dir/file_type round trips before useful scan progress begins.
+        if root.asset_type == MediaRootAssetType::Music && !options.scan_music_tracks {
+            continue;
+        }
         let (complete, sidecars) = discover_media_files(
             library,
             scan_id,
@@ -387,22 +395,7 @@ async fn scan_roots_scoped_inner(
         .await?;
         let remaining = MAX_SUBTITLE_SIDECARS.saturating_sub(subtitle_sidecars.len());
         subtitle_sidecars.extend(sidecars.into_iter().take(remaining));
-        // A music root walked with individual-track scanning turned off
-        // produces a manifest with zero entries for it by design (every
-        // track path is filtered out before it's ever added — see
-        // `media_path_allowed`), not because the walk found the root
-        // empty. That's indistinguishable, to the deletion-reconciliation
-        // pass below, from "every previously catalogued track was deleted
-        // from disk" — confirmed live: a routine rescan with the option
-        // off wiped every already-catalogued track's availability even
-        // though none of the files had moved. Treat it the same as an
-        // incomplete walk for scoping purposes (excluded from
-        // reconciliation and from add/update) but without the warning or
-        // the auto-rescan backoff penalty, since nothing here is actually
-        // flaky.
-        let deliberately_unscanned_music =
-            root.asset_type == MediaRootAssetType::Music && !options.scan_music_tracks;
-        if complete && !deliberately_unscanned_music {
+        if complete {
             complete_roots.push(*root);
         } else if !complete {
             // A changing directory is not a complete snapshot. It must not
@@ -432,6 +425,9 @@ async fn scan_roots_scoped_inner(
     let known_in_scope = if multi_root_namespace {
         let mut count = 0usize;
         for root in roots {
+            if root.asset_type == MediaRootAssetType::Music && !options.scan_music_tracks {
+                continue;
+            }
             count = count.saturating_add(
                 library
                     .entry_count_with_prefix(Some(&format!("{}/", root.label)))

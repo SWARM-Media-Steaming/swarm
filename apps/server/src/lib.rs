@@ -172,6 +172,11 @@ pub struct ServerCore {
     scan_lock: tokio::sync::Mutex<()>,
     scan_active: Arc<AtomicBool>,
     scan_status: tokio::sync::watch::Sender<ScanState>,
+    /// Published once the startup scan and its artwork reconciliation have
+    /// finished. A maintenance request that arrives while this is still
+    /// `None` joins that work instead of waiting for the scan lock and then
+    /// immediately walking the same roots a second time.
+    initial_scan_result: tokio::sync::watch::Sender<Option<Result<ScanReport, String>>>,
     comprehensive_check: AtomicBool,
     scan_music_tracks: AtomicBool,
 }
@@ -420,6 +425,7 @@ impl ServerCore {
             scan_lock: tokio::sync::Mutex::new(()),
             scan_active,
             scan_status: tokio::sync::watch::Sender::new(ScanState::NotStarted),
+            initial_scan_result: tokio::sync::watch::Sender::new(None),
             comprehensive_check: AtomicBool::new(config.scan_options.comprehensive_check),
             scan_music_tracks: AtomicBool::new(config.scan_options.scan_music_tracks),
         });
@@ -459,7 +465,7 @@ impl ServerCore {
         let scan_core = Arc::clone(&core);
         tokio::spawn(async move {
             let roots = scan_core.media_roots.roots();
-            match scan_core.run_scan(&roots, None).await {
+            let result = match scan_core.run_scan(&roots, None).await {
                 Ok(report) => {
                     tracing::info!(
                         added = report.added,
@@ -486,9 +492,14 @@ impl ServerCore {
                             tracing::warn!(%error, "could not reconcile artwork references after initial scan");
                         }
                     }
+                    Ok(report)
                 }
-                Err(err) => tracing::error!(%err, "initial library scan failed"),
-            }
+                Err(err) => {
+                    tracing::error!(%err, "initial library scan failed");
+                    Err(err.to_string())
+                }
+            };
+            scan_core.initial_scan_result.send_replace(Some(result));
         });
 
         Ok(core)
@@ -641,6 +652,42 @@ impl ServerCore {
         }
     }
 
+    /// True only while the one startup scan is still running. This is
+    /// separate from `scan_status`, which also represents later automatic
+    /// and manual scans and therefore cannot identify reusable startup work.
+    pub fn initial_scan_pending(&self) -> bool {
+        self.initial_scan_result.borrow().is_none()
+    }
+
+    async fn join_initial_scan_if_pending(
+        &self,
+        cancel: &AtomicBool,
+    ) -> Result<Option<ScanReport>, ServerError> {
+        let mut result_rx = self.initial_scan_result.subscribe();
+        if result_rx.borrow().is_some() {
+            return Ok(None);
+        }
+
+        loop {
+            if cancel.load(Ordering::Acquire) {
+                return Err(swarm_media::scan::ScanError::Cancelled.into());
+            }
+            tokio::select! {
+                changed = result_rx.changed() => {
+                    if changed.is_err() {
+                        return Ok(None);
+                    }
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_millis(200)) => {}
+            }
+            if let Some(result) = result_rx.borrow().clone() {
+                // A failed startup attempt should not consume the user's
+                // explicit retry; fall through to a fresh cancellable scan.
+                return Ok(result.ok());
+            }
+        }
+    }
+
     pub async fn rescan(
         &self,
         progress_tx: Option<mpsc::Sender<ScanProgressEvent>>,
@@ -672,6 +719,9 @@ impl ServerCore {
         progress_tx: Option<mpsc::Sender<ScanProgressEvent>>,
         cancel: Arc<AtomicBool>,
     ) -> Result<ScanReport, ServerError> {
+        if let Some(report) = self.join_initial_scan_if_pending(&cancel).await? {
+            return Ok(report);
+        }
         let roots = self.media_roots.roots();
         self.run_scan_inner(&roots, progress_tx, Some(cancel)).await
     }

@@ -3069,6 +3069,7 @@ const LIBRARY_MAINTENANCE_PROGRESS_EVENT: &str = "library-maintenance-progress";
 #[derive(Clone, serde::Serialize)]
 #[serde(tag = "stage", rename_all = "snake_case")]
 enum LibraryMaintenanceProgressEvent {
+    WaitingForInitialScan,
     Scanning {
         progress: ScanProgressEvent,
     },
@@ -3113,6 +3114,13 @@ async fn run_library_maintenance<R: tauri::Runtime>(
 
     let result = async {
         let core = state.core(&app).await?;
+
+        if core.initial_scan_pending() {
+            let _ = app.emit(
+                LIBRARY_MAINTENANCE_PROGRESS_EVENT,
+                LibraryMaintenanceProgressEvent::WaitingForInitialScan,
+            );
+        }
 
         let (scan_tx, mut scan_rx) = tokio::sync::mpsc::channel(64);
         let scan_emitter = app.clone();

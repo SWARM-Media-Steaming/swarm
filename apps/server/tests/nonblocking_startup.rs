@@ -12,6 +12,8 @@
 //! `status()`) stays responsive even while the initial scan is still
 //! running in the background.
 
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use swarm_media::roots::MediaRoot;
 use swarm_server::{ServerConfig, ServerCore, TokenStoreMode};
@@ -125,6 +127,44 @@ async fn other_commands_stay_responsive_during_the_initial_scan() {
 
     let report = core.wait_for_scan().await.unwrap();
     assert_eq!(report.added, 1000);
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[tokio::test]
+async fn immediate_manual_rescan_reuses_the_in_flight_startup_scan() {
+    let base = std::env::temp_dir().join(format!(
+        "swarm-reuse-startup-scan-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&base);
+    let media_root = base.join("media");
+    std::fs::create_dir_all(&media_root).unwrap();
+    for i in 0..1000 {
+        let path = media_root.join(format!("movies/Movie {i}/Movie.{i}.mkv"));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, vec![7u8; 4096]).unwrap();
+    }
+
+    let core = ServerCore::start(config(base.join("data"), media_root))
+        .await
+        .unwrap();
+    assert!(core.initial_scan_pending());
+
+    let joined = core
+        .rescan_cancellable(None, Arc::new(AtomicBool::new(false)))
+        .await
+        .unwrap();
+    assert_eq!(joined.added, 1000);
+    assert_eq!(joined.unchanged, 0);
+
+    // Once startup is complete, a later explicit scan remains a real scan.
+    let subsequent = core
+        .rescan_cancellable(None, Arc::new(AtomicBool::new(false)))
+        .await
+        .unwrap();
+    assert_eq!(subsequent.added, 0);
+    assert_eq!(subsequent.unchanged, 1000);
 
     let _ = std::fs::remove_dir_all(&base);
 }

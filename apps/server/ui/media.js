@@ -1560,7 +1560,11 @@ async function runLibraryMaintenance(force) {
   cancelBtn.innerHTML = '<i class="bi bi-x-circle"></i>Cancel';
 
   const unlisten = await listen("library-maintenance-progress", ({ payload }) => {
-    if (payload.stage === "scanning") {
+    if (payload.stage === "waiting_for_initial_scan") {
+      progressStage.textContent = "Waiting for startup scan…";
+      progressFill.style.width = "1%";
+      progressText.textContent = "The server is already scanning these roots. This update will reuse that result instead of scanning them twice.";
+    } else if (payload.stage === "scanning") {
       const scan = payload.progress;
       progressStage.textContent = "Step 1 of 3 — Scanning files";
       if (scan.phase === "discovering") {

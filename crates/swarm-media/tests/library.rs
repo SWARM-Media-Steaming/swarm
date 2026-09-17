@@ -678,6 +678,36 @@ async fn typed_roots_filter_media_and_music_tracks_are_opt_in() {
 }
 
 #[tokio::test]
+async fn disabled_music_root_is_not_walked() {
+    let fx = fixture("disabled-music-root-not-walked").await;
+    let roots = [MediaRoot {
+        label: "music".into(),
+        // Deliberately absent: a disabled root should require no filesystem
+        // access at all. The old implementation tried read_dir here and
+        // failed instead of simply omitting music from this scan.
+        path: fx.root.join("not-mounted"),
+        asset_type: MediaRootAssetType::Music,
+    }];
+
+    let report = scan_roots_with_options(
+        &fx.library,
+        &roots,
+        None,
+        ScanOptions {
+            comprehensive_check: false,
+            scan_music_tracks: false,
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(report.added, 0);
+    assert_eq!(report.updated, 0);
+    assert_eq!(report.removed, 0);
+    assert_eq!(report.unchanged, 0);
+}
+
+#[tokio::test]
 async fn scan_indexes_scene_release_movies_with_scrapeable_titles() {
     let fx = fixture("scene-release-movie-titles").await;
     let cases = [

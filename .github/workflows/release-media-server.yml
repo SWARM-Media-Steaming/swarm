@@ -20,16 +20,10 @@ name: Release media server
 #     apps/server/src/gui.rs's `release_is_newer`), not by avoiding the
 #     suffix here.
 #
-# Prerequisite this workflow cannot self-serve: TAURI_SIGNING_PRIVATE_KEY
-# (and TAURI_SIGNING_PRIVATE_KEY_PASSWORD, if the key has one) must exist as
-# repository secrets, holding the minisign private key matching the pubkey
-# already embedded in apps/server/tauri.conf.json. Provisioning secrets
-# needs repo-admin access this workflow (and the agent that authored it)
-# does not have — a human with that access must generate/locate the
-# matching private key and add it before a run here can produce a signed,
-# installable release. Until then, every run of this workflow fails at the
-# signing step, by design (an unsigned build would fail every client's
-# updater signature check anyway).
+# SERVER_TAURI_SIGNING_PRIVATE_KEY and
+# SERVER_TAURI_SIGNING_PRIVATE_KEY_PASSWORD are repository secrets generated
+# by scripts/ci/generate-signing-material.sh. The workflow maps them to the
+# environment-variable names expected by Tauri when it signs updater bundles.
 
 on:
   push:
@@ -130,6 +124,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Verify updater signing secrets
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.SERVER_TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.SERVER_TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "SERVER_TAURI_SIGNING_PRIVATE_KEY is not configured" >&2
+            exit 1
+          fi
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" ]; then
+            echo "SERVER_TAURI_SIGNING_PRIVATE_KEY_PASSWORD is not configured" >&2
+            exit 1
+          fi
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -171,8 +180,8 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.SERVER_TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.SERVER_TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: apps/server
           tagName: ${{ needs.version.outputs.tag }}

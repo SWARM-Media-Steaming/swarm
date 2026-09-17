@@ -571,6 +571,7 @@ impl ServerCore {
         &self,
         labels: &[String],
         pause_transcription: bool,
+        progress_tx: Option<mpsc::Sender<ScanProgressEvent>>,
     ) -> Result<ScanReport, ServerError> {
         let all_roots = self.media_roots.roots();
         let requested = labels.iter().map(String::as_str).collect::<HashSet<_>>();
@@ -598,7 +599,7 @@ impl ServerCore {
             &self.library,
             &selected,
             all_roots.len() > 1,
-            None,
+            progress_tx,
             self.scan_options(),
         )
         .await

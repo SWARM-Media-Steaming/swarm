@@ -459,6 +459,11 @@ td.mono {
 #libraryMaintenanceProgressText { font-size: .8rem; }
 .progress-bar { width: 100%; height: 6px; border-radius: 4px; background: var(--surface-muted); overflow: hidden; margin-bottom: 4px; }
 .progress-bar-fill { width: 0; height: 100%; background: linear-gradient(90deg, var(--violet-2), var(--violet)); transition: width .15s ease-out; }
+
+/* Reorganize's approve/undo "in progress" toast: same .progress-bar reused
+   inline instead of in a fixed panel — see startReorgProgressToast in ai.js. */
+.reorg-toast-text { display: block; }
+.reorg-toast-progress { margin: 8px 0 0; }
 .transcription-toggle { cursor: pointer; }
 .transcription-toggle i { color: var(--accent); }
 .transcription-progress {

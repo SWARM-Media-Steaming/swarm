@@ -306,6 +306,43 @@ function reorgPlanCategory(plan) {
   return reorgCleanupRoots.find(root => root.label === plan.root_label)?.asset_type ?? null;
 }
 
+// Approve/undo's persistent "in progress" toast starts as plain text (the
+// file-move phase has no progress signal) and grows a determinate bar once
+// the post-move rescan starts reporting `ai-reorganize-progress` — same
+// `.progress-bar`/`.progress-bar-fill` component the transcription and
+// library-maintenance panels already use, just embedded in a toast instead
+// of a fixed panel. The reorganize-scoped rescan is a small fraction of a
+// whole-library scan, so the bar exists mainly to prove the wait is moving,
+// not to promise a precise ETA (see the AI-tools discussion this answers).
+function startReorgProgressToast(message) {
+  const toast = showToast(message, "progress", { duration: 0 });
+  const messageEl = toast?.querySelector(".toast-message");
+  if (messageEl) {
+    messageEl.innerHTML =
+      `<span class="reorg-toast-text">${esc(message)}</span>` +
+      `<div class="progress-bar reorg-toast-progress d-none"><div class="progress-bar-fill"></div></div>`;
+  }
+  return toast;
+}
+
+listen("ai-reorganize-progress", ({ payload }) => {
+  const toast = reorgActionToasts[payload.id];
+  const textEl = toast?.querySelector(".reorg-toast-text");
+  const bar = toast?.querySelector(".reorg-toast-progress");
+  const fill = bar?.querySelector(".progress-bar-fill");
+  if (!textEl || !bar || !fill) return;
+  bar.classList.remove("d-none");
+  const progress = payload.progress;
+  if (progress.phase === "discovering") {
+    fill.style.width = "5%";
+    textEl.textContent = `Scanning… ${progress.found} file(s) found so far`;
+  } else {
+    const ratio = progress.total ? progress.processed / progress.total : 1;
+    fill.style.width = `${Math.round(ratio * 100)}%`;
+    textEl.textContent = `Scanning ${progress.processed} of ${progress.total} file(s)…`;
+  }
+});
+
 function showReorgConfirmation(message, hasErrors) {
   const el = document.getElementById("aiReorgConfirmMsg");
   if (!el) return;
@@ -493,7 +530,7 @@ function renderReorgPlans(plans) {
       // Issue #319: stays open until the "ai-reorganize-finished" event for
       // this id dismisses it — the background apply run can take far longer
       // than a toast's default duration.
-      reorgActionToasts[id] = showToast("Reorganization started in the background. You’ll be notified when it finishes.", "progress", { duration: 0 });
+      reorgActionToasts[id] = startReorgProgressToast("Reorganization started in the background. You’ll be notified when it finishes.");
       try {
         await invoke("approve_ai_reorg_plan", { id, excludedPaths });
         await refreshAi();
@@ -533,7 +570,7 @@ function renderReorgPlans(plans) {
     btn.addEventListener("click", async () => {
       const id = Number(btn.dataset.planId);
       btn.disabled = true;
-      reorgActionToasts[id] = showToast("Undo started in the background. You’ll be notified when it finishes.", "progress", { duration: 0 });
+      reorgActionToasts[id] = startReorgProgressToast("Undo started in the background. You’ll be notified when it finishes.");
       try {
         await invoke("undo_ai_reorg_plan", { id });
         await refreshAi();

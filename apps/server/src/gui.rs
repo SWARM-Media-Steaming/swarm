@@ -514,7 +514,7 @@ fn start_media_root_recovery(core: Arc<ServerCore>, settings_dir: PathBuf) {
                     continue;
                 }
                 match core
-                    .rescan_roots_by_label(&recovered_needing_rescan, false)
+                    .rescan_roots_by_label(&recovered_needing_rescan, false, None)
                     .await
                 {
                     Ok(report) => {
@@ -692,7 +692,7 @@ fn start_auto_library_watch(core: Arc<ServerCore>, settings_dir: PathBuf) {
                 continue;
             }
 
-            let report = match core.rescan_roots_by_label(&due, false).await {
+            let report = match core.rescan_roots_by_label(&due, false, None).await {
                 Ok(report) => report,
                 Err(error) => {
                     tracing::warn!(%error, "automatic library scan failed");
@@ -1749,7 +1749,7 @@ async fn repair_smb_root<R: tauri::Runtime>(
             // User pressed the button: pause transcription like any other
             // explicit rescan, unlike the automatic background watch/recovery
             // callers above.
-            .rescan_roots_by_label(&[label], true)
+            .rescan_roots_by_label(&[label], true, None)
             .await
             .map_err(|error| error.to_string())?;
         Some(RescanResult {
@@ -2289,6 +2289,18 @@ struct ReorgPlanView {
 
 const AI_REORGANIZE_FINISHED_EVENT: &str = "ai-reorganize-finished";
 const AI_REORGANIZE_UNDONE_EVENT: &str = "ai-reorganize-undone";
+/// Emitted while `approve_ai_reorg_plan`/`undo_ai_reorg_plan`'s post-move
+/// rescan is in progress — same underlying `ScanProgressEvent` and
+/// forwarding-task pattern as `rescan`'s `scan-progress` (see that
+/// constant's doc comment), just tagged with the plan `id` so the review UI
+/// can tell which plan's toast to update when more than one is in flight.
+const AI_REORGANIZE_PROGRESS_EVENT: &str = "ai-reorganize-progress";
+
+#[derive(Clone, serde::Serialize)]
+struct ReorgProgressEvent {
+    id: u64,
+    progress: ScanProgressEvent,
+}
 
 #[derive(Clone, serde::Serialize)]
 struct ReorgFinishedEvent {
@@ -2608,9 +2620,20 @@ async fn approve_ai_reorg_plan<R: tauri::Runtime>(
             },
         };
 
-        if let Err(error) = core.rescan_roots_by_label(&affected_labels, true).await {
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(64);
+        let progress_app = task_app.clone();
+        let forward_progress = tauri::async_runtime::spawn(async move {
+            while let Some(progress) = progress_rx.recv().await {
+                let _ = progress_app.emit(AI_REORGANIZE_PROGRESS_EVENT, ReorgProgressEvent { id, progress });
+            }
+        });
+        if let Err(error) = core
+            .rescan_roots_by_label(&affected_labels, true, Some(progress_tx))
+            .await
+        {
             outcome.errors.push(format!("library rescan failed: {error}"));
         }
+        let _ = forward_progress.await;
 
         let event = {
             let state = task_app.state::<AppState>();
@@ -2718,9 +2741,20 @@ async fn undo_ai_reorg_plan<R: tauri::Runtime>(
             },
         };
 
-        if let Err(error) = core.rescan_roots_by_label(&affected_labels, true).await {
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(64);
+        let progress_app = task_app.clone();
+        let forward_progress = tauri::async_runtime::spawn(async move {
+            while let Some(progress) = progress_rx.recv().await {
+                let _ = progress_app.emit(AI_REORGANIZE_PROGRESS_EVENT, ReorgProgressEvent { id, progress });
+            }
+        });
+        if let Err(error) = core
+            .rescan_roots_by_label(&affected_labels, true, Some(progress_tx))
+            .await
+        {
             outcome.errors.push(format!("library rescan failed: {error}"));
         }
+        let _ = forward_progress.await;
 
         let event = {
             let state = task_app.state::<AppState>();

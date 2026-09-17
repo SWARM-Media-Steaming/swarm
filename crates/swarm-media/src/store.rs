@@ -9,7 +9,7 @@ use crate::recommend::{
 use sha2::{Digest, Sha256};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use swarm_core::peer::{
     AudioStreamInfo, CatalogEntry, MediaKind, SkipSegment, TrackLyrics, VideoStreamInfo,
@@ -110,6 +110,13 @@ pub enum ArtworkKind {
     Backdrop,
     Cover,
     ArtistPhoto,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtworkReference {
+    pub entry_key: String,
+    pub kind: ArtworkKind,
+    pub relative_path: String,
 }
 
 impl ArtworkKind {
@@ -2609,6 +2616,106 @@ impl Library {
             .fetch_optional(&self.pool)
             .await?;
         Ok(row.and_then(|(path, version)| path.map(|p| (p, version as u32))))
+    }
+
+    /// Every populated artwork slot. Callers that reconcile the database
+    /// with files on disk use this instead of treating `artwork_version` as
+    /// proof that the referenced bytes still exist.
+    pub async fn artwork_references(&self) -> sqlx::Result<Vec<ArtworkReference>> {
+        let mut references = Vec::new();
+        for kind in [
+            ArtworkKind::Poster,
+            ArtworkKind::SeasonPoster,
+            ArtworkKind::Backdrop,
+            ArtworkKind::Cover,
+            ArtworkKind::ArtistPhoto,
+        ] {
+            let sql = format!(
+                "SELECT entry_key, {} FROM library_entries WHERE available = 1 AND {} IS NOT NULL",
+                kind.column(),
+                kind.column()
+            );
+            let rows: Vec<(String, String)> = sqlx::query_as(&sql).fetch_all(&self.pool).await?;
+            references.extend(rows.into_iter().map(|(entry_key, relative_path)| {
+                ArtworkReference {
+                    entry_key,
+                    kind,
+                    relative_path,
+                }
+            }));
+        }
+        Ok(references)
+    }
+
+    /// Previously valid paths for one artwork slot, newest first. A media
+    /// rename archives these before creating the replacement catalog row;
+    /// they are therefore the safest source for repairing a bad path remap
+    /// without downloading thousands of images again.
+    pub async fn historical_artwork_paths(
+        &self,
+        entry_key: &str,
+        kind: ArtworkKind,
+    ) -> sqlx::Result<Vec<String>> {
+        let sql = format!(
+            "SELECT DISTINCT history.{} FROM asset_metadata_history history \
+             JOIN library_entries entry ON entry.fingerprint = history.fingerprint AND entry.size = history.size \
+             WHERE entry.entry_key = ? AND history.{} IS NOT NULL \
+             ORDER BY history.archived_at_ms DESC",
+            kind.column(),
+            kind.column()
+        );
+        let rows: Vec<(String,)> = sqlx::query_as(&sql)
+            .bind(entry_key)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().map(|(path,)| path).collect())
+    }
+
+    /// Clears a stale path only if it still matches the value that was
+    /// checked on disk. The comparison prevents a concurrent scrape or
+    /// upload from being erased by a slower reconciliation pass.
+    pub async fn clear_artwork_if_path(
+        &self,
+        entry_key: &str,
+        kind: ArtworkKind,
+        relative_path: &str,
+    ) -> sqlx::Result<bool> {
+        let sql = format!(
+            "UPDATE library_entries SET {} = NULL, artwork_version = artwork_version + 1 \
+             WHERE entry_key = ? AND {} = ?",
+            kind.column(),
+            kind.column()
+        );
+        let result = sqlx::query(&sql)
+            .bind(entry_key)
+            .bind(relative_path)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn bump_artwork_version(&self, entry_key: &str) -> sqlx::Result<()> {
+        sqlx::query(
+            "UPDATE library_entries SET artwork_version = artwork_version + 1 WHERE entry_key = ?",
+        )
+        .bind(entry_key)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Entries with a populated primary browse image. Reconciliation keeps
+    /// these columns honest, so the dashboard's "Artwork Missing" count no
+    /// longer relies on the historical version counter.
+    pub async fn entries_with_primary_artwork(&self) -> sqlx::Result<HashSet<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT entry_key FROM library_entries WHERE available = 1 AND \
+             ((kind = 'track' AND cover_relative_path IS NOT NULL) OR \
+              (kind IN ('movie', 'episode') AND poster_relative_path IS NOT NULL))",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(entry_key,)| entry_key).collect())
     }
 
     /// The artist photo for this entry, falling back to the cover art of the

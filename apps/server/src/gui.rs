@@ -2816,37 +2816,45 @@ async fn list_entries<R: tauri::Runtime>(
         .like_counts()
         .await
         .map_err(|e| e.to_string())?;
+    let entries_with_artwork = core
+        .library
+        .entries_with_primary_artwork()
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(entries
         .into_iter()
-        .map(|entry| EntrySummary {
-            like_count: like_counts.get(&entry.entry_key).copied().unwrap_or(0),
-            entry_key: entry.entry_key,
-            kind: format!("{:?}", entry.kind).to_lowercase(),
-            title: entry.title,
-            relative_path: entry.relative_path,
-            size: entry.size,
-            scraped_title: entry.scraped_title,
-            episode_title: entry.episode_title,
-            genres: entry.genres,
-            has_artwork: entry.artwork_version > 0,
-            artist: entry.artist,
-            album: entry.album,
-            track_number: entry.track_number,
-            show_title: entry.show_title,
-            season: entry.season,
-            episode: entry.episode,
-            year: entry.year,
-            duration_secs: entry.duration_secs,
-            cast: entry.cast,
-            overview: entry.overview,
-            rating: entry.rating,
-            community_rating: entry.community_rating,
-            community_rating_votes: entry.community_rating_votes,
-            parent_entry_key: entry.parent_entry_key,
-            extra_type: entry.extra_type,
-            extra_title: entry.extra_title,
-            extra_relative_path: entry.extra_relative_path,
-            extra_category_path: entry.extra_category_path,
+        .map(|entry| {
+            let has_artwork = entries_with_artwork.contains(&entry.entry_key);
+            EntrySummary {
+                like_count: like_counts.get(&entry.entry_key).copied().unwrap_or(0),
+                entry_key: entry.entry_key,
+                kind: format!("{:?}", entry.kind).to_lowercase(),
+                title: entry.title,
+                relative_path: entry.relative_path,
+                size: entry.size,
+                scraped_title: entry.scraped_title,
+                episode_title: entry.episode_title,
+                genres: entry.genres,
+                has_artwork,
+                artist: entry.artist,
+                album: entry.album,
+                track_number: entry.track_number,
+                show_title: entry.show_title,
+                season: entry.season,
+                episode: entry.episode,
+                year: entry.year,
+                duration_secs: entry.duration_secs,
+                cast: entry.cast,
+                overview: entry.overview,
+                rating: entry.rating,
+                community_rating: entry.community_rating,
+                community_rating_votes: entry.community_rating_votes,
+                parent_entry_key: entry.parent_entry_key,
+                extra_type: entry.extra_type,
+                extra_title: entry.extra_title,
+                extra_relative_path: entry.extra_relative_path,
+                extra_category_path: entry.extra_category_path,
+            }
         })
         .collect())
 }
@@ -2904,14 +2912,16 @@ async fn get_asset_detail<R: tauri::Runtime>(
         ArtworkKind::Cover,
         ArtworkKind::ArtistPhoto,
     ] {
-        if core
-            .library
-            .artwork(&entry_key, kind)
-            .await
-            .map_err(|e| e.to_string())?
-            .is_some()
-        {
-            artwork_present.push(kind.route_segment().to_string());
+        let stored = if kind == ArtworkKind::ArtistPhoto {
+            core.library.artist_photo_or_fallback(&entry_key).await
+        } else {
+            core.library.artwork(&entry_key, kind).await
+        }
+        .map_err(|e| e.to_string())?;
+        if let Some((relative_path, _)) = stored {
+            if swarm_media::scrape::artwork::exists(&core.media_roots, &relative_path).await {
+                artwork_present.push(kind.route_segment().to_string());
+            }
         }
     }
     let subtitle_tracks = core

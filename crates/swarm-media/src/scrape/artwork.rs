@@ -5,6 +5,14 @@
 //! fixed names shared by every track in the album folder.
 
 use crate::roots::SharedRootResolver;
+use crate::store::{ArtworkReference, Library};
+use futures_util::{stream, StreamExt};
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ArtworkReconcileReport {
+    pub recovered: u64,
+    pub cleared: u64,
+}
 
 pub fn sanitize_stem(stem: &str) -> String {
     let cleaned: String = stem
@@ -68,6 +76,91 @@ pub async fn exists(roots: &SharedRootResolver, relative_path: &str) -> bool {
     let (root_path, rest) = roots.split(relative_path);
     let absolute = root_path.join(rest.replace('/', std::path::MAIN_SEPARATOR_STR));
     tokio::fs::try_exists(&absolute).await.unwrap_or(false)
+}
+
+fn absolute_path(roots: &SharedRootResolver, relative_path: &str) -> std::path::PathBuf {
+    let (root_path, rest) = roots.split(relative_path);
+    root_path.join(rest.replace('/', std::path::MAIN_SEPARATOR_STR))
+}
+
+/// Makes stored artwork references truthful again. A historical reorganization
+/// bug moved media while leaving its sibling `images/` directory behind, then
+/// restored metadata with paths remapped to the new (nonexistent) location.
+/// Prefer copying the still-existing archived image into that intended path;
+/// when no surviving source exists, clear the stale column so an ordinary
+/// missing-only scrape will download it again.
+pub async fn reconcile_references(
+    library: &Library,
+    roots: &SharedRootResolver,
+) -> sqlx::Result<ArtworkReconcileReport> {
+    let references = library.artwork_references().await?;
+    let outcomes = stream::iter(references)
+        .map(|reference| async move { reconcile_reference(library, roots, reference).await })
+        .buffer_unordered(32)
+        .collect::<Vec<_>>()
+        .await;
+
+    let mut report = ArtworkReconcileReport::default();
+    for outcome in outcomes {
+        match outcome? {
+            ReconcileOutcome::Unchanged => {}
+            ReconcileOutcome::Recovered => report.recovered += 1,
+            ReconcileOutcome::Cleared => report.cleared += 1,
+        }
+    }
+    Ok(report)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReconcileOutcome {
+    Unchanged,
+    Recovered,
+    Cleared,
+}
+
+async fn reconcile_reference(
+    library: &Library,
+    roots: &SharedRootResolver,
+    reference: ArtworkReference,
+) -> sqlx::Result<ReconcileOutcome> {
+    if exists(roots, &reference.relative_path).await {
+        return Ok(ReconcileOutcome::Unchanged);
+    }
+
+    let target = absolute_path(roots, &reference.relative_path);
+    for historical in library
+        .historical_artwork_paths(&reference.entry_key, reference.kind)
+        .await?
+    {
+        if historical == reference.relative_path || !exists(roots, &historical).await {
+            continue;
+        }
+        let source = absolute_path(roots, &historical);
+        if let Some(parent) = target.parent() {
+            if tokio::fs::create_dir_all(parent).await.is_err() {
+                continue;
+            }
+        }
+        // Copy rather than rename: album artwork may be shared by many rows,
+        // and another still-valid entry can legitimately retain the old path.
+        if tokio::fs::copy(&source, &target).await.is_ok() {
+            library.bump_artwork_version(&reference.entry_key).await?;
+            return Ok(ReconcileOutcome::Recovered);
+        }
+    }
+
+    if library
+        .clear_artwork_if_path(
+            &reference.entry_key,
+            reference.kind,
+            &reference.relative_path,
+        )
+        .await?
+    {
+        Ok(ReconcileOutcome::Cleared)
+    } else {
+        Ok(ReconcileOutcome::Unchanged)
+    }
 }
 
 #[cfg(test)]
@@ -138,6 +231,80 @@ mod tests {
             std::fs::read(nas_root.join("movies/Foo (2020)/images/foo-tmdb-poster.jpg")).unwrap(),
             b"bytes"
         );
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[tokio::test]
+    async fn reconcile_recovers_artwork_left_behind_by_a_media_move() {
+        let base = std::env::temp_dir().join(format!(
+            "swarm-artwork-reconcile-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("media");
+        let old_dir = root.join("Old Movie");
+        let new_dir = root.join("New Movie");
+        std::fs::create_dir_all(old_dir.join("images")).unwrap();
+        std::fs::write(old_dir.join("Movie.mkv"), vec![7u8; 32]).unwrap();
+        std::fs::write(
+            old_dir.join("images/Movie-tmdb-poster.jpg"),
+            b"poster bytes",
+        )
+        .unwrap();
+
+        let library = Library::open(base.join("library.sqlite").to_str().unwrap())
+            .await
+            .unwrap();
+        crate::scan::scan_root(&library, &root).await.unwrap();
+        let original = library.list().await.unwrap().remove(0);
+        library
+            .set_artwork(
+                &original.entry_key,
+                crate::store::ArtworkKind::Poster,
+                "Old Movie/images/Movie-tmdb-poster.jpg",
+            )
+            .await
+            .unwrap();
+
+        // Reproduce the historical bug: only the media file moved. The next
+        // scan restores metadata and remaps its artwork path to New Movie,
+        // even though the image bytes still live under Old Movie.
+        std::fs::create_dir_all(&new_dir).unwrap();
+        std::fs::rename(old_dir.join("Movie.mkv"), new_dir.join("Movie.mkv")).unwrap();
+        crate::scan::scan_root(&library, &root).await.unwrap();
+        let moved = library.list().await.unwrap().remove(0);
+        let (remapped, _) = library
+            .artwork(&moved.entry_key, crate::store::ArtworkKind::Poster)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(remapped, "New Movie/images/Movie-tmdb-poster.jpg");
+        assert!(!new_dir.join("images/Movie-tmdb-poster.jpg").exists());
+
+        let roots = SharedRootResolver::new(crate::roots::RootResolver::single(root));
+        let report = reconcile_references(&library, &roots).await.unwrap();
+        assert_eq!(report.recovered, 1);
+        assert_eq!(report.cleared, 0);
+        assert_eq!(
+            std::fs::read(new_dir.join("images/Movie-tmdb-poster.jpg")).unwrap(),
+            b"poster bytes"
+        );
+
+        // If neither the current nor historical file exists, reconciliation
+        // clears the stale value so the normal missing-only scraper retries it.
+        std::fs::remove_file(new_dir.join("images/Movie-tmdb-poster.jpg")).unwrap();
+        std::fs::remove_file(old_dir.join("images/Movie-tmdb-poster.jpg")).unwrap();
+        let report = reconcile_references(&library, &roots).await.unwrap();
+        assert_eq!(report.recovered, 0);
+        assert_eq!(report.cleared, 1);
+        assert!(
+            library
+                .artwork(&moved.entry_key, crate::store::ArtworkKind::Poster)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
         std::fs::remove_dir_all(&base).ok();
     }
 }

@@ -460,13 +460,33 @@ impl ServerCore {
         tokio::spawn(async move {
             let roots = scan_core.media_roots.roots();
             match scan_core.run_scan(&roots, None).await {
-                Ok(report) => tracing::info!(
-                    added = report.added,
-                    updated = report.updated,
-                    removed = report.removed,
-                    unchanged = report.unchanged,
-                    "initial library scan complete"
-                ),
+                Ok(report) => {
+                    tracing::info!(
+                        added = report.added,
+                        updated = report.updated,
+                        removed = report.removed,
+                        unchanged = report.unchanged,
+                        "initial library scan complete"
+                    );
+                    match swarm_media::scrape::artwork::reconcile_references(
+                        &scan_core.library,
+                        &scan_core.media_roots,
+                    )
+                    .await
+                    {
+                        Ok(repaired) if repaired.recovered > 0 || repaired.cleared > 0 => {
+                            tracing::info!(
+                                recovered = repaired.recovered,
+                                cleared = repaired.cleared,
+                                "reconciled artwork references after initial scan"
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            tracing::warn!(%error, "could not reconcile artwork references after initial scan");
+                        }
+                    }
+                }
                 Err(err) => tracing::error!(%err, "initial library scan failed"),
             }
         });

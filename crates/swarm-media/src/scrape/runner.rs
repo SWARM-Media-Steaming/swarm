@@ -217,6 +217,16 @@ pub async fn run_bulk_scrape(
     progress_tx: Option<UnboundedSender<ScrapeProgressEvent>>,
     force: bool,
 ) -> sqlx::Result<BulkScrapeReport> {
+    if !force {
+        let repaired = artwork::reconcile_references(library, roots).await?;
+        if repaired.recovered > 0 || repaired.cleared > 0 {
+            tracing::info!(
+                recovered = repaired.recovered,
+                cleared = repaired.cleared,
+                "reconciled artwork references before missing-only scrape"
+            );
+        }
+    }
     // `force` re-scrapes everything, overwriting whatever's already there —
     // `scrape_videos`/`scrape_tracks` below always overwrite unconditionally
     // per entry regardless of prior state, so simply widening which entries

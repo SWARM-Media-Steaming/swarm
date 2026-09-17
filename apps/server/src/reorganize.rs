@@ -484,7 +484,31 @@ pub async fn scan_inventory_for_asset_type(
 
         if is_audio {
             if let Some(item) = plan_track(root, &unix_relative, ext, &mut planned_targets).await {
+                let artwork_moves = if item.conflict.is_none() {
+                    find_managed_artwork_moves(video_files, &unix_relative, &item.to, true)
+                } else {
+                    Vec::new()
+                };
                 items.push(item);
+                for (artwork_from, artwork_to) in artwork_moves {
+                    let (to, kind, conflict) = resolve_destination(
+                        root,
+                        &artwork_from,
+                        &artwork_to,
+                        "artwork",
+                        &mut planned_targets,
+                    )
+                    .await;
+                    items.push(ReorgItem {
+                        from: artwork_from,
+                        to,
+                        kind,
+                        destination_root_label: None,
+                        ai_assisted: false,
+                        year_source: None,
+                        conflict,
+                    });
+                }
             }
             continue;
         }
@@ -575,6 +599,27 @@ pub async fn scan_inventory_for_asset_type(
                 resolve_destination(root, &sub_from, &sub_to, "subtitle", &mut planned_targets).await;
             items.push(ReorgItem {
                 from: sub_from,
+                to,
+                kind,
+                destination_root_label: None,
+                ai_assisted,
+                year_source,
+                conflict,
+            });
+        }
+        for (artwork_from, artwork_to) in
+            find_managed_artwork_moves(video_files, &unix_relative, &to, false)
+        {
+            let (to, kind, conflict) = resolve_destination(
+                root,
+                &artwork_from,
+                &artwork_to,
+                "artwork",
+                &mut planned_targets,
+            )
+            .await;
+            items.push(ReorgItem {
+                from: artwork_from,
                 to,
                 kind,
                 destination_root_label: None,
@@ -1445,6 +1490,64 @@ fn in_images_dir(relative: &str) -> bool {
     Path::new(relative)
         .components()
         .any(|c| c.as_os_str().to_string_lossy().eq_ignore_ascii_case("images"))
+}
+
+/// Carries server-managed artwork beside a media file when reorganization
+/// changes that file's parent directory. The scraper stores these images in
+/// a sibling `images/` directory. Restoring archived metadata remaps that
+/// directory to the media file's new parent, so leaving the bytes behind
+/// creates a populated-but-broken database reference.
+///
+/// Video artwork is per-file and therefore matched by the sanitized source
+/// stem used by `scrape::artwork::save_artwork`. Music artwork is shared by
+/// an album, so every image in the source album's `images/` directory rides
+/// along; the planner's source/target de-duplication makes repeated tracks
+/// from the same album harmless.
+fn find_managed_artwork_moves(
+    files: &[PathBuf],
+    media_from: &str,
+    media_to: &str,
+    is_audio: bool,
+) -> Vec<(String, String)> {
+    let from = Path::new(media_from);
+    let to = Path::new(media_to);
+    let (Some(from_parent), Some(to_parent)) = (from.parent(), to.parent()) else {
+        return Vec::new();
+    };
+    if from_parent == to_parent {
+        return Vec::new();
+    }
+    let source_images = from_parent.join("images");
+    let video_prefix = from
+        .file_stem()
+        .map(|stem| {
+            format!(
+                "{}-tmdb-",
+                swarm_media::scrape::artwork::sanitize_stem(&stem.to_string_lossy())
+            )
+        })
+        .unwrap_or_default();
+
+    files
+        .iter()
+        .filter_map(|relative| {
+            let parent = relative.parent()?;
+            if parent != source_images {
+                return None;
+            }
+            let file_name = relative.file_name()?.to_string_lossy();
+            let extension = relative.extension()?.to_string_lossy().to_ascii_lowercase();
+            if !ORPHAN_ARTWORK_EXTS.contains(&extension.as_str())
+                || (!is_audio && !file_name.starts_with(&video_prefix))
+            {
+                return None;
+            }
+            Some((
+                to_unix(relative),
+                to_unix(&to_parent.join("images").join(file_name.as_ref())),
+            ))
+        })
+        .collect()
 }
 
 fn is_already_orphaned(relative: &str) -> bool {
@@ -2947,6 +3050,46 @@ mod tests {
         assert_eq!(plan.orphan_count, 0);
     }
 
+    #[tokio::test]
+    async fn carries_scraped_video_artwork_when_media_changes_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = "Aqua Teen Hunger Force/Featurettes/Vol. 2/Aqua Teen Hunger Force (2000) - S00E01 - Baffler Meal.mkv";
+        write(dir.path(), from, "video");
+        write(
+            dir.path(),
+            "Aqua Teen Hunger Force/Featurettes/Vol. 2/images/Aqua Teen Hunger Force (2000) - S00E01 - Baffler Meal-tmdb-poster.jpg",
+            "poster",
+        );
+
+        let plan = scan_root_for_asset_type(
+            "shows",
+            dir.path(),
+            MediaRootAssetType::Shows,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let video = plan
+            .items
+            .iter()
+            .find(|item| item.kind == "video")
+            .expect("episode should be reorganized");
+        let artwork = plan
+            .items
+            .iter()
+            .find(|item| item.kind == "artwork")
+            .expect("managed artwork should follow the episode");
+        let video_parent = Path::new(&video.to).parent().unwrap();
+        assert_eq!(
+            artwork.to,
+            to_unix(&video_parent.join(
+                "images/Aqua Teen Hunger Force (2000) - S00E01 - Baffler Meal-tmdb-poster.jpg"
+            ))
+        );
+    }
+
     // --- Orphaned sidecar detection (issue #298) ---
 
     #[tokio::test]
@@ -3366,6 +3509,32 @@ mod tests {
         assert_eq!(track.to, "Artist/2003 - Some Album/01 - Track.mp3");
         assert!(track.conflict.is_none());
         assert!(!track.ai_assisted);
+    }
+
+    #[tokio::test]
+    async fn carries_shared_album_art_when_flattening_a_music_group_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "Artist/Album/2003 - Some Album/01 - Track.mp3", "x");
+        write(
+            dir.path(),
+            "Artist/Album/2003 - Some Album/images/album-cover.jpg",
+            "cover",
+        );
+
+        let plan = scan_root_for_asset_type(
+            "music",
+            dir.path(),
+            MediaRootAssetType::Music,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(plan.items.iter().any(|item| {
+            item.kind == "artwork"
+                && item.to == "Artist/2003 - Some Album/images/album-cover.jpg"
+        }));
     }
 
     #[tokio::test]

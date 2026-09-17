@@ -369,7 +369,6 @@ async function refreshMediaRootHealth() {
     grantBtn.classList.toggle("d-none", denied.length === 0);
     if (unavailable.length > 0) {
       const noun = unavailable.length === 1 ? "location is" : "locations are";
-      const recoveryPronoun = unavailable.length === 1 ? "it is" : "they are";
       const paths = unavailable
         .map(root => `<span class="media-root-warning-path">${esc(root.path)}</span>`)
         .join(", ");
@@ -378,14 +377,10 @@ async function refreshMediaRootHealth() {
         // help, so tell the user about the one-time grant instead (#196).
         copy.innerHTML = `macOS is blocking SWARM from reading ${unavailable.length === 1 ? "this media location" : "these media locations"}: ${paths}. Open macOS Settings &rarr; Privacy &amp; Security &rarr; Files and Folders (or Full Disk Access), turn on &ldquo;SWARM Server&rdquo;, then Rescan. macOS remembers this once.`;
       } else {
-        const healing = unavailable.filter(root => root.auto_reconnect).length;
-        const recovery = healing
-          ? `SWARM is automatically trying to reconnect ${healing === unavailable.length ? recoveryPronoun : `${healing} network share${healing === 1 ? "" : "s"}`}.`
-          : "Reconnect the drive or network share.";
         const permissionNote = denied.length
           ? " Some are blocked by macOS — use Open macOS Settings to grant access once."
           : "";
-        copy.innerHTML = `${unavailable.length} configured media ${noun} not readable: ${paths}. ${recovery}${permissionNote} Playback, artwork, and subtitles will resume automatically after the share becomes available.`;
+        copy.innerHTML = `${unavailable.length} configured media ${noun} not readable: ${paths}. Reconnect the drive or network share manually.${permissionNote} Playback, artwork, and subtitles will resume automatically after the share becomes available.`;
       }
     }
   } catch (_) {

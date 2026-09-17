@@ -20,7 +20,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use swarm_core::peer::MediaKind;
 use swarm_media::roots::{MediaRoot, MediaRootAssetType};
 use swarm_media::scan::ScanProgressEvent;
@@ -370,18 +370,16 @@ impl AppState {
 }
 
 /// Network mounts can remain present under `/Volumes` while every read
-/// fails. Poll the same real-read health check used by the UI, ask macOS to
-/// remount known SMB roots with saved credentials, and retry only a scan that
-/// overlapped the outage or had failed. A healthy catalog does not need a
-/// filesystem walk merely because the same mount came back. Attempts are
-/// throttled so an offline NAS cannot produce a reconnect storm.
-const MEDIA_ROOT_RECONNECT_RETRY_INTERVAL: Duration = Duration::from_secs(90);
+/// fails. Poll the same real-read health check used by the UI and retry only
+/// a scan that overlapped the outage or had failed once the user reconnects
+/// the storage. Reconnection itself is deliberately manual: asking macOS to
+/// reopen an already-stale SMB URL can create duplicate `/Volumes/share-N`
+/// mounts while the configured path remains unusable.
 
 fn start_media_root_recovery(core: Arc<ServerCore>, settings_dir: PathBuf) {
     tokio::spawn(async move {
         let mut unavailable = HashSet::<String>::new();
         let mut needs_recovery_rescan = HashSet::<String>::new();
-        let mut last_attempt = HashMap::<String, Instant>::new();
         let mut interval = tokio::time::interval(Duration::from_secs(10));
         // Default `Burst` replays every tick missed while a slow health check
         // or reconnect ran long, firing the whole backlog back-to-back
@@ -407,13 +405,8 @@ fn start_media_root_recovery(core: Arc<ServerCore>, settings_dir: PathBuf) {
                 .iter()
                 .map(|root| root.label.as_str())
                 .collect::<HashSet<_>>();
-            let configured_reconnects = roots
-                .iter()
-                .map(reconnect_attempt_key)
-                .collect::<HashSet<_>>();
             unavailable.retain(|label| configured_labels.contains(label.as_str()));
             needs_recovery_rescan.retain(|label| configured_labels.contains(label.as_str()));
-            last_attempt.retain(|key, _| configured_reconnects.contains(key));
             let mut recovered = Vec::<String>::new();
             let mut recovered_needing_rescan = Vec::<String>::new();
             let scan_needs_retry = matches!(
@@ -421,7 +414,6 @@ fn start_media_root_recovery(core: Arc<ServerCore>, settings_dir: PathBuf) {
                 ScanState::Scanning | ScanState::Failed(_)
             );
             for (root, status) in roots.iter().zip(health) {
-                let reconnect_key = reconnect_attempt_key(root);
                 if status.available {
                     if unavailable.remove(&root.label) {
                         tracing::info!(root = %root.label, path = %root.path, "media root recovered");
@@ -448,11 +440,6 @@ fn start_media_root_recovery(core: Arc<ServerCore>, settings_dir: PathBuf) {
                             ),
                         )
                     } else {
-                        let retry_message = if status.auto_reconnect {
-                            "SWARM will ask macOS to reconnect it automatically. It will retry a scan only if one overlapped this outage."
-                        } else {
-                            "Reconnect the storage, then use Rescan so the library is synchronized."
-                        };
                         (
                             "Media storage unavailable",
                             format!(
@@ -460,7 +447,7 @@ fn start_media_root_recovery(core: Arc<ServerCore>, settings_dir: PathBuf) {
                                 root.label,
                                 root.path,
                                 status.error.as_deref().unwrap_or("unknown I/O error"),
-                                retry_message,
+                                "Reconnect the storage manually. SWARM will detect its return and retry a scan only if one overlapped the outage.",
                             ),
                         )
                     };
@@ -471,31 +458,6 @@ fn start_media_root_recovery(core: Arc<ServerCore>, settings_dir: PathBuf) {
                     {
                         tracing::warn!(%error, "could not save media-root failure notification");
                     }
-                }
-                let should_attempt = !status.permission_denied
-                    && status.auto_reconnect
-                    && last_attempt
-                        .get(&reconnect_key)
-                        .is_none_or(|last| last.elapsed() >= MEDIA_ROOT_RECONNECT_RETRY_INTERVAL);
-                if should_attempt {
-                    // Multiple configured roots commonly live under the same
-                    // SMB share. Reconnect the shared URL once per interval;
-                    // parallel Finder requests for that identical URL can
-                    // deadlock macOS's credential/mount agent and leave every
-                    // root unavailable indefinitely (#131).
-                    last_attempt.insert(reconnect_key, Instant::now());
-                    let reconnect_root = root.clone();
-                    tokio::task::spawn_blocking(move || {
-                        match settings::reconnect_network_root(&reconnect_root) {
-                            Ok(true) => {
-                                tracing::info!(root = %reconnect_root.label, "network-share reconnect became readable")
-                            }
-                            Ok(false) => {}
-                            Err(error) => {
-                                tracing::warn!(root = %reconnect_root.label, %error, "network-share reconnect request failed")
-                            }
-                        }
-                    });
                 }
             }
             if !recovered.is_empty() {
@@ -561,12 +523,6 @@ fn start_media_root_recovery(core: Arc<ServerCore>, settings_dir: PathBuf) {
             }
         }
     });
-}
-
-fn reconnect_attempt_key(root: &MediaRootSetting) -> String {
-    root.reconnect_url
-        .clone()
-        .unwrap_or_else(|| format!("path:{}", root.path))
 }
 
 /// Base cadence of the idle-time watcher below, which re-walks media roots

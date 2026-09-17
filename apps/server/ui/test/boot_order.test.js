@@ -385,7 +385,6 @@ async function main() {
     path: "/Volumes/share/movies",
     available: false,
     error: "stale file handle",
-    auto_reconnect: true,
     network_protocol: "SMB",
   }];
   await dom.window.refreshMediaRoots();

@@ -122,6 +122,13 @@ pub struct ServerStatus {
     /// progress — the library reflects whatever's been found so far either
     /// way, this is purely informational for a "still scanning…" indicator.
     pub scanning: bool,
+    /// Live progress for the one background startup scan (issue #322) —
+    /// `None` once it finishes, before it starts, or during a later rescan
+    /// (those already have their own dedicated progress channel wired by
+    /// whichever command started them). A large library's initial walk can
+    /// take minutes, and without this the dashboard had nothing to show
+    /// while it ran beyond a static "Loading…", which reads as a hang.
+    pub scan_progress: Option<ScanProgressEvent>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -177,6 +184,11 @@ pub struct ServerCore {
     /// `None` joins that work instead of waiting for the scan lock and then
     /// immediately walking the same roots a second time.
     initial_scan_result: tokio::sync::watch::Sender<Option<Result<ScanReport, String>>>,
+    /// Live progress for the startup scan spawned in [`Self::start`] only —
+    /// see [`Self::scan_progress`] and issue #322. Not populated by a later
+    /// rescan/root-update; those callers wire their own progress channel
+    /// straight to the webview instead of through this field.
+    scan_progress: tokio::sync::watch::Sender<Option<ScanProgressEvent>>,
     comprehensive_check: AtomicBool,
     scan_music_tracks: AtomicBool,
 }
@@ -426,6 +438,7 @@ impl ServerCore {
             scan_active,
             scan_status: tokio::sync::watch::Sender::new(ScanState::NotStarted),
             initial_scan_result: tokio::sync::watch::Sender::new(None),
+            scan_progress: tokio::sync::watch::Sender::new(None),
             comprehensive_check: AtomicBool::new(config.scan_options.comprehensive_check),
             scan_music_tracks: AtomicBool::new(config.scan_options.scan_music_tracks),
         });
@@ -462,10 +475,23 @@ impl ServerCore {
         // calls wait_for_scan() immediately after start() can never observe
         // the pre-scan NotStarted default and return early.
         core.scan_status.send_modify(|s| *s = ScanState::Scanning);
+        // Forward the startup scan's own progress into `scan_progress` so a
+        // freshly-launched dashboard has something to show besides "Loading…"
+        // for however long the initial walk takes (issue #322) — a plain
+        // mpsc/forwarder pair, same shape `gui.rs`'s `rescan` command uses to
+        // relay the same event type to the webview, just terminating in a
+        // watch channel here instead since this crate has no Tauri emitter.
+        let (progress_tx, mut progress_rx) = mpsc::channel(64);
+        let progress_core = Arc::clone(&core);
+        tokio::spawn(async move {
+            while let Some(event) = progress_rx.recv().await {
+                progress_core.scan_progress.send_replace(Some(event));
+            }
+        });
         let scan_core = Arc::clone(&core);
         tokio::spawn(async move {
             let roots = scan_core.media_roots.roots();
-            let result = match scan_core.run_scan(&roots, None).await {
+            let result = match scan_core.run_scan(&roots, Some(progress_tx)).await {
                 Ok(report) => {
                     tracing::info!(
                         added = report.added,
@@ -499,6 +525,9 @@ impl ServerCore {
                     Err(err.to_string())
                 }
             };
+            // Clear rather than leave the last "processed X of Y" frame
+            // sitting there forever once `scanning` has already gone false.
+            scan_core.scan_progress.send_replace(None);
             scan_core.initial_scan_result.send_replace(Some(result));
         });
 
@@ -650,6 +679,11 @@ impl ServerCore {
                 .await
                 .expect("ServerCore dropped its own scan_status sender");
         }
+    }
+
+    /// Live progress of the startup scan — see [`ServerStatus::scan_progress`].
+    pub fn scan_progress(&self) -> Option<ScanProgressEvent> {
+        self.scan_progress.borrow().clone()
     }
 
     /// True only while the one startup scan is still running. This is
@@ -926,6 +960,7 @@ impl ServerCore {
                 .upload_budget_enabled(),
             active_playback_sessions: self.active_playback_sessions(),
             scanning: matches!(&*self.scan_status.borrow(), ScanState::Scanning),
+            scan_progress: self.scan_progress(),
         })
     }
 

@@ -366,6 +366,22 @@ td.mono {
 .media-root-warning-copy strong { display: block; margin-bottom: 2px; color: color-mix(in srgb, var(--amber) 65%, var(--text)); }
 .media-root-warning-path { font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
 
+/* Startup scan indicator (#322): a large library's initial walk can take
+   minutes, and with nothing here the dashboard looked frozen the whole
+   time. Same persistent-across-every-tab banner shape as
+   .media-root-warning above, just informational (accent, not amber) and
+   with a spinning icon — reuses the toast-progress spinner's `toast-spin`
+   keyframe rather than defining a second one. */
+.library-scan-banner {
+  display: flex; align-items: center; gap: 12px; margin: -4px 0 18px;
+  padding: 12px 14px; border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); border-left: 4px solid var(--accent);
+  border-radius: 10px; background: color-mix(in srgb, var(--accent) 9%, transparent); color: var(--text);
+}
+.library-scan-banner.d-none { display: none; }
+.library-scan-banner-icon { flex: 0 0 auto; color: var(--accent); font-size: 1.35rem; animation: toast-spin .9s linear infinite; }
+.library-scan-banner-copy { flex: 1; min-width: 0; font-size: .82rem; line-height: 1.4; }
+.library-scan-banner-copy strong { display: block; margin-bottom: 2px; color: color-mix(in srgb, var(--accent) 65%, var(--text)); }
+
 /* Toast notifications: every success/warning/error message in the app
    surfaces here instead of scattered inline text, color-coded so status is
    readable at a glance. Stacked bottom-right, newest on top, each
@@ -938,6 +954,8 @@ li.info-trigger:hover { background: var(--surface-muted); }
   .reorg-item-include { width: 64px; }
   .media-root-warning { align-items: flex-start; flex-wrap: wrap; }
   .media-root-warning-copy { flex-basis: calc(100% - 42px); }
+  .library-scan-banner { align-items: flex-start; flex-wrap: wrap; }
+  .library-scan-banner-copy { flex-basis: calc(100% - 42px); }
   .media-root-row, .client-error-row { flex-direction: column; }
   .media-root-actions { width: 100%; flex-wrap: wrap; }
   .detail-body { align-items: flex-start; }

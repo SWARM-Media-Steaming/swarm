@@ -3303,6 +3303,25 @@ async fn rescrape_entry<R: tauri::Runtime>(
         .map_err(|e| e.to_string())
 }
 
+/// Refresh album-level metadata and artwork without performing per-track
+/// lyrics lookups. One representative track identifies the album group.
+#[tauri::command]
+async fn rescrape_album<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    entry_key: String,
+) -> Result<(), String> {
+    let core = state.core(&app).await?;
+    let tmdb_api_key = settings::load(&app_data_dir(&app)?).tmdb_api_key;
+    let config = ScrapeConfig {
+        tmdb_api_key,
+        ..Default::default()
+    };
+    core.rescrape_album(&entry_key, config)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Entries the most recent `run_scrape`/library-maintenance pass couldn't
 /// match, for the AI tab's "Ask AI" affordance — see `ai_scrape_assist`.
 /// Empty if no scrape has run yet this session.
@@ -4259,6 +4278,7 @@ fn main() {
             cancel_library_maintenance,
             run_scrape,
             rescrape_entry,
+            rescrape_album,
             set_manual_metadata,
             set_manual_kind,
             upload_artwork,

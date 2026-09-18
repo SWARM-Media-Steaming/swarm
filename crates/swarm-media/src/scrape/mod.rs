@@ -13,7 +13,7 @@ pub mod tmdb;
 pub mod wikimedia;
 
 pub use runner::{
-    run_bulk_scrape, scrape_one_track, scrape_one_video, BulkScrapeReport, ScrapeConfig,
-    ScrapeIssue, ScrapeOneError, ScrapeOutcome, ScrapeProgress, ScrapeProgressEvent,
+    run_bulk_scrape, scrape_one_album, scrape_one_track, scrape_one_video, BulkScrapeReport,
+    ScrapeConfig, ScrapeIssue, ScrapeOneError, ScrapeOutcome, ScrapeProgress, ScrapeProgressEvent,
 };
 pub use tmdb::{TmdbOverride, TmdbOverrideError};

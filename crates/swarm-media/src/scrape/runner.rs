@@ -25,6 +25,7 @@ use crate::scrape::tmdb::{
 use crate::scrape::wikimedia::WikimediaClient;
 use crate::store::{ArtworkKind, CastMember, EntryRecord, Library};
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use swarm_core::peer::MediaKind;
 use tokio::sync::mpsc::UnboundedSender;
@@ -1133,6 +1134,76 @@ fn search_query_for_album(artist: &str, album: &str) -> String {
     }
 }
 
+fn local_cover_score(filename: &str) -> Option<u8> {
+    let path = Path::new(filename);
+    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+    if !matches!(extension.as_str(), "jpg" | "jpeg" | "png" | "webp") {
+        return None;
+    }
+    let stem = path.file_stem()?.to_str()?.to_ascii_lowercase();
+    let tokens: Vec<&str> = stem
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .collect();
+    if [
+        "back", "gatefold", "insert", "booklet", "inside", "label", "disc", "cd",
+    ]
+    .iter()
+    .any(|marker| tokens.contains(marker))
+    {
+        return None;
+    }
+    if matches!(stem.as_str(), "cover" | "folder" | "front" | "album") {
+        return Some(100);
+    }
+    if stem.contains("front") || stem.contains("cover") || stem.contains("folder") {
+        return Some(90);
+    }
+    Some(10)
+}
+
+/// Import a conventional image already stored beside an album's tracks.
+/// Vinyl/CD rips commonly ship a front scan plus back/gatefold/insert scans;
+/// prefer an explicit front/cover name and reject those non-front variants.
+/// The selected bytes are copied into SWARM's managed `images/` location so
+/// later moves/reconciliation follow the same path convention as downloaded
+/// Cover Art Archive artwork.
+async fn import_local_album_cover(
+    roots: &SharedRootResolver,
+    entry: &EntryRecord,
+) -> Option<String> {
+    let relative_parent = Path::new(&entry.relative_path).parent()?;
+    let relative_parent = relative_parent.to_str()?;
+    let absolute_parent = roots.resolve(relative_parent);
+    let mut directory = tokio::fs::read_dir(absolute_parent).await.ok()?;
+    let mut candidates = Vec::new();
+    while let Ok(Some(candidate)) = directory.next_entry().await {
+        let Ok(file_type) = candidate.file_type().await else {
+            continue;
+        };
+        if !file_type.is_file() {
+            continue;
+        }
+        let filename = candidate.file_name().to_string_lossy().into_owned();
+        let Some(score) = local_cover_score(&filename) else {
+            continue;
+        };
+        candidates.push((score, filename.to_ascii_lowercase(), candidate.path()));
+    }
+    candidates.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    let (_, _, source) = candidates.into_iter().next()?;
+    let extension = source.extension()?.to_str()?.to_ascii_lowercase();
+    let bytes = tokio::fs::read(source).await.ok()?;
+    artwork::save_artwork(
+        roots,
+        &entry.relative_path,
+        &format!("album-cover.{extension}"),
+        &bytes,
+    )
+    .await
+    .ok()
+}
+
 /// One (artist, album) group's worth of MusicBrainz + Cover Art Archive +
 /// Wikimedia work — release-level data applied to every track in the group
 /// (see the module docs on why this is per-album, not per-track). Shared by
@@ -1157,6 +1228,24 @@ async fn scrape_one_album_group(
         wikimedia,
         ..
     } = scrapers;
+
+    // Local front-cover scans are useful even when MusicBrainz has no match
+    // or is temporarily unavailable. Attach one once per album before the
+    // provider lookup; a forced scrape may still replace it with provider art.
+    if let Some(first) = group.first() {
+        let has_cover =
+            artwork_already_present(library, roots, &first.entry_key, ArtworkKind::Cover).await;
+        if !has_cover {
+            if let Some(relative) = import_local_album_cover(roots, first).await {
+                for track in group {
+                    library
+                        .set_artwork(&track.entry_key, ArtworkKind::Cover, &relative)
+                        .await?;
+                }
+            }
+        }
+    }
+
     match mb
         .search_release(artist, &search_query_for_album(artist, album))
         .await
@@ -1446,11 +1535,10 @@ pub async fn scrape_one_video(
     Ok(scraped)
 }
 
-/// Pinpoint (single-entry) music scrape: re-syncs the *whole* (artist,
-/// album) group `entry` belongs to, same as bulk would — see
-/// `scrape_one_album_group`'s doc comment for why one track can't be
-/// rescraped in isolation without leaving its siblings stale.
-pub async fn scrape_one_track(
+/// Re-sync the album metadata and artwork for the whole (artist, album)
+/// group `entry` belongs to. This intentionally omits per-track lyrics so
+/// artist- and album-level UI actions stay focused and bounded.
+pub async fn scrape_one_album(
     library: &Library,
     roots: &SharedRootResolver,
     config: &ScrapeConfig,
@@ -1485,6 +1573,25 @@ pub async fn scrape_one_track(
             "musicbrainz unavailable; retrying on the next scrape run"
         );
     }
+    Ok(report)
+}
+
+/// Pinpoint (single-entry) music scrape: re-syncs the whole album and then
+/// refreshes lyrics for every sibling track, matching bulk behavior.
+pub async fn scrape_one_track(
+    library: &Library,
+    roots: &SharedRootResolver,
+    config: &ScrapeConfig,
+    entry: &EntryRecord,
+) -> Result<BulkScrapeReport, ScrapeOneError> {
+    let report = scrape_one_album(library, roots, config, entry).await?;
+    let artist = entry.artist.as_deref().filter(|a| !a.is_empty());
+    let album = entry.album.as_deref().filter(|a| !a.is_empty());
+    let (Some(artist), Some(album)) = (artist, album) else {
+        return Err(ScrapeOneError::MissingMusicMetadata);
+    };
+    let siblings = library.entries_by_artist_album(artist, album).await?;
+    let scrapers = MusicScrapers::from_config(config);
     scrape_track_lyrics(
         library,
         &scrapers.lrclib,
@@ -1501,6 +1608,8 @@ pub enum ScrapeOneError {
     NoApiKey,
     #[error("this entry is music, not a movie or episode")]
     WrongKind,
+    #[error("this entry is not a music track")]
+    NotMusic,
     #[error(transparent)]
     Tmdb(#[from] TmdbError),
     #[error(transparent)]
@@ -1858,6 +1967,47 @@ mod tests {
             search_query_for_album("ATB", "2004 - (CATALOG-1)"),
             "2004 - (CATALOG-1)"
         );
+    }
+
+    #[tokio::test]
+    async fn local_album_cover_prefers_front_scan_and_ignores_packaging_images() {
+        assert!(local_cover_score("Discipline.png").is_some());
+        assert!(local_cover_score("Comeback Kid.jpg").is_some());
+        assert!(local_cover_score("Album-Disc-1.png").is_none());
+
+        let (root, db_path) = fixture_dirs("local-album-cover");
+        let album = root.join("music/Slipknot/We Are Not Your Kind (2019)");
+        std::fs::create_dir_all(&album).unwrap();
+        std::fs::write(album.join("01 - Insert Coin.flac"), vec![0u8; 10]).unwrap();
+        std::fs::write(
+            album.join("Slipknot - We Are Not Your Kind [123].png"),
+            [1u8],
+        )
+        .unwrap();
+        std::fs::write(
+            album.join("Slipknot - We Are Not Your Kind [123]-Back.png"),
+            [2u8],
+        )
+        .unwrap();
+        std::fs::write(
+            album.join("Slipknot - We Are Not Your Kind [123]-Gatefold.png"),
+            [3u8],
+        )
+        .unwrap();
+
+        let library = Library::open(db_path.to_str().unwrap()).await.unwrap();
+        scan_root(&library, &root).await.unwrap();
+        let entry = library.list().await.unwrap().pop().unwrap();
+        let relative = import_local_album_cover(&resolver(&root), &entry)
+            .await
+            .expect("front cover should be imported");
+
+        assert_eq!(
+            relative,
+            "music/Slipknot/We Are Not Your Kind (2019)/images/album-cover.png"
+        );
+        assert_eq!(std::fs::read(root.join(relative)).unwrap(), [1u8]);
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
     }
 
     fn fixture_dirs(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {

@@ -181,10 +181,13 @@ function wireDeleteAsset(entryKey) {
 // title might not mention it).
 function filteredEntries() {
   const q = searchQuery.trim().toLowerCase();
+  const missingArtworkEntries = completenessFilter === "missing_artwork"
+    ? entriesMissingGroupArtwork(libraryEntries).entryKeys
+    : null;
   return libraryEntries.filter(e => {
     if (kindFilter !== "all" && e.kind !== kindFilter) return false;
     if (categoryFilter !== "all" && !(e.genres || []).includes(categoryFilter)) return false;
-    if (completenessFilter === "missing_artwork" && e.has_artwork) return false;
+    if (missingArtworkEntries && !missingArtworkEntries.has(e.entry_key)) return false;
     if (completenessFilter === "missing_metadata" && hasUsefulMetadata(e)) return false;
     if (!q) return true;
     return [e.episode_title, e.scraped_title, e.title, e.artist, e.album, e.show_title]
@@ -263,7 +266,7 @@ function renderMediaTab() {
       <select id="mediaCompletenessFilter" class="icon-select${completenessFilter !== "all" ? " icon-select-active" : ""}" title="Find media that needs attention">
         <option value="all">All media</option>
         <option value="missing_metadata">Missing metadata (${libraryEntries.filter(e => !hasUsefulMetadata(e)).length})</option>
-        <option value="missing_artwork">Missing artwork (${libraryEntries.filter(e => !e.has_artwork).length})</option>
+        <option value="missing_artwork">Missing artwork (${entriesMissingGroupArtwork(libraryEntries).count})</option>
       </select>
       <i class="bi bi-exclamation-diamond icon-select-icon"></i>
     </div>
@@ -331,6 +334,46 @@ function groupTracks(entries) {
     }
   }
   return byArtist; // Map<artist, Map<album, EntrySummary[]>>
+}
+
+// Artwork is scraped per movie, show, and album -- never per song. Keep the
+// attention filter/count on those same units so a 20-track album is one
+// missing item rather than twenty. Extras are also excluded: they borrow
+// their parent show's presentation and are not expected to have their own
+// poster.
+function entriesMissingGroupArtwork(entries) {
+  const entryKeys = new Set();
+  let count = 0;
+
+  for (const movie of entries.filter(e => e.kind === "movie" && !e.extra_type && !e.has_artwork)) {
+    entryKeys.add(movie.entry_key);
+    count += 1;
+  }
+
+  const regularEpisodes = entries.filter(e => e.kind === "episode" && !e.extra_type);
+  const canonicalFor = canonicalShowKeys(regularEpisodes);
+  const shows = new Map();
+  for (const episode of regularEpisodes) {
+    const rawShow = episode.show_title || "Unknown Show";
+    const show = canonicalFor.get(rawShow) || rawShow;
+    if (!shows.has(show)) shows.set(show, []);
+    shows.get(show).push(episode);
+  }
+  for (const episodes of shows.values()) {
+    if (episodes.some(e => e.has_artwork)) continue;
+    episodes.forEach(e => entryKeys.add(e.entry_key));
+    count += 1;
+  }
+
+  for (const albums of groupTracks(entries).values()) {
+    for (const tracks of albums.values()) {
+      if (tracks.some(t => t.has_artwork)) continue;
+      tracks.forEach(t => entryKeys.add(t.entry_key));
+      count += 1;
+    }
+  }
+
+  return { entryKeys, count };
 }
 
 // Two on-disk show folders can hold the same real series under different
@@ -854,6 +897,47 @@ function wireGroupArtworkHandlers(entryKeys, kind) {
   document.getElementById("groupArtworkUploadBtn")?.addEventListener("click", () => uploadGroupArtwork(entryKeys, kind));
 }
 
+async function rescrapeAlbumGroups(entryKeys, scopeLabel, buttonId) {
+  if (groupRescrapeRunning) {
+    showToast("Another grouped re-scrape is already running.", "warning");
+    return;
+  }
+  const keys = [...new Set(entryKeys)];
+  if (!keys.length) {
+    showToast("There are no albums to re-scrape.", "warning");
+    return;
+  }
+
+  groupRescrapeRunning = true;
+  const button = document.getElementById(buttonId);
+  if (button) button.disabled = true;
+  let succeeded = 0;
+  const failures = [];
+  for (let index = 0; index < keys.length; index += 1) {
+    if (button) button.innerHTML = `<i class="bi bi-arrow-repeat"></i>Re-scraping album ${index + 1} of ${keys.length}…`;
+    try {
+      // One track identifies the album; the backend refreshes album metadata
+      // and artwork for every sibling without re-running lyrics lookups.
+      await invoke("rescrape_album", { entryKey: keys[index] });
+      succeeded += 1;
+    } catch (err) {
+      failures.push(String(err));
+    }
+  }
+
+  groupRescrapeRunning = false;
+  clearArtworkCache();
+  await refreshLibrary();
+  if (!failures.length) {
+    showToast(`Re-scraped ${succeeded} album${succeeded === 1 ? "" : "s"} for ${scopeLabel}.`, "success");
+  } else {
+    showToast(
+      `Re-scraped ${succeeded} of ${keys.length} albums for ${scopeLabel}; ${failures.length} failed. ${failures[0]}`,
+      succeeded ? "warning" : "error",
+    );
+  }
+}
+
 function renderArtist(body, artist) {
   const albums = groupTracks(libraryEntries).get(artist);
   if (!albums) { browsePath = { kind: "root" }; return renderBrowse(); }
@@ -865,9 +949,18 @@ function renderArtist(body, artist) {
       <div class="muted card-meta">${tracks.length} track${tracks.length === 1 ? "" : "s"}</div>
     </div>`).join("");
   const artistEntryKeys = [...albums.values()].flat().map(t => t.entry_key);
-  body.innerHTML = `${breadcrumb(crumbs)}${groupArtworkPanel("artist photo")}<div class="media-grid">${cards}</div>`;
+  const albumRepresentativeKeys = [...albums.values()].map(tracks => tracks[0]?.entry_key).filter(Boolean);
+  body.innerHTML = `${breadcrumb(crumbs)}${groupArtworkPanel("artist photo")}
+    <div class="row media-group-actions">
+      <button id="rescrapeArtistAlbumsBtn" class="secondary-button"${groupRescrapeRunning ? " disabled" : ""}><i class="bi bi-arrow-repeat"></i>Re-scrape all albums</button>
+      <span class="muted">Refresh metadata and artwork for all ${albumRepresentativeKeys.length} album${albumRepresentativeKeys.length === 1 ? "" : "s"} by this artist.</span>
+    </div>
+    <div class="media-grid">${cards}</div>`;
   wireBreadcrumb(body, crumbs);
   wireGroupArtworkHandlers(artistEntryKeys, "artist");
+  document.getElementById("rescrapeArtistAlbumsBtn")?.addEventListener("click", () => {
+    rescrapeAlbumGroups(albumRepresentativeKeys, artist, "rescrapeArtistAlbumsBtn");
+  });
   body.querySelectorAll("[data-album]").forEach(el => el.addEventListener("click", () => {
     browsePath = { kind: "album", artist, album: el.dataset.album };
     renderBrowse();
@@ -894,9 +987,16 @@ function renderAlbum(body, artist, album) {
   `).join("");
   const albumEntryKeys = tracks.map(t => t.entry_key);
   body.innerHTML = `${breadcrumb(crumbs)}${groupArtworkPanel("album cover")}
+    <div class="row media-group-actions">
+      <button id="rescrapeAlbumBtn" class="secondary-button"${groupRescrapeRunning ? " disabled" : ""}><i class="bi bi-arrow-repeat"></i>Re-scrape album</button>
+      <span class="muted">Refresh metadata and artwork for every track in this album.</span>
+    </div>
     <table><thead><tr><th>#</th><th>Title</th><th>Duration</th><th>Rating</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
   wireBreadcrumb(body, crumbs);
   wireGroupArtworkHandlers(albumEntryKeys, "cover");
+  document.getElementById("rescrapeAlbumBtn")?.addEventListener("click", () => {
+    rescrapeAlbumGroups([albumEntryKeys[0]], `${artist} — ${album}`, "rescrapeAlbumBtn");
+  });
   wireTrackManageHandlers(body);
 }
 

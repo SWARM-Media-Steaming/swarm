@@ -494,6 +494,48 @@ async function main() {
     failures.push("Expected a resolved client problem to remain visible with resolved status.");
   }
 
+  // Missing artwork is counted at its real scrape granularity. Two tracks
+  // in one coverless album are one missing item, and a coverless extra does
+  // not make an otherwise-artworked show look incomplete.
+  testLibraryEntries = [
+    { entry_key: "a1t1", kind: "track", title: "One", relative_path: "Music/Artist/A1/01.flac", artist: "Artist", album: "Album One", genres: [], cast: [], has_artwork: false, like_count: 0 },
+    { entry_key: "a1t2", kind: "track", title: "Two", relative_path: "Music/Artist/A1/02.flac", artist: "Artist", album: "Album One", genres: [], cast: [], has_artwork: false, like_count: 0 },
+    { entry_key: "a2t1", kind: "track", title: "Three", relative_path: "Music/Artist/A2/01.flac", artist: "Artist", album: "Album Two", genres: [], cast: [], has_artwork: false, like_count: 0 },
+    { entry_key: "show-episode", kind: "episode", title: "Pilot", relative_path: "Shows/Test/S01/E01.mkv", show_title: "Artwork Show", season: 1, episode: 1, genres: [], cast: [], has_artwork: true, like_count: 0 },
+    { entry_key: "show-extra", kind: "episode", title: "Making Of", relative_path: "Shows/Test/Featurettes/Making Of.mkv", show_title: "Artwork Show", season: 0, extra_type: "featurette", genres: [], cast: [], has_artwork: false, like_count: 0 },
+  ];
+  dom.window.eval(`libraryEntries = ${JSON.stringify(testLibraryEntries)}; mediaSection = "browse"; completenessFilter = "all"; browsePath = { kind: "root" }; renderMediaTab();`);
+  const missingArtwork = dom.window.eval("entriesMissingGroupArtwork(libraryEntries)");
+  if (missingArtwork.count !== 2 || missingArtwork.entryKeys.size !== 3) {
+    failures.push(`Expected two missing album covers covering three tracks, got ${missingArtwork.count} groups / ${missingArtwork.entryKeys.size} entries.`);
+  }
+  const missingArtworkOption = [...document.getElementById("mediaCompletenessFilter").options]
+    .find(option => option.value === "missing_artwork");
+  if (!missingArtworkOption?.textContent.includes("(2)")) {
+    failures.push(`Expected the missing-artwork control to count albums, got: ${missingArtworkOption?.textContent}.`);
+  }
+
+  // Artist and album views rescrape at album granularity: one representative
+  // track per album, relying on the backend to expand each representative to
+  // all sibling tracks in that album.
+  dom.window.eval(`browsePath = { kind: "artist", artist: "Artist" }; renderBrowse();`);
+  invokeCalls.length = 0;
+  document.getElementById("rescrapeArtistAlbumsBtn")?.click();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const artistAlbumKeys = invokeCalls.filter(call => call.command === "rescrape_album").map(call => call.args.entryKey);
+  if (JSON.stringify(artistAlbumKeys) !== JSON.stringify(["a1t1", "a2t1"])) {
+    failures.push(`Expected artist re-scrape to process one representative per album, got ${artistAlbumKeys.join(", ")}.`);
+  }
+
+  dom.window.eval(`browsePath = { kind: "album", artist: "Artist", album: "Album One" }; renderBrowse();`);
+  invokeCalls.length = 0;
+  document.getElementById("rescrapeAlbumBtn")?.click();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const albumKeys = invokeCalls.filter(call => call.command === "rescrape_album").map(call => call.args.entryKey);
+  if (JSON.stringify(albumKeys) !== JSON.stringify(["a1t1"])) {
+    failures.push(`Expected album re-scrape to invoke one album representative, got ${albumKeys.join(", ")}.`);
+  }
+
   // Group re-scrape regression: the show action must include episodes from
   // every season, while the season action must stay scoped to only that
   // season. Both reuse the real rescrape_entry command sequentially.

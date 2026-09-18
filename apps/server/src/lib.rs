@@ -32,8 +32,8 @@ use swarm_media::scan::{
     scan_roots_with_options, ScanOptions, ScanProgressEvent, ScanReport,
 };
 use swarm_media::scrape::{
-    run_bulk_scrape, scrape_one_track, scrape_one_video, BulkScrapeReport, ScrapeConfig,
-    ScrapeOneError, ScrapeProgressEvent, TmdbOverride,
+    run_bulk_scrape, scrape_one_album, scrape_one_track, scrape_one_video, BulkScrapeReport,
+    ScrapeConfig, ScrapeOneError, ScrapeProgressEvent, TmdbOverride,
 };
 use swarm_media::serve::{accept_loop, serve_connection, MediaService};
 use swarm_media::store::Library;
@@ -1123,6 +1123,25 @@ impl ServerCore {
                 .await?;
             }
         }
+        Ok(())
+    }
+
+    /// Refresh only album-level metadata and artwork for a representative
+    /// track. Unlike `rescrape_entry`, this deliberately skips lyrics.
+    pub async fn rescrape_album(
+        &self,
+        entry_key: &str,
+        config: ScrapeConfig,
+    ) -> Result<(), ServerError> {
+        let entry = self
+            .library
+            .get(entry_key)
+            .await?
+            .ok_or(ServerError::EntryNotFound)?;
+        if entry.kind != MediaKind::Track {
+            return Err(ScrapeOneError::NotMusic.into());
+        }
+        scrape_one_album(&self.library, &self.media_roots, &config, &entry).await?;
         Ok(())
     }
 

@@ -115,6 +115,14 @@ fun SwarmDashboardScreen(
             it.online &&
             normalized(it.certFingerprint) !in disconnected
     }
+    val connectedFingerprints = devices
+        .filter {
+            (it.deviceType == DeviceType.SERVER || it.deviceType == DeviceType.BOTH) &&
+                it.online &&
+                normalized(it.certFingerprint) !in disconnected
+        }
+        .mapTo(mutableSetOf()) { normalized(it.certFingerprint) }
+    val browse = browseAction(hasConnectedServer, lanServerRows, paired, disconnected)
     val hasServerRows = serversInSwarm.isNotEmpty() || lanServerRows.isNotEmpty()
     val downToFirstServer = if (hasServerRows) {
         Modifier.focusProperties { down = firstServerFocusRequester }
@@ -174,8 +182,16 @@ fun SwarmDashboardScreen(
                         colors = swarmActionButtonColors(),
                     ) { Text("Add Server") }
                     Button(
-                        onClick = onBrowseCatalog,
-                        enabled = hasConnectedServer,
+                        onClick = {
+                            when (browse) {
+                                is BrowseAction.OpenCatalog -> onBrowseCatalog()
+                                // Found and paired but not connected yet: connect, which
+                                // opens the catalog itself once it succeeds.
+                                is BrowseAction.ConnectFirst -> onConnectLan(browse.server, deviceName)
+                                BrowseAction.Unavailable -> Unit
+                            }
+                        },
+                        enabled = browse != BrowseAction.Unavailable,
                         modifier = downToFirstServer.then(
                             if (!isConnectionSetup) Modifier.focusRequester(initialActionFocusRequester) else Modifier,
                         ).testTag(UatTestTags.DASHBOARD_BROWSE_BUTTON),
@@ -239,6 +255,9 @@ fun SwarmDashboardScreen(
                 if (lanError != null && selectedLanServer == null) {
                     item { Text(lanError, color = SwarmError, fontSize = 12.sp) }
                 }
+                if (lanPairingBusy && selectedLanServer == null && lanError == null) {
+                    item { Text("Connecting…", color = SwarmMuted, fontSize = 12.sp) }
+                }
                 if (lanServerRows.isEmpty()) {
                     item {
                         Text(
@@ -264,7 +283,11 @@ fun SwarmDashboardScreen(
                             inSwarm = inSwarm,
                             paired = isPaired,
                             disconnected = isDisconnected,
-                            online = row.online,
+                            status = lanServerStatus(
+                                found = row.online,
+                                inSession = fingerprint in connectedFingerprints,
+                                disconnected = isDisconnected,
+                            ),
                             busy = lanPairingBusy,
                             onClick = {
                                 if (inSwarm || isPaired) {
@@ -312,10 +335,20 @@ fun SwarmDashboardScreen(
         selectedKnownLanServer?.let { server ->
             val isDisconnected = normalized(server.certFingerprint) in disconnected
             val isPaired = normalized(server.certFingerprint) in paired
+            val selectedFingerprint = normalized(server.certFingerprint)
             LanServerActionOverlay(
                 server = server,
                 disconnected = isDisconnected,
                 paired = isPaired,
+                subtitle = lanServerSubtitle(
+                    status = lanServerStatus(
+                        found = lanServerRows.any { normalized(it.server.certFingerprint) == selectedFingerprint && it.online },
+                        inSession = selectedFingerprint in connectedFingerprints,
+                        disconnected = isDisconnected,
+                    ),
+                    inSwarm = selectedFingerprint in swarmFingerprints,
+                    paired = isPaired,
+                ),
                 onConnect = {
                     if (isDisconnected) onReconnectLanServer(server) else onConnectLan(server, deviceName)
                     selectedKnownLanServer = null
@@ -402,7 +435,7 @@ private fun LanServerRow(
     inSwarm: Boolean,
     paired: Boolean,
     disconnected: Boolean,
-    online: Boolean,
+    status: LanServerStatus,
     busy: Boolean,
     onClick: () -> Unit,
 ) {
@@ -427,12 +460,7 @@ private fun LanServerRow(
             Column {
                 Text(server.name, color = SwarmText, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
                 Text(
-                    when {
-                        disconnected -> "Disconnected from this TV"
-                        inSwarm -> "Connected directly on your network"
-                        paired -> "Paired with this TV"
-                        else -> "Select to show an approval code on this TV"
-                    },
+                    lanServerSubtitle(status, inSwarm, paired),
                     color = SwarmMuted,
                     fontSize = 12.sp,
                 )
@@ -442,8 +470,8 @@ private fun LanServerRow(
                 if (inSwarm) Badge("in SWARM", SwarmGreen) else if (paired) Badge("paired", SwarmGreen)
                 if (inSwarm || paired || disconnected) {
                     Badge(
-                        text = connectionStatusLabel(online, disconnected),
-                        color = if (online && !disconnected) SwarmGreen else SwarmMuted,
+                        text = lanServerStatusLabel(status),
+                        color = if (status == LanServerStatus.CONNECTED) SwarmGreen else SwarmMuted,
                     )
                 }
             }
@@ -508,6 +536,63 @@ internal fun connectionStatusLabel(online: Boolean, disconnected: Boolean): Stri
     disconnected -> "disconnected"
     online -> "connected"
     else -> "offline"
+}
+
+/** Where a server on the LAN list stands. "Found on the network" and
+ * "connected" used to share one word, so a server this TV could see but had no
+ * session with was labelled connected right next to a greyed-out Browse
+ * button. */
+internal enum class LanServerStatus { CONNECTED, AVAILABLE, OFFLINE, DISCONNECTED }
+
+internal fun lanServerStatus(found: Boolean, inSession: Boolean, disconnected: Boolean): LanServerStatus = when {
+    disconnected -> LanServerStatus.DISCONNECTED
+    inSession -> LanServerStatus.CONNECTED
+    found -> LanServerStatus.AVAILABLE
+    else -> LanServerStatus.OFFLINE
+}
+
+internal fun lanServerStatusLabel(status: LanServerStatus): String = when (status) {
+    LanServerStatus.CONNECTED -> "connected"
+    LanServerStatus.AVAILABLE -> "available"
+    LanServerStatus.OFFLINE -> "offline"
+    LanServerStatus.DISCONNECTED -> "disconnected"
+}
+
+internal fun lanServerSubtitle(status: LanServerStatus, inSwarm: Boolean, paired: Boolean): String = when {
+    status == LanServerStatus.DISCONNECTED -> "Disconnected from this TV"
+    status == LanServerStatus.CONNECTED ->
+        if (inSwarm) "Connected directly on your network" else "Connected on your network"
+    inSwarm || paired ->
+        if (status == LanServerStatus.AVAILABLE) "Found on your network. Select to connect."
+        else "Not found on your network right now"
+    else -> "Select to show an approval code on this TV"
+}
+
+/** What "Browse library" does. */
+internal sealed interface BrowseAction {
+    /** A server is already connected: open its catalog. */
+    data object OpenCatalog : BrowseAction
+    /** No session yet, but a paired server is right there: connect to it (which then opens the catalog). */
+    data class ConnectFirst(val server: LanServer) : BrowseAction
+    data object Unavailable : BrowseAction
+}
+
+/** Browse used to be enabled only when a session already existed, so a paired
+ * server the TV could plainly see left it greyed out with nothing to press
+ * except a row's Connect button. A found, paired, not-disconnected server is
+ * enough to make it work. */
+internal fun browseAction(
+    hasConnectedServer: Boolean,
+    rows: List<LanServerRowState>,
+    pairedFingerprints: Set<String>,
+    disconnectedFingerprints: Set<String>,
+): BrowseAction {
+    if (hasConnectedServer) return BrowseAction.OpenCatalog
+    fun key(server: LanServer) = server.certFingerprint.trim().lowercase()
+    val candidate = rows.firstOrNull {
+        it.online && key(it.server) in pairedFingerprints && key(it.server) !in disconnectedFingerprints
+    }
+    return candidate?.let { BrowseAction.ConnectFirst(it.server) } ?: BrowseAction.Unavailable
 }
 
 @Composable
@@ -596,6 +681,7 @@ private fun LanServerActionOverlay(
     server: LanServer,
     disconnected: Boolean,
     paired: Boolean,
+    subtitle: String,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
     onForget: () -> Unit,
@@ -614,15 +700,7 @@ private fun LanServerActionOverlay(
             Spacer(Modifier.height(6.dp))
             Text(server.host, color = SwarmMuted, fontSize = 13.sp)
             Spacer(Modifier.height(6.dp))
-            Text(
-                when {
-                    disconnected -> "Disconnected from this TV"
-                    paired -> "Paired with this TV"
-                    else -> "Connected on your network"
-                },
-                color = SwarmMuted,
-                fontSize = 13.sp,
-            )
+            Text(subtitle, color = SwarmMuted, fontSize = 13.sp)
             Spacer(Modifier.height(20.dp))
             Button(
                 onClick = onConnect,

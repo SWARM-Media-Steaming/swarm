@@ -279,13 +279,18 @@ impl LanService {
             }
         });
 
-        let advertisement = advertise(AdvertiseParams {
-            server_fingerprint,
-            peer_port: peer_addr.port(),
-            pairing_port,
-            http_media_port,
-            http_media_tls_port,
-        });
+        let advertisement = if should_advertise(peer_addr) {
+            advertise(AdvertiseParams {
+                server_fingerprint,
+                peer_port: peer_addr.port(),
+                pairing_port,
+                http_media_port,
+                http_media_tls_port,
+            })
+        } else {
+            tracing::debug!(%peer_addr, "peer listener is loopback-only; not advertising on the LAN");
+            None
+        };
         Ok(Self {
             pairing,
             state_db,
@@ -335,6 +340,20 @@ impl Drop for LanService {
             let _ = advertisement.daemon.shutdown();
         }
     }
+}
+
+/// Whether to announce this server on the LAN at all.
+///
+/// A server whose peer listener is bound to loopback cannot be reached from
+/// anywhere else, so announcing it only hands other devices an address that
+/// will never work. In practice this is every test server: each one used to
+/// announce itself on the developer's real network under a fresh random
+/// identity, and dying without a goodbye left its record cached by every
+/// device on the LAN for 75 minutes. Running the suite a few times filled a
+/// TV's server list with dozens of "SWARM Media Server" entries that could not
+/// be connected to.
+fn should_advertise(peer_addr: SocketAddr) -> bool {
+    !peer_addr.ip().is_loopback()
 }
 
 /// Builds the mDNS record advertising this server at `address`.
@@ -751,6 +770,18 @@ mod tests {
             http_media_port: 8546,
             http_media_tls_port: Some(8547),
         }
+    }
+
+    #[test]
+    fn only_a_server_reachable_from_the_lan_is_advertised() {
+        let addr = |s: &str| s.parse::<SocketAddr>().unwrap();
+        // Tests and dev harnesses bind loopback: nothing to announce.
+        assert!(!should_advertise(addr("127.0.0.1:8543")));
+        assert!(!should_advertise(addr("127.0.0.1:0")));
+        assert!(!should_advertise(addr("[::1]:8543")));
+        // A real server listens on every interface, or on a LAN address.
+        assert!(should_advertise(addr("0.0.0.0:8543")));
+        assert!(should_advertise(addr("192.168.0.133:8543")));
     }
 
     /// The whole point of refreshing: the same service must be re-announced

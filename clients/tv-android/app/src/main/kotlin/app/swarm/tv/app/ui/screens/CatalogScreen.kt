@@ -13,23 +13,26 @@
  * No title/subtitle/Back button here on purpose — every pixel is real
  * estate a 10-foot UI is short on, and the remote's own physical Back
  * button (wired via [BackHandler]) already does what an on-screen "Back"
- * button would. Search stays with the catalog, while filters live in the
- * persistent rail on the left so they are always discoverable by D-pad.
+ * button would. Like Netflix, a fixed top bar (search icon, Movies, Shows,
+ * Music) picks which kind of library the page shows, and the first row of
+ * the page is a strip of category tiles ([CategoryRow]) — no filter sidebar.
+ * The search icon opens [SearchOverlay], which drives the same on-screen
+ * keyboard flow the old inline search box did.
  */
 package app.swarm.tv.app.ui.screens
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.focusable
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -37,8 +40,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
@@ -67,7 +69,6 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
@@ -79,15 +80,16 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
-import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.tv.material3.Border
 import androidx.tv.material3.Button
-import androidx.tv.material3.ButtonDefaults
 import androidx.tv.material3.Card
 import androidx.tv.material3.CardDefaults
 import app.swarm.tv.R
@@ -99,6 +101,8 @@ import app.swarm.tv.app.ui.components.swarmActionButtonColors
 import app.swarm.tv.app.ui.PrefetchArtworkRow
 import app.swarm.tv.app.ui.UatTestTags
 import app.swarm.tv.app.ui.theme.SwarmAccent
+import app.swarm.tv.app.ui.theme.SwarmAccentHot
+import app.swarm.tv.app.ui.theme.SwarmBackground
 import app.swarm.tv.app.ui.theme.SwarmLike
 import app.swarm.tv.app.ui.theme.SwarmBorder
 import app.swarm.tv.app.ui.theme.SwarmMuted
@@ -115,18 +119,16 @@ import app.swarm.tv.core.rest.SwarmDevice
 import app.swarm.tv.core.watch.WatchState
 import kotlinx.coroutines.launch
 
-/** Mirrors the media server's own browse-page filter (`media.js`'s `kindFilter`) — same four choices, same meaning. */
+/** The top-bar destinations, in display order. Movies is the landing page. A search is the only thing that spans all three. */
 internal enum class KindFilter(val label: String) {
-    ALL("All"), MOVIES("Movies"), SHOWS("Shows"), MUSIC("Music"),
+    MOVIES("Movies"), SHOWS("Shows"), MUSIC("Music"),
 }
 
 internal data class CatalogBrowseState(
     val searchText: String = "",
     val appliedSearchQuery: String = "",
-    val kindFilter: KindFilter = KindFilter.ALL,
+    val kindFilter: KindFilter = KindFilter.MOVIES,
     val genreFilter: String? = null,
-    val ratingFilter: String? = null,
-    val likedOnly: Boolean = false,
 )
 
 /** Cap on visible assets per Movies/Shows/Music row (root or genre) before a
@@ -140,7 +142,7 @@ private const val MAX_SHELF_ITEMS = 20
  * value meaning "focus this row's Browse All tile". Set by MainActivity when
  * the user entered a [MovieShelfScreen]/[ShowShelfScreen]/[ArtistShelfScreen]
  * via that tile, so pressing Back out of the grid returns focus to the tile
- * that opened it rather than defaulting to the filter rail (#159). No real
+ * that opened it rather than defaulting to the top of the page (#159). No real
  * entry key can collide with it — entry keys are server-derived paths.
  */
 internal const val BROWSE_ALL_TILE_FOCUS_KEY = "__browse_all_tile__"
@@ -266,629 +268,591 @@ internal fun CatalogScreen(
     // writes — null means "no genre filter", matching that server-side
     // filter's "All categories" option.
     var genreFilter by remember { mutableStateOf(initialBrowseState.genreFilter) }
-    var ratingFilter by remember { mutableStateOf(initialBrowseState.ratingFilter) }
-    var likedOnly by remember { mutableStateOf(initialBrowseState.likedOnly) }
-    var filterRailExpanded by remember { mutableStateOf(false) }
-    var filterRailHasFocus by remember { mutableStateOf(false) }
-    // Every return trip to this screen (from a detail screen, a "Browse
-    // All" shelf browsed without picking anything, anywhere) recomposes
-    // CatalogScreen fresh, and Compose can briefly hand initial D-pad focus
-    // to the filter rail — the first focusable thing in layout order —
-    // before content (a restored card, or the normal first-card fallback)
-    // has actually been composed/focused. Real bug seen live: that
-    // transient default landed on the rail and [FilterRail]'s own onExpand
-    // treated it as an intentional LEFT press, so the rail was left
-    // expanded and focused after simply going back. Suppress onExpand
-    // until content has genuinely taken focus at least once per mount;
-    // after that, a real LEFT press should expand it normally.
-    var contentHasSettledFocus by remember { mutableStateOf(false) }
+    var searchOpen by remember { mutableStateOf(false) }
+    var topBarHasFocus by remember { mutableStateOf(false) }
+    // A genre pick (or un-pick) swaps the shelves for the full grid or back,
+    // which recomposes the category row in a new tree and drops D-pad focus
+    // with it. The tile that was clicked is remembered here so the row can
+    // hand focus back to it, letting the user keep browsing categories.
+    var categoryFocusGenre by remember { mutableStateOf<String?>(null) }
+    var topBarWasCovered by remember { mutableStateOf(false) }
     var automaticInitialFocusEnabled by remember { mutableStateOf(true) }
-    var initialSelectionRestorePending by remember(
-        initialFocusMovieKey,
-        initialFocusShowKey,
-        initialFocusArtistKey,
-    ) {
-        mutableStateOf(initialFocusMovieKey != null || initialFocusShowKey != null || initialFocusArtistKey != null)
-    }
-    LaunchedEffect(loading, entries, initialFocusMovieKey, initialFocusShowKey, initialFocusArtistKey) {
-        if (!loading && entries.isEmpty()) initialSelectionRestorePending = false
-    }
     val currentBrowseState by rememberUpdatedState(
-        CatalogBrowseState(searchText, appliedSearchQuery, kindFilter, genreFilter, ratingFilter, likedOnly),
+        CatalogBrowseState(searchText, appliedSearchQuery, kindFilter, genreFilter),
     )
     // Preview teardown on exit is handled by [rememberBrowsePreviewCoordinator].
     DisposableEffect(Unit) {
         onDispose { onBrowseStateChange(currentBrowseState) }
     }
-    val anyFilterActive = kindFilter != KindFilter.ALL || genreFilter != null || ratingFilter != null || likedOnly
-    // Keep navigation from the controls separate from initial/restored focus.
+    // A search spans Movies, Shows and Music together (like Netflix's own),
+    // so while one is applied no single kind or category applies.
+    val searchActive = appliedSearchQuery.isNotBlank()
+    val scopeKind = kindFilter.takeUnless { searchActive }
+    // Keep navigation from the top bar separate from initial/restored focus.
     // A restored requester can remain attached to a card far down the catalog;
-    // once that lazy item is disposed it cannot be used to leave the search
-    // field. This requester is always attached to the first active card.
+    // once that lazy item is disposed it cannot be used to leave the top bar.
+    // This requester is always attached to the first active card.
     val catalogEntryFocusRequester = remember { FocusRequester() }
     val initialCatalogFocusRequester = remember { FocusRequester() }
-    val filterRailFocusRequester = remember { FocusRequester() }
     val watchlistRowFocusRequester = remember { FocusRequester() }
-    val searchFocusRequester = remember { FocusRequester() }
-    var searchBoxFocused by remember { mutableStateOf(false) }
+    val topBarFocusRequester = remember { FocusRequester() }
     val catalogListState = rememberLazyListState()
+    val categoryListState = remember(kindFilter) { LazyListState() }
     val focusNavigationScope = rememberCoroutineScope()
-    val focusManager = LocalFocusManager.current
-    val leaveFilterRail = {
-        // Move while the focused rail item still exists. Collapsing first can
-        // dispose a focused option and leave Compose without a source from
-        // which to perform directional focus search.
-        val moved = focusManager.moveFocus(FocusDirection.Right)
-        filterRailExpanded = false
-        if (!moved) {
-            focusNavigationScope.launch {
-                // Give the narrower rail/content layout one frame, then let
-                // geometric focus search choose a currently visible browse
-                // target. Unlike the old first-card requester, this also
-                // works after the first lazy catalog row has scrolled away.
-                withFrameNanos {}
-                focusManager.moveFocus(FocusDirection.Right)
-            }
-        }
-        Unit
+
+    // Tabs are navigation, not filters: switching drops any search/genre so
+    // each tab always opens on its own unfiltered page, and focus stays on
+    // the tab instead of jumping into the new content.
+    val selectKind = { kind: KindFilter ->
+        automaticInitialFocusEnabled = false
+        kindFilter = kind
+        genreFilter = null
+        searchText = ""
+        appliedSearchQuery = ""
     }
-    BackHandler(enabled = shouldLeaveFilterRailOnBack(filterRailExpanded, filterRailHasFocus)) {
-        leaveFilterRail()
+    val clearSearch = {
+        automaticInitialFocusEnabled = false
+        searchText = ""
+        appliedSearchQuery = ""
     }
-    // Back's second tier: with the rail collapsed, the first press scrolls
-    // up to and focuses the search box rather than leaving the screen
-    // outright — a real ask from live use, since this is a much shorter trip
-    // back to the top than manually scrolling a long catalog. A second press
-    // with the box already focused falls through to the normal exit
-    // (unchanged from before — [onBack] decides between the exit-confirm
-    // modal and returning to the dashboard).
-    BackHandler(
-        enabled = !shouldLeaveFilterRailOnBack(filterRailExpanded, filterRailHasFocus) && !searchBoxFocused,
-    ) {
+    val toggleGenre = { genre: String ->
+        automaticInitialFocusEnabled = false
+        categoryFocusGenre = genre
+        genreFilter = genre.takeUnless { it == genreFilter }
+    }
+
+    // Back is layered: it first closes the search overlay, then (from
+    // anywhere in the content) scrolls to the top and lands on the top bar —
+    // a real ask from live use, since that is a much shorter trip than
+    // scrolling a long catalog back by hand — and only a further press with
+    // the top bar already focused falls through to the normal exit
+    // ([onBack] decides between the exit-confirm modal and returning to the
+    // dashboard).
+    BackHandler(enabled = searchOpen) { searchOpen = false }
+    BackHandler(enabled = !searchOpen && !topBarHasFocus) {
         focusNavigationScope.launch {
             runCatching { catalogListState.scrollToItem(0) }
             withFrameNanos {}
-            runCatching { searchFocusRequester.requestFocus() }
+            runCatching { topBarFocusRequester.requestFocus() }
         }
     }
-    BackHandler(
-        enabled = !shouldLeaveFilterRailOnBack(filterRailExpanded, filterRailHasFocus) && searchBoxFocused,
-        onBack = onBack,
-    )
-    val catalogControls: @Composable ((() -> Unit)?) -> Unit = { onNavigateDown ->
-        CatalogControls(
-            searchText = searchText,
-            onSearchTextChange = { searchText = it },
-            onSubmitSearch = { appliedSearchQuery = searchText },
-            showClear = searchText.isNotEmpty() || appliedSearchQuery.isNotEmpty() || anyFilterActive,
-            onClear = {
-                searchText = ""
-                appliedSearchQuery = ""
-                kindFilter = KindFilter.ALL
-                genreFilter = null
-                ratingFilter = null
-                likedOnly = false
-            },
-            onOpenSwarm = onOpenSwarm,
-            onOpenBuzz = onOpenBuzz,
-            unreachable = unreachable,
-            playbackError = playbackError,
+    BackHandler(enabled = !searchOpen && topBarHasFocus, onBack = onBack)
+
+    // Categories follow the selected tab and are ranked by how many assets
+    // carry each one. They belong to a tab's own page, so a search hides them.
+    val categories = remember(entries, kindFilter) {
+        val scoped = entries.filter { kindMatches(it, kindFilter) }
+        when (kindFilter) {
+            KindFilter.MOVIES -> CatalogGrouping.movies(scoped).map { it.entry.genres }
+            KindFilter.SHOWS -> CatalogGrouping.groupEpisodesByShowSeason(scoped)
+                .map { show -> show.seasons.flatMap { season -> season.episodes.flatMap { it.entry.genres } } }
+            KindFilter.MUSIC -> CatalogGrouping.groupTracksByArtistAlbum(scoped)
+                .map { artist -> artist.albums.flatMap { album -> album.tracks.flatMap { it.entry.genres } } }
+        }.let(::rankCategories)
+    }
+    val showCategoryRow = !searchActive && categories.isNotEmpty()
+    // The category row is item 0 of the page's scrolling list when shown, and
+    // every "index of the Nth section" below is offset by it.
+    val headerCount = if (showCategoryRow) 1 else 0
+    // A rescan can drop the only asset carrying the picked category; without
+    // this the page would stay stuck on an empty filter with nothing to undo it.
+    LaunchedEffect(categories, loading, entries.isEmpty()) {
+        if (!loading && entries.isNotEmpty() && genreFilter != null && categories.none { it.genre == genreFilter }) {
+            genreFilter = null
+        }
+    }
+    val categoryRow: @Composable ((() -> Unit)?) -> Unit = { onNavigateDown ->
+        CategoryRow(
+            categories = categories,
+            selectedGenre = genreFilter,
+            listState = categoryListState,
+            focusGenre = categoryFocusGenre,
+            onFocusHandled = { categoryFocusGenre = null },
+            onSelect = toggleGenre,
             onNavigateDown = onNavigateDown,
-            filterRailFocusRequester = filterRailFocusRequester,
-            searchFocusRequester = searchFocusRequester,
-            onSearchFocusChanged = { searchBoxFocused = it },
         )
     }
 
-    // Genre and rating choices follow the selected media kind. This keeps
-    // the rail concise and prevents it from offering filters that cannot
-    // produce any results.
-    val kindScoped = remember(entries, kindFilter) {
-        if (kindFilter == KindFilter.ALL) entries else entries.filter { kindMatches(it, kindFilter) }
-    }
-    val allGenres = remember(kindScoped) {
-        kindScoped.flatMap { it.entry.genres }.distinct().sortedWith(String.CASE_INSENSITIVE_ORDER)
-    }
-    val allRatings = remember(kindScoped) {
-        kindScoped.mapNotNull { it.entry.rating }.distinct().sortedWith(String.CASE_INSENSITIVE_ORDER)
-    }
-
-    Row(modifier = Modifier.fillMaxSize()) {
-        FilterRail(
-            expanded = filterRailExpanded,
-            // See contentHasSettledFocus's own doc comment above: don't
-            // treat the transient default-focus-on-mount as an intentional
-            // LEFT press until content has focused at least once.
-            onExpand = {
-                filterRailHasFocus = true
-                if (!initialSelectionRestorePending && contentHasSettledFocus) filterRailExpanded = true
-            },
-            firstFocusRequester = filterRailFocusRequester,
-            onLeave = leaveFilterRail,
-            kindFilter = kindFilter,
-            onKindSelect = { kindFilter = it },
-            genres = allGenres,
-            genreFilter = genreFilter,
-            onGenreSelect = { genreFilter = it },
-            ratings = allRatings,
-            ratingFilter = ratingFilter,
-            onRatingSelect = { ratingFilter = it },
-            likedOnly = likedOnly,
-            onLikedOnlyToggle = { likedOnly = !likedOnly },
-            anyFilterActive = anyFilterActive,
-            onClear = {
-                kindFilter = KindFilter.ALL
-                genreFilter = null
-                ratingFilter = null
-                likedOnly = false
-            },
-        )
+    Box(modifier = Modifier.fillMaxSize()) {
         // Small padding here, not the ~40dp this screen used to carry: MainActivity's
         // contentModifier already reserves the TV-safe overscan margin around every
         // non-Player screen, so a second, separate margin here just doubled up as extra
         // dead space on every edge — confirmed live as a persistent empty border around
         // the browse page no matter how this screen's own padding was tuned.
         Column(
-            modifier = Modifier.weight(1f).fillMaxSize()
+            modifier = Modifier.fillMaxSize()
                 .padding(horizontal = 8.dp, vertical = 8.dp)
-                .onFocusChanged { state ->
-                    if (state.hasFocus) {
-                        filterRailHasFocus = false
-                        initialSelectionRestorePending = false
-                        filterRailExpanded = false
-                        contentHasSettledFocus = true
-                    }
-                },
+                // Trap D-pad focus while the search overlay is up — the overlay
+                // is only visually modal otherwise.
+                .focusProperties { canFocus = !searchOpen },
         ) {
-            when {
-                // Same GIF/caption treatment PlayerScreen's own "negotiated,
-                // now waiting" state uses — real feedback from live use:
-                // merging every reachable server's catalog is a real,
-                // sometimes-noticeable network wait too, and there's no
-                // reason it should feel less alive than the player's.
-                loading -> Column(Modifier.fillMaxSize()) {
-                    catalogControls(null)
-                    Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) { SwarmLoadingIndicator() }
-                }
-                entries.isEmpty() -> Column {
-                    catalogControls(null)
-                    Text("Nothing in the catalog yet.", color = SwarmMuted, fontSize = 14.sp)
-                }
-                else -> {
-                    // Same multi-field match the media server's own search box
-                    // uses (`media.js`'s `filteredEntries`) — matches on
-                    // whichever identifying name field is present, so
-                    // searching a show/artist name keeps every episode/track
-                    // under it even though the entry's own title might not
-                    // mention it.
-                    val filtered = remember(entries, appliedSearchQuery, kindFilter, genreFilter, ratingFilter, likedOnly) {
-                        val q = appliedSearchQuery.trim().lowercase()
-                        entries.filter { merged ->
-                            val e = merged.entry
-                            if (!kindMatches(merged, kindFilter)) return@filter false
-                            if (genreFilter != null && !e.genres.contains(genreFilter)) return@filter false
-                            if (ratingFilter != null && e.rating != ratingFilter) return@filter false
-                            if (likedOnly && !isLiked(merged)) return@filter false
-                            if (q.isEmpty()) return@filter true
-                            listOfNotNull(e.scrapedTitle, e.title, e.artist, e.album, e.showTitle).any { it.lowercase().contains(q) }
+            CatalogTopBar(
+                selectedKind = scopeKind,
+                searchActive = searchActive,
+                appliedSearchQuery = appliedSearchQuery,
+                onSelectKind = selectKind,
+                onOpenSearch = { searchOpen = true },
+                onClearSearch = clearSearch,
+                onOpenSwarm = onOpenSwarm,
+                onOpenBuzz = onOpenBuzz,
+                unreachable = unreachable,
+                playbackError = playbackError,
+                focusRequester = topBarFocusRequester,
+                onFocusChanged = { topBarHasFocus = it },
+            )
+            Column(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                when {
+                    // Same GIF/caption treatment PlayerScreen's own "negotiated,
+                    // now waiting" state uses — real feedback from live use:
+                    // merging every reachable server's catalog is a real,
+                    // sometimes-noticeable network wait too, and there's no
+                    // reason it should feel less alive than the player's.
+                    loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { SwarmLoadingIndicator() }
+                    entries.isEmpty() -> Text("Nothing in the catalog yet.", color = SwarmMuted, fontSize = 14.sp)
+                    else -> {
+                        // Same multi-field match the media server's own search box
+                        // uses (`media.js`'s `filteredEntries`) — matches on
+                        // whichever identifying name field is present, so
+                        // searching a show/artist name keeps every episode/track
+                        // under it even though the entry's own title might not
+                        // mention it.
+                        val filtered = remember(entries, appliedSearchQuery, scopeKind, genreFilter) {
+                            val q = appliedSearchQuery.trim().lowercase()
+                            entries.filter { merged ->
+                                val e = merged.entry
+                                if (!kindMatches(merged, scopeKind)) return@filter false
+                                if (genreFilter != null && !e.genres.contains(genreFilter)) return@filter false
+                                if (q.isEmpty()) return@filter true
+                                listOfNotNull(e.scrapedTitle, e.title, e.artist, e.album, e.showTitle).any { it.lowercase().contains(q) }
+                            }
                         }
-                    }
-                    // Highest rated/reviewed first in every shelf this feeds
-                    // (root rows, genre sub-shelves, and the genre-selected
-                    // full grid alike) — real feedback from live use asking
-                    // browse order to actually reflect quality, not just
-                    // alphabetical/insertion order.
-                    val movies = remember(filtered) {
-                        CatalogGrouping.movies(filtered)
-                            .sortedWith(compareByDescending<MergedEntry> { it.ratingScore() }.thenBy { it.entry.displayTitle().lowercase() })
-                    }
-                    val shows = remember(filtered) {
-                        CatalogGrouping.groupEpisodesByShowSeason(filtered)
-                            .sortedWith(compareByDescending<ShowGroup> { it.ratingScore() }.thenBy { it.show.lowercase() })
-                    }
-                    val artists = remember(filtered) {
-                        CatalogGrouping.groupTracksByArtistAlbum(filtered)
-                            .sortedWith(compareByDescending<ArtistGroup> { it.ratingScore() }.thenBy { it.artist.lowercase() })
-                    }
+                        // Highest rated/reviewed first in every shelf this feeds
+                        // (root rows, genre sub-shelves, and the genre-selected
+                        // full grid alike) — real feedback from live use asking
+                        // browse order to actually reflect quality, not just
+                        // alphabetical/insertion order.
+                        val movies = remember(filtered) {
+                            CatalogGrouping.movies(filtered)
+                                .sortedWith(compareByDescending<MergedEntry> { it.ratingScore() }.thenBy { it.entry.displayTitle().lowercase() })
+                        }
+                        val shows = remember(filtered) {
+                            CatalogGrouping.groupEpisodesByShowSeason(filtered)
+                                .sortedWith(compareByDescending<ShowGroup> { it.ratingScore() }.thenBy { it.show.lowercase() })
+                        }
+                        val artists = remember(filtered) {
+                            CatalogGrouping.groupTracksByArtistAlbum(filtered)
+                                .sortedWith(compareByDescending<ArtistGroup> { it.ratingScore() }.thenBy { it.artist.lowercase() })
+                        }
 
-                    // Quick-access rows intentionally use the full currently-visible
-                    // catalog, not a genre/search subset, and disappear while a user
-                    // is actively filtering. That keeps them predictable home rows
-                    // rather than making saved items appear to vanish mid-search.
-                    val showQuickAccess = appliedSearchQuery.isBlank() && kindFilter == KindFilter.ALL &&
-                        genreFilter == null && ratingFilter == null && !likedOnly
-                    val allShows = remember(entries) { CatalogGrouping.groupEpisodesByShowSeason(entries) }
-                    val showByEpisode = remember(allShows) {
-                        buildMap {
-                            for (show in allShows) {
-                                for (season in show.seasons) {
-                                    for (episode in season.episodes) put(episode.entry.fingerprint, show)
+                        // Quick-access rows intentionally use the full currently-visible
+                        // catalog of the selected tab, not a genre/search subset, and
+                        // disappear while a user is actively filtering. That keeps them
+                        // predictable home rows rather than making saved items appear
+                        // to vanish mid-search.
+                        val showQuickAccess = !searchActive && genreFilter == null
+                        val allShows = remember(entries) { CatalogGrouping.groupEpisodesByShowSeason(entries) }
+                        val showByEpisode = remember(allShows) {
+                            buildMap {
+                                for (show in allShows) {
+                                    for (season in show.seasons) {
+                                        for (episode in season.episodes) put(episode.entry.fingerprint, show)
+                                    }
                                 }
                             }
                         }
-                    }
-                    val continueWatching = remember(entries, watchStates, showQuickAccess, showByEpisode) {
-                        if (!showQuickAccess) {
-                            emptyList()
-                        } else {
-                            val inProgress = entries.mapNotNull { entry ->
-                                if (entry.entry.kind == MediaKind.TRACK) return@mapNotNull null
-                                val saved = watchStates[entry.entry.fingerprint] ?: return@mapNotNull null
-                                if (saved.watched || saved.positionSecs <= 0.0) return@mapNotNull null
-                                entry to saved
-                            }
-                            val movieItems = inProgress
-                                .filter { it.first.entry.kind == MediaKind.MOVIE && it.first.entry.extraType == null }
-                                .map { (entry, saved) ->
-                                    QuickAccessItem(
-                                        key = "continue-movie-${entry.entry.fingerprint}",
-                                        title = entry.entry.scrapedTitle ?: entry.entry.title,
-                                        subtitle = "Movie • ${saved.percentComplete()}% watched",
-                                        representative = entry,
-                                        kind = QuickAccessKind.MOVIE,
-                                        progress = saved.progressFraction(),
-                                        updatedAt = saved.updatedAt,
-                                    )
-                                }
-                            val episodeItems = inProgress
-                                .filter { it.first.entry.kind == MediaKind.EPISODE }
-                                .groupBy { (entry, _) -> showByEpisode[entry.entry.fingerprint]?.show ?: entry.entry.showTitle.orEmpty() }
-                                .values
-                                .mapNotNull { candidates -> candidates.maxByOrNull { it.second.updatedAt } }
-                                .map { (entry, saved) ->
-                                    val show = showByEpisode[entry.entry.fingerprint]
-                                    val episodeLabel = listOfNotNull(
-                                        entry.entry.season?.let { "S$it" },
-                                        entry.entry.episode?.let { "E$it" },
-                                    ).joinToString(" ")
-                                    QuickAccessItem(
-                                        key = "continue-episode-${entry.entry.fingerprint}",
-                                        title = show?.show ?: entry.entry.showTitle ?: entry.entry.title,
-                                        subtitle = listOf(episodeLabel, "${saved.percentComplete()}% watched").filter { it.isNotBlank() }.joinToString(" • "),
-                                        representative = entry,
-                                        kind = QuickAccessKind.EPISODE,
-                                        progress = saved.progressFraction(),
-                                        updatedAt = saved.updatedAt,
-                                        show = show,
-                                    )
-                                }
-                            // Last-watched-wins: only the 6 most recently
-                            // touched titles stay on the home row, so an old
-                            // in-progress title doesn't linger indefinitely.
-                            (movieItems + episodeItems).sortedByDescending { it.updatedAt }.take(MAX_CONTINUE_WATCHING)
-                        }
-                    }
-                    val watchlist = remember(entries, allShows, watchStates, watchlistKeys, showQuickAccess) {
-                        if (!showQuickAccess) {
-                            emptyList()
-                        } else {
-                            val movieItems = entries
-                                .filter { entry ->
-                                    entry.entry.kind == MediaKind.MOVIE &&
-                                        entry.entry.extraType == null &&
-                                        WatchlistKeys.movie(entry) in watchlistKeys &&
-                                        watchStates[entry.entry.fingerprint]?.watched != true
-                                }
-                                .map { entry ->
-                                    QuickAccessItem(
-                                        key = WatchlistKeys.movie(entry),
-                                        title = entry.entry.scrapedTitle ?: entry.entry.title,
-                                        subtitle = "Movie",
-                                        representative = entry,
-                                        kind = QuickAccessKind.MOVIE,
-                                    )
-                                }
-                            val showItems = allShows
-                                .filter { show -> WatchlistKeys.show(show) in watchlistKeys && !show.isWatched(watchStates) }
-                                .mapNotNull { show ->
-                                    val representative = CatalogGrouping.previewSeasons(show).firstOrNull()?.episodes?.firstOrNull()
-                                        ?: show.seasons.firstOrNull()?.episodes?.firstOrNull()
-                                        ?: return@mapNotNull null
-                                    val seasons = CatalogGrouping.previewSeasons(show).size
-                                    QuickAccessItem(
-                                        key = WatchlistKeys.show(show),
-                                        title = show.show,
-                                        subtitle = "$seasons season" + if (seasons == 1) "" else "s",
-                                        representative = representative,
-                                        kind = QuickAccessKind.SHOW,
-                                        show = show,
-                                    )
-                                }
-                            (movieItems + showItems).sortedBy { it.title.lowercase() }
-                        }
-                    }
-
-                    // Netflix-style "Top picks in <genre>" sub-shelves, one per
-                    // kind — only while browsing unfiltered-by-genre (once a
-                    // genre is actually picked via the Genre button, `filtered`
-                    // above already reduces every existing shelf to just that
-                    // genre, so a further breakdown would be redundant).
-                    val movieGenreShelves = remember(movies, genreFilter) {
-                        if (genreFilter != null) emptyList() else topGenreShelves(movies) { it }
-                    }
-                    val showGenreShelves = remember(filtered, genreFilter) {
-                        if (genreFilter != null) emptyList() else {
-                            topGenreShelves(filtered.filter { it.entry.kind == MediaKind.EPISODE }) { CatalogGrouping.groupEpisodesByShowSeason(it) }
-                        }
-                    }
-                    val musicGenreShelves = remember(filtered, genreFilter) {
-                        if (genreFilter != null) emptyList() else {
-                            topGenreShelves(filtered.filter { it.entry.kind == MediaKind.TRACK }) { CatalogGrouping.groupTracksByArtistAlbum(it) }
-                        }
-                    }
-
-                    if (movies.isEmpty() && shows.isEmpty() && artists.isEmpty()) {
-                        Column {
-                            catalogControls(null)
-                            Text(
-                                "No matches for the current search/filter.",
-                                color = SwarmMuted,
-                                fontSize = 14.sp,
-                                modifier = Modifier.testTag(UatTestTags.SEARCH_NO_MATCHES),
-                            )
-                        }
-                    } else {
-                        // Which top-level row gets *default* (first-card)
-                        // focus when nothing is being restored — unchanged
-                        // from before, just no longer paired with a single
-                        // externally-owned FocusRequester (each row now
-                        // decides its own target index, see MovieRow/
-                        // ShowShelfRow/ArtistShelfRow's restoreFocusIndex).
-                        val firstSection = when {
-                            continueWatching.isNotEmpty() -> "continue"
-                            watchlist.isNotEmpty() -> "watchlist"
-                            movies.isNotEmpty() -> "movies"
-                            shows.isNotEmpty() -> "shows"
-                            artists.isNotEmpty() -> "music"
-                            else -> null
-                        }
-                        // -1 (not found) becomes null: "nothing to restore in
-                        // this particular row" is exactly the same case as
-                        // "nothing was ever remembered" from the row's own
-                        // point of view. A [BROWSE_ALL_TILE_FOCUS_KEY] sentinel
-                        // instead restores focus to that row's Browse All tile
-                        // (#159) — see [shelfRestoreIndex].
-                        val movieRestoreIndex = remember(movies, initialFocusMovieKey, genreFilter) {
-                            shelfRestoreIndex(movies, initialFocusMovieKey, genreFilter != null) { it.entry.entryKey }
-                        }
-                        val showRestoreIndex = remember(shows, initialFocusShowKey, genreFilter) {
-                            shelfRestoreIndex(shows, initialFocusShowKey, genreFilter != null) { it.show }
-                        }
-                        val artistRestoreIndex = remember(artists, initialFocusArtistKey, genreFilter) {
-                            shelfRestoreIndex(artists, initialFocusArtistKey, genreFilter != null) { it.artist }
-                        }
-
-                        // The horizontal row containing a restored card may
-                        // be well below the viewport and therefore not yet
-                        // composed. Scroll the parent list to that row first;
-                        // the row's own focus-restoration effect then scrolls
-                        // horizontally and focuses the exact selected title.
-                        var nextSectionIndex = 1 // Search controls.
-                        if (continueWatching.isNotEmpty()) nextSectionIndex++
-                        val watchlistSectionIndex = nextSectionIndex.takeIf { watchlist.isNotEmpty() }
-                        if (watchlist.isNotEmpty()) nextSectionIndex++
-                        val movieSectionIndex = nextSectionIndex.takeIf { movies.isNotEmpty() }
-                        if (movies.isNotEmpty()) nextSectionIndex++
-                        nextSectionIndex += movieGenreShelves.size
-                        val showSectionIndex = nextSectionIndex.takeIf { shows.isNotEmpty() }
-                        if (shows.isNotEmpty()) nextSectionIndex++
-                        nextSectionIndex += showGenreShelves.size
-                        val artistSectionIndex = nextSectionIndex.takeIf { artists.isNotEmpty() }
-                        val restoreSectionIndex = when {
-                            movieRestoreIndex != null -> movieSectionIndex
-                            showRestoreIndex != null -> showSectionIndex
-                            artistRestoreIndex != null -> artistSectionIndex
-                            else -> null
-                        }
-                        LaunchedEffect(restoreSectionIndex) {
-                            if (restoreSectionIndex != null) {
-                                filterRailExpanded = false
-                                catalogListState.scrollToItem(restoreSectionIndex)
+                        val continueWatching = remember(entries, watchStates, showQuickAccess, showByEpisode, kindFilter) {
+                            if (!showQuickAccess) {
+                                emptyList()
                             } else {
-                                // A remembered title can disappear after a
-                                // rescan/filter change. In that case allow
-                                // normal rail focus and fall back to the
-                                // first visible content card.
-                                initialSelectionRestorePending = false
+                                val inProgress = entries.mapNotNull { entry ->
+                                    if (entry.entry.kind == MediaKind.TRACK) return@mapNotNull null
+                                    val saved = watchStates[entry.entry.fingerprint] ?: return@mapNotNull null
+                                    if (saved.watched || saved.positionSecs <= 0.0) return@mapNotNull null
+                                    entry to saved
+                                }
+                                val movieItems = inProgress
+                                    .filter { it.first.entry.kind == MediaKind.MOVIE && it.first.entry.extraType == null }
+                                    .map { (entry, saved) ->
+                                        QuickAccessItem(
+                                            key = "continue-movie-${entry.entry.fingerprint}",
+                                            title = entry.entry.scrapedTitle ?: entry.entry.title,
+                                            subtitle = "Movie • ${saved.percentComplete()}% watched",
+                                            representative = entry,
+                                            kind = QuickAccessKind.MOVIE,
+                                            progress = saved.progressFraction(),
+                                            updatedAt = saved.updatedAt,
+                                        )
+                                    }
+                                val episodeItems = inProgress
+                                    .filter { it.first.entry.kind == MediaKind.EPISODE }
+                                    .groupBy { (entry, _) -> showByEpisode[entry.entry.fingerprint]?.show ?: entry.entry.showTitle.orEmpty() }
+                                    .values
+                                    .mapNotNull { candidates -> candidates.maxByOrNull { it.second.updatedAt } }
+                                    .map { (entry, saved) ->
+                                        val show = showByEpisode[entry.entry.fingerprint]
+                                        val episodeLabel = listOfNotNull(
+                                            entry.entry.season?.let { "S$it" },
+                                            entry.entry.episode?.let { "E$it" },
+                                        ).joinToString(" ")
+                                        QuickAccessItem(
+                                            key = "continue-episode-${entry.entry.fingerprint}",
+                                            title = show?.show ?: entry.entry.showTitle ?: entry.entry.title,
+                                            subtitle = listOf(episodeLabel, "${saved.percentComplete()}% watched").filter { it.isNotBlank() }.joinToString(" • "),
+                                            representative = entry,
+                                            kind = QuickAccessKind.EPISODE,
+                                            progress = saved.progressFraction(),
+                                            updatedAt = saved.updatedAt,
+                                            show = show,
+                                        )
+                                    }
+                                // Last-watched-wins: only the 6 most recently
+                                // touched titles stay on the home row, so an old
+                                // in-progress title doesn't linger indefinitely.
+                                (movieItems + episodeItems)
+                                    .filter { quickAccessMatches(it.kind, kindFilter) }
+                                    .sortedByDescending { it.updatedAt }
+                                    .take(MAX_CONTINUE_WATCHING)
                             }
                         }
-                        val restoringSelection = restoreSectionIndex != null
-
-                        // A genre is selected: swap the Netflix-style
-                        // horizontal shelves for the same full-grid "Browse
-                        // all" layout MovieShelfScreen/ShowShelfScreen/
-                        // ArtistShelfScreen already use, one section per
-                        // kind — real feedback from live use. A single
-                        // horizontal row is a fine width for "here's a taste
-                        // of Action movies" browsing, but a bad one for
-                        // "show me everything tagged Action", which is
-                        // exactly what picking a genre is asking for.
-                        if (genreFilter != null) {
-                            GenreFilteredGrid(
-                                movies,
-                                shows,
-                                artists,
-                                artworkUrl,
-                                artistPhotoUrl,
-                                onOpenMovie,
-                                onOpenShow,
-                                onOpenArtist,
-                                isLiked,
-                                firstFocusRequester = initialCatalogFocusRequester,
-                                firstEntryFocusRequester = catalogEntryFocusRequester,
-                                requestInitialFocus = automaticInitialFocusEnabled && !filterRailExpanded,
-                                initialFocusMovieKey = initialFocusMovieKey,
-                                initialFocusShowKey = initialFocusShowKey,
-                                initialFocusArtistKey = initialFocusArtistKey,
-                                header = catalogControls,
-                            )
-                        } else {
-                            val navigateToFirstCatalogEntry = {
-                                automaticInitialFocusEnabled = false
-                                focusNavigationScope.launch {
-                                    // Item 0 is the controls. Scrolling item 1
-                                    // into composition before requesting focus
-                                    // prevents the read-only text field from
-                                    // swallowing DOWN when the row was disposed.
-                                    runCatching { catalogListState.scrollToItem(1) }
-                                    withFrameNanos {}
-                                    runCatching { catalogEntryFocusRequester.requestFocus() }
-                                }
-                                Unit
+                        val watchlist = remember(entries, allShows, watchStates, watchlistKeys, showQuickAccess, kindFilter) {
+                            if (!showQuickAccess) {
+                                emptyList()
+                            } else {
+                                val movieItems = entries
+                                    .filter { entry ->
+                                        entry.entry.kind == MediaKind.MOVIE &&
+                                            entry.entry.extraType == null &&
+                                            WatchlistKeys.movie(entry) in watchlistKeys &&
+                                            watchStates[entry.entry.fingerprint]?.watched != true
+                                    }
+                                    .map { entry ->
+                                        QuickAccessItem(
+                                            key = WatchlistKeys.movie(entry),
+                                            title = entry.entry.scrapedTitle ?: entry.entry.title,
+                                            subtitle = "Movie",
+                                            representative = entry,
+                                            kind = QuickAccessKind.MOVIE,
+                                        )
+                                    }
+                                val showItems = allShows
+                                    .filter { show -> WatchlistKeys.show(show) in watchlistKeys && !show.isWatched(watchStates) }
+                                    .mapNotNull { show ->
+                                        val representative = CatalogGrouping.previewSeasons(show).firstOrNull()?.episodes?.firstOrNull()
+                                            ?: show.seasons.firstOrNull()?.episodes?.firstOrNull()
+                                            ?: return@mapNotNull null
+                                        val seasons = CatalogGrouping.previewSeasons(show).size
+                                        QuickAccessItem(
+                                            key = WatchlistKeys.show(show),
+                                            title = show.show,
+                                            subtitle = "$seasons season" + if (seasons == 1) "" else "s",
+                                            representative = representative,
+                                            kind = QuickAccessKind.SHOW,
+                                            show = show,
+                                        )
+                                    }
+                                (movieItems + showItems).filter { quickAccessMatches(it.kind, kindFilter) }.sortedBy { it.title.lowercase() }
                             }
-                            LazyColumn(
-                                state = catalogListState,
-                                modifier = Modifier.fillMaxSize(),
-                                verticalArrangement = Arrangement.spacedBy(28.dp),
-                            ) {
-                                item(key = "catalog-controls", contentType = "controls") {
-                                    catalogControls(navigateToFirstCatalogEntry)
+                        }
+
+                        // Netflix-style "Top picks in <genre>" sub-shelves, one per
+                        // kind — only while browsing unfiltered-by-genre (once a
+                        // genre is actually picked via the Genre button, `filtered`
+                        // above already reduces every existing shelf to just that
+                        // genre, so a further breakdown would be redundant).
+                        val movieGenreShelves = remember(movies, genreFilter) {
+                            if (genreFilter != null) emptyList() else topGenreShelves(movies) { it }
+                        }
+                        val showGenreShelves = remember(filtered, genreFilter) {
+                            if (genreFilter != null) emptyList() else {
+                                topGenreShelves(filtered.filter { it.entry.kind == MediaKind.EPISODE }) { CatalogGrouping.groupEpisodesByShowSeason(it) }
+                            }
+                        }
+                        val musicGenreShelves = remember(filtered, genreFilter) {
+                            if (genreFilter != null) emptyList() else {
+                                topGenreShelves(filtered.filter { it.entry.kind == MediaKind.TRACK }) { CatalogGrouping.groupTracksByArtistAlbum(it) }
+                            }
+                        }
+
+                        if (movies.isEmpty() && shows.isEmpty() && artists.isEmpty()) {
+                            Column {
+                                // Keep the category row so a picked category can still be undone.
+                                if (showCategoryRow) {
+                                    categoryRow(null)
+                                    Spacer(Modifier.height(20.dp))
                                 }
-                                if (continueWatching.isNotEmpty()) {
-                                    item(key = "continue-watching", contentType = "quick-access") {
-                                        QuickAccessRow(
-                                            title = "Continue Watching",
-                                            items = continueWatching,
-                                            artworkUrl = artworkUrl,
-                                            onClick = { item -> onPlayPaused(item.representative) },
-                                            isLiked = isLiked,
-                                            isDefaultFocusRow = firstSection == "continue",
-                                            defaultFocusRequester = initialCatalogFocusRequester.takeIf { !restoringSelection && firstSection == "continue" },
-                                            firstCardFocusRequester = catalogEntryFocusRequester.takeIf { firstSection == "continue" },
-                                            onNavigateDown = watchlistSectionIndex?.let { sectionIndex ->
-                                                {
-                                                    automaticInitialFocusEnabled = false
-                                                    focusNavigationScope.launch {
-                                                        catalogListState.scrollToItem(sectionIndex)
-                                                        withFrameNanos {}
-                                                        runCatching { watchlistRowFocusRequester.requestFocus() }
+                                if (searchActive || genreFilter != null) {
+                                    Text(
+                                        "No matches for the current search/filter.",
+                                        color = SwarmMuted,
+                                        fontSize = 14.sp,
+                                        modifier = Modifier.testTag(UatTestTags.SEARCH_NO_MATCHES),
+                                    )
+                                } else {
+                                    Text("No ${kindFilter.label.lowercase()} in the catalog yet.", color = SwarmMuted, fontSize = 14.sp)
+                                }
+                            }
+                        } else {
+                            // Which top-level row gets *default* (first-card)
+                            // focus when nothing is being restored — unchanged
+                            // from before, just no longer paired with a single
+                            // externally-owned FocusRequester (each row now
+                            // decides its own target index, see MovieRow/
+                            // ShowShelfRow/ArtistShelfRow's restoreFocusIndex).
+                            val firstSection = when {
+                                continueWatching.isNotEmpty() -> "continue"
+                                watchlist.isNotEmpty() -> "watchlist"
+                                movies.isNotEmpty() -> "movies"
+                                shows.isNotEmpty() -> "shows"
+                                artists.isNotEmpty() -> "music"
+                                else -> null
+                            }
+                            // -1 (not found) becomes null: "nothing to restore in
+                            // this particular row" is exactly the same case as
+                            // "nothing was ever remembered" from the row's own
+                            // point of view. A [BROWSE_ALL_TILE_FOCUS_KEY] sentinel
+                            // instead restores focus to that row's Browse All tile
+                            // (#159) — see [shelfRestoreIndex].
+                            val movieRestoreIndex = remember(movies, initialFocusMovieKey, genreFilter) {
+                                shelfRestoreIndex(movies, initialFocusMovieKey, genreFilter != null) { it.entry.entryKey }
+                            }
+                            val showRestoreIndex = remember(shows, initialFocusShowKey, genreFilter) {
+                                shelfRestoreIndex(shows, initialFocusShowKey, genreFilter != null) { it.show }
+                            }
+                            val artistRestoreIndex = remember(artists, initialFocusArtistKey, genreFilter) {
+                                shelfRestoreIndex(artists, initialFocusArtistKey, genreFilter != null) { it.artist }
+                            }
+
+                            // The horizontal row containing a restored card may
+                            // be well below the viewport and therefore not yet
+                            // composed. Scroll the parent list to that row first;
+                            // the row's own focus-restoration effect then scrolls
+                            // horizontally and focuses the exact selected title.
+                            var nextSectionIndex = headerCount
+                            if (continueWatching.isNotEmpty()) nextSectionIndex++
+                            val watchlistSectionIndex = nextSectionIndex.takeIf { watchlist.isNotEmpty() }
+                            if (watchlist.isNotEmpty()) nextSectionIndex++
+                            val movieSectionIndex = nextSectionIndex.takeIf { movies.isNotEmpty() }
+                            if (movies.isNotEmpty()) nextSectionIndex++
+                            nextSectionIndex += movieGenreShelves.size
+                            val showSectionIndex = nextSectionIndex.takeIf { shows.isNotEmpty() }
+                            if (shows.isNotEmpty()) nextSectionIndex++
+                            nextSectionIndex += showGenreShelves.size
+                            val artistSectionIndex = nextSectionIndex.takeIf { artists.isNotEmpty() }
+                            val restoreSectionIndex = when {
+                                movieRestoreIndex != null -> movieSectionIndex
+                                showRestoreIndex != null -> showSectionIndex
+                                artistRestoreIndex != null -> artistSectionIndex
+                                else -> null
+                            }
+                            LaunchedEffect(restoreSectionIndex) {
+                                if (restoreSectionIndex != null) {
+                                    catalogListState.scrollToItem(restoreSectionIndex)
+                                }
+                                // Otherwise a remembered title disappeared after a
+                                // rescan/filter change: fall back to the first
+                                // visible content card.
+                            }
+                            val restoringSelection = restoreSectionIndex != null
+
+                            // A genre is selected: swap the Netflix-style
+                            // horizontal shelves for the same full-grid "Browse
+                            // all" layout MovieShelfScreen/ShowShelfScreen/
+                            // ArtistShelfScreen already use, one section per
+                            // kind — real feedback from live use. A single
+                            // horizontal row is a fine width for "here's a taste
+                            // of Action movies" browsing, but a bad one for
+                            // "show me everything tagged Action", which is
+                            // exactly what picking a genre is asking for.
+                            if (genreFilter != null) {
+                                GenreFilteredGrid(
+                                    movies,
+                                    shows,
+                                    artists,
+                                    artworkUrl,
+                                    artistPhotoUrl,
+                                    onOpenMovie,
+                                    onOpenShow,
+                                    onOpenArtist,
+                                    isLiked,
+                                    firstFocusRequester = initialCatalogFocusRequester,
+                                    firstEntryFocusRequester = catalogEntryFocusRequester,
+                                    requestInitialFocus = automaticInitialFocusEnabled,
+                                    initialFocusMovieKey = initialFocusMovieKey,
+                                    initialFocusShowKey = initialFocusShowKey,
+                                    initialFocusArtistKey = initialFocusArtistKey,
+                                    hasHeader = showCategoryRow,
+                                    header = categoryRow,
+                                )
+                            } else {
+                                val navigateToFirstCatalogEntry = {
+                                    automaticInitialFocusEnabled = false
+                                    focusNavigationScope.launch {
+                                        // Item 0 is the category row. Scrolling the
+                                        // first content row into composition before
+                                        // requesting focus keeps DOWN working when
+                                        // that row was disposed off-screen.
+                                        runCatching { catalogListState.scrollToItem(headerCount) }
+                                        withFrameNanos {}
+                                        runCatching { catalogEntryFocusRequester.requestFocus() }
+                                    }
+                                    Unit
+                                }
+                                LazyColumn(
+                                    state = catalogListState,
+                                    modifier = Modifier.fillMaxSize(),
+                                    verticalArrangement = Arrangement.spacedBy(28.dp),
+                                ) {
+                                    if (showCategoryRow) {
+                                        item(key = "catalog-categories", contentType = "categories") {
+                                            categoryRow(navigateToFirstCatalogEntry)
+                                        }
+                                    }
+                                    if (continueWatching.isNotEmpty()) {
+                                        item(key = "continue-watching", contentType = "quick-access") {
+                                            QuickAccessRow(
+                                                title = "Continue Watching",
+                                                items = continueWatching,
+                                                artworkUrl = artworkUrl,
+                                                onClick = { item -> onPlayPaused(item.representative) },
+                                                isLiked = isLiked,
+                                                isDefaultFocusRow = firstSection == "continue",
+                                                defaultFocusRequester = initialCatalogFocusRequester.takeIf { !restoringSelection && firstSection == "continue" },
+                                                firstCardFocusRequester = catalogEntryFocusRequester.takeIf { firstSection == "continue" },
+                                                onNavigateDown = watchlistSectionIndex?.let { sectionIndex ->
+                                                    {
+                                                        automaticInitialFocusEnabled = false
+                                                        focusNavigationScope.launch {
+                                                            catalogListState.scrollToItem(sectionIndex)
+                                                            withFrameNanos {}
+                                                            runCatching { watchlistRowFocusRequester.requestFocus() }
+                                                        }
                                                     }
-                                                }
-                                            },
-                                            requestInitialFocus = automaticInitialFocusEnabled && !filterRailExpanded,
-                                        )
+                                                },
+                                                requestInitialFocus = automaticInitialFocusEnabled,
+                                            )
+                                        }
                                     }
-                                }
-                                if (watchlist.isNotEmpty()) {
-                                    item(key = "watchlist", contentType = "quick-access") {
-                                        QuickAccessRow(
-                                            title = "Watchlist",
-                                            items = watchlist,
-                                            artworkUrl = artworkUrl,
-                                            onClick = { item ->
-                                                if (item.kind == QuickAccessKind.SHOW) item.show?.let(onOpenShow)
-                                                else onOpenMovie(item.representative)
-                                            },
-                                            isLiked = isLiked,
-                                            isDefaultFocusRow = firstSection == "watchlist",
-                                            defaultFocusRequester = initialCatalogFocusRequester.takeIf { !restoringSelection && firstSection == "watchlist" },
-                                            firstCardFocusRequester = catalogEntryFocusRequester.takeIf { firstSection == "watchlist" }
-                                                ?: watchlistRowFocusRequester,
-                                            requestInitialFocus = automaticInitialFocusEnabled && !filterRailExpanded,
-                                        )
+                                    if (watchlist.isNotEmpty()) {
+                                        item(key = "watchlist", contentType = "quick-access") {
+                                            QuickAccessRow(
+                                                title = "Watchlist",
+                                                items = watchlist,
+                                                artworkUrl = artworkUrl,
+                                                onClick = { item ->
+                                                    if (item.kind == QuickAccessKind.SHOW) item.show?.let(onOpenShow)
+                                                    else onOpenMovie(item.representative)
+                                                },
+                                                isLiked = isLiked,
+                                                isDefaultFocusRow = firstSection == "watchlist",
+                                                defaultFocusRequester = initialCatalogFocusRequester.takeIf { !restoringSelection && firstSection == "watchlist" },
+                                                firstCardFocusRequester = catalogEntryFocusRequester.takeIf { firstSection == "watchlist" }
+                                                    ?: watchlistRowFocusRequester,
+                                                requestInitialFocus = automaticInitialFocusEnabled,
+                                            )
+                                        }
                                     }
-                                }
-                                if (movies.isNotEmpty()) {
-                                    item {
+                                    if (movies.isNotEmpty()) {
+                                        item {
+                                            MovieRow(
+                                                "Movies", movies, artworkUrl, onOpenMovie, onOpenMovieShelf, isTopLevel = true, movieRestoreIndex,
+                                                isDefaultFocusRow = firstSection == "movies",
+                                                isLiked = isLiked,
+                                                defaultFocusRequester = initialCatalogFocusRequester.takeIf {
+                                                    movieRestoreIndex != null || (!restoringSelection && firstSection == "movies")
+                                                },
+                                                firstCardFocusRequester = catalogEntryFocusRequester.takeIf { firstSection == "movies" },
+                                                requestInitialFocus = automaticInitialFocusEnabled,
+                                                preview = preview,
+                                                expandedPreviewEntryKey = expandedPreviewEntryKey,
+                                                onPreviewFocusChanged = previewFocusChanged,
+                                                onPreviewFinished = previewFinished,
+                                            )
+                                        }
+                                    }
+                                    items(movieGenreShelves, key = { "movie-genre-${it.first}" }) { (genre, genreMovies) ->
                                         MovieRow(
-                                            "Movies", movies, artworkUrl, onOpenMovie, onOpenMovieShelf, isTopLevel = true, movieRestoreIndex,
-                                            isDefaultFocusRow = firstSection == "movies",
+                                            genre,
+                                            genreMovies,
+                                            artworkUrl,
+                                            onOpenMovie,
+                                            onOpenShelf = onOpenMovieShelf,
+                                            isTopLevel = false,
+                                            restoreFocusIndex = null,
+                                            isDefaultFocusRow = false,
                                             isLiked = isLiked,
-                                            defaultFocusRequester = initialCatalogFocusRequester.takeIf {
-                                                movieRestoreIndex != null || (!restoringSelection && firstSection == "movies")
-                                            },
-                                            firstCardFocusRequester = catalogEntryFocusRequester.takeIf { firstSection == "movies" },
-                                            requestInitialFocus = automaticInitialFocusEnabled && !filterRailExpanded,
                                             preview = preview,
                                             expandedPreviewEntryKey = expandedPreviewEntryKey,
                                             onPreviewFocusChanged = previewFocusChanged,
                                             onPreviewFinished = previewFinished,
                                         )
                                     }
-                                }
-                                items(movieGenreShelves, key = { "movie-genre-${it.first}" }) { (genre, genreMovies) ->
-                                    MovieRow(
-                                        genre,
-                                        genreMovies,
-                                        artworkUrl,
-                                        onOpenMovie,
-                                        onOpenShelf = onOpenMovieShelf,
-                                        isTopLevel = false,
-                                        restoreFocusIndex = null,
-                                        isDefaultFocusRow = false,
-                                        isLiked = isLiked,
-                                        preview = preview,
-                                        expandedPreviewEntryKey = expandedPreviewEntryKey,
-                                        onPreviewFocusChanged = previewFocusChanged,
-                                        onPreviewFinished = previewFinished,
-                                    )
-                                }
-                                if (shows.isNotEmpty()) {
-                                    item {
+                                    if (shows.isNotEmpty()) {
+                                        item {
+                                            ShowShelfRow(
+                                                "Shows", shows, artworkUrl, onOpenShowShelf, onOpenShow, isTopLevel = true, showRestoreIndex,
+                                                isDefaultFocusRow = firstSection == "shows",
+                                                defaultFocusRequester = initialCatalogFocusRequester.takeIf {
+                                                    showRestoreIndex != null || (!restoringSelection && firstSection == "shows")
+                                                },
+                                                firstCardFocusRequester = catalogEntryFocusRequester.takeIf { firstSection == "shows" },
+                                                requestInitialFocus = automaticInitialFocusEnabled,
+                                                preview = preview,
+                                                expandedPreviewEntryKey = expandedPreviewEntryKey,
+                                                onPreviewFocusChanged = previewFocusChanged,
+                                                onPreviewFinished = previewFinished,
+                                            )
+                                        }
+                                    }
+                                    items(showGenreShelves, key = { "show-genre-${it.first}" }) { (genre, genreShows) ->
                                         ShowShelfRow(
-                                            "Shows", shows, artworkUrl, onOpenShowShelf, onOpenShow, isTopLevel = true, showRestoreIndex,
-                                            isDefaultFocusRow = firstSection == "shows",
-                                            defaultFocusRequester = initialCatalogFocusRequester.takeIf {
-                                                showRestoreIndex != null || (!restoringSelection && firstSection == "shows")
-                                            },
-                                            firstCardFocusRequester = catalogEntryFocusRequester.takeIf { firstSection == "shows" },
-                                            requestInitialFocus = automaticInitialFocusEnabled && !filterRailExpanded,
+                                            genre,
+                                            genreShows,
+                                            artworkUrl,
+                                            onOpenShowShelf = onOpenShowShelf,
+                                            onOpenShow = onOpenShow,
+                                            isTopLevel = false,
+                                            restoreFocusIndex = null,
+                                            isDefaultFocusRow = false,
                                             preview = preview,
                                             expandedPreviewEntryKey = expandedPreviewEntryKey,
                                             onPreviewFocusChanged = previewFocusChanged,
                                             onPreviewFinished = previewFinished,
                                         )
                                     }
-                                }
-                                items(showGenreShelves, key = { "show-genre-${it.first}" }) { (genre, genreShows) ->
-                                    ShowShelfRow(
-                                        genre,
-                                        genreShows,
-                                        artworkUrl,
-                                        onOpenShowShelf = onOpenShowShelf,
-                                        onOpenShow = onOpenShow,
-                                        isTopLevel = false,
-                                        restoreFocusIndex = null,
-                                        isDefaultFocusRow = false,
-                                        preview = preview,
-                                        expandedPreviewEntryKey = expandedPreviewEntryKey,
-                                        onPreviewFocusChanged = previewFocusChanged,
-                                        onPreviewFinished = previewFinished,
-                                    )
-                                }
-                                if (artists.isNotEmpty()) {
-                                    item {
+                                    if (artists.isNotEmpty()) {
+                                        item {
+                                            ArtistShelfRow(
+                                                "Music", artists, artworkUrl, artistPhotoUrl, onOpenArtistShelf, onOpenArtist, isTopLevel = true, artistRestoreIndex,
+                                                isDefaultFocusRow = firstSection == "music",
+                                                defaultFocusRequester = initialCatalogFocusRequester.takeIf {
+                                                    artistRestoreIndex != null || (!restoringSelection && firstSection == "music")
+                                                },
+                                                firstCardFocusRequester = catalogEntryFocusRequester.takeIf { firstSection == "music" },
+                                                requestInitialFocus = automaticInitialFocusEnabled,
+                                                preview = preview,
+                                                expandedPreviewEntryKey = expandedPreviewEntryKey,
+                                                onPreviewFocusChanged = previewFocusChanged,
+                                                onPreviewFinished = previewFinished,
+                                            )
+                                        }
+                                    }
+                                    items(musicGenreShelves, key = { "music-genre-${it.first}" }) { (genre, genreArtists) ->
                                         ArtistShelfRow(
-                                            "Music", artists, artworkUrl, artistPhotoUrl, onOpenArtistShelf, onOpenArtist, isTopLevel = true, artistRestoreIndex,
-                                            isDefaultFocusRow = firstSection == "music",
-                                            defaultFocusRequester = initialCatalogFocusRequester.takeIf {
-                                                artistRestoreIndex != null || (!restoringSelection && firstSection == "music")
-                                            },
-                                            firstCardFocusRequester = catalogEntryFocusRequester.takeIf { firstSection == "music" },
-                                            requestInitialFocus = automaticInitialFocusEnabled && !filterRailExpanded,
+                                            genre,
+                                            genreArtists,
+                                            artworkUrl,
+                                            artistPhotoUrl,
+                                            onOpenArtistShelf = onOpenArtistShelf,
+                                            onOpenArtist = onOpenArtist,
+                                            isTopLevel = false,
+                                            restoreFocusIndex = null,
+                                            isDefaultFocusRow = false,
                                             preview = preview,
                                             expandedPreviewEntryKey = expandedPreviewEntryKey,
                                             onPreviewFocusChanged = previewFocusChanged,
                                             onPreviewFinished = previewFinished,
                                         )
                                     }
-                                }
-                                items(musicGenreShelves, key = { "music-genre-${it.first}" }) { (genre, genreArtists) ->
-                                    ArtistShelfRow(
-                                        genre,
-                                        genreArtists,
-                                        artworkUrl,
-                                        artistPhotoUrl,
-                                        onOpenArtistShelf = onOpenArtistShelf,
-                                        onOpenArtist = onOpenArtist,
-                                        isTopLevel = false,
-                                        restoreFocusIndex = null,
-                                        isDefaultFocusRow = false,
-                                        preview = preview,
-                                        expandedPreviewEntryKey = expandedPreviewEntryKey,
-                                        onPreviewFocusChanged = previewFocusChanged,
-                                        onPreviewFinished = previewFinished,
-                                    )
                                 }
                             }
                         }
@@ -896,60 +860,123 @@ internal fun CatalogScreen(
                 }
             }
         }
+        if (searchOpen) {
+            SearchOverlay(
+                text = searchText,
+                onTextChange = { searchText = it },
+                onSubmit = {
+                    val query = searchText.trim()
+                    automaticInitialFocusEnabled = false
+                    searchText = query
+                    appliedSearchQuery = query
+                    genreFilter = null
+                    searchOpen = false
+                },
+                onDismiss = { searchOpen = false },
+            )
+        }
+    }
+    // Hand focus back to the top bar once the overlay is gone — the Column
+    // behind it is un-focusable while it is up, so focus was dropped.
+    LaunchedEffect(searchOpen) {
+        if (!searchOpen && topBarWasCovered) {
+            withFrameNanos {}
+            runCatching { topBarFocusRequester.requestFocus() }
+        }
+        topBarWasCovered = searchOpen
     }
 }
 
-internal fun shouldLeaveFilterRailOnBack(expanded: Boolean, hasFocus: Boolean): Boolean = expanded || hasFocus
+/** Continue Watching / Watchlist follow the selected tab: Movies shows movies, Shows shows episodes and series, Music has neither. */
+private fun quickAccessMatches(kind: QuickAccessKind, filter: KindFilter): Boolean = when (filter) {
+    KindFilter.MOVIES -> kind == QuickAccessKind.MOVIE
+    KindFilter.SHOWS -> kind == QuickAccessKind.EPISODE || kind == QuickAccessKind.SHOW
+    KindFilter.MUSIC -> false
+}
 
-private fun kindMatches(entry: MergedEntry, filter: KindFilter): Boolean = when (filter) {
-    KindFilter.ALL -> true
+/** A search (`kind == null`) spans every kind; otherwise the tab's own kind. */
+private fun kindMatches(entry: MergedEntry, filter: KindFilter?): Boolean = when (filter) {
+    null -> true
     KindFilter.MOVIES -> entry.entry.kind == MediaKind.MOVIE && entry.entry.extraType == null
     KindFilter.SHOWS -> entry.entry.kind == MediaKind.EPISODE
     KindFilter.MUSIC -> entry.entry.kind == MediaKind.TRACK
 }
 
+/**
+ * The fixed Netflix-style top bar: search icon, then Movies / Shows / Music
+ * (in that order), with the Buzz and SWARM settings buttons pinned right.
+ * The three destinations are deliberately *not* [swarmActionButtonColors]
+ * buttons — see [TopNavButton] for why they read as translucent boxes.
+ * [selectedKind] is null while a search is applied, since a search spans all
+ * three kinds.
+ */
 @Composable
-private fun CatalogControls(
-    searchText: String,
-    onSearchTextChange: (String) -> Unit,
-    onSubmitSearch: () -> Unit,
-    showClear: Boolean,
-    onClear: () -> Unit,
+private fun CatalogTopBar(
+    selectedKind: KindFilter?,
+    searchActive: Boolean,
+    appliedSearchQuery: String,
+    onSelectKind: (KindFilter) -> Unit,
+    onOpenSearch: () -> Unit,
+    onClearSearch: () -> Unit,
     onOpenSwarm: () -> Unit,
     onOpenBuzz: () -> Unit,
     unreachable: List<SwarmDevice>,
     playbackError: String?,
-    onNavigateDown: (() -> Unit)?,
-    filterRailFocusRequester: FocusRequester,
-    searchFocusRequester: FocusRequester,
-    onSearchFocusChanged: (Boolean) -> Unit,
+    focusRequester: FocusRequester,
+    onFocusChanged: (Boolean) -> Unit,
 ) {
-    Column {
+    Column(
+        modifier = Modifier.fillMaxWidth()
+            .onFocusChanged { onFocusChanged(it.hasFocus) }
+            .testTag(UatTestTags.FILTER_RAIL),
+    ) {
         Row(
-            modifier = Modifier.fillMaxWidth()
-                .focusProperties { left = filterRailFocusRequester }
-                .onPreviewKeyEvent { event ->
-                    if (onNavigateDown != null && event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown) {
-                        onNavigateDown()
-                        true
-                    } else {
-                        false
-                    }
-                },
+            modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            TvOutlinedTextField(
-                value = searchText,
-                onValueChange = onSearchTextChange,
-                placeholder = { Text("Search title, artist, show…", color = SwarmMuted) },
-                colors = searchFieldColors(),
-                onSubmit = onSubmitSearch,
-                modifier = Modifier.weight(1f)
-                    .focusRequester(searchFocusRequester)
-                    .onFocusChanged { onSearchFocusChanged(it.isFocused) }
-                    .testTag(UatTestTags.SEARCH_FIELD),
-            )
+            // "Home" of the bar: the selected tab, or the search icon while a
+            // search is showing results. Back lands here.
+            TopNavButton(
+                onClick = onOpenSearch,
+                selected = searchActive,
+                focusRequester = focusRequester.takeIf { selectedKind == null },
+                testTag = UatTestTags.SEARCH_BUTTON,
+            ) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_search),
+                    contentDescription = "Search",
+                    tint = if (searchActive) SwarmText else SwarmMuted,
+                    modifier = Modifier.size(22.dp),
+                )
+            }
+            for (kind in KindFilter.entries) {
+                val isSelected = kind == selectedKind
+                TopNavButton(
+                    onClick = { onSelectKind(kind) },
+                    selected = isSelected,
+                    focusRequester = focusRequester.takeIf { isSelected },
+                    testTag = UatTestTags.FILTER_KIND_PREFIX + kind.name,
+                ) {
+                    Text(
+                        kind.label,
+                        color = if (isSelected) SwarmText else SwarmMuted,
+                        fontSize = 16.sp,
+                        fontWeight = if (isSelected) FontWeight.Black else FontWeight.SemiBold,
+                        maxLines = 1,
+                    )
+                }
+            }
+            if (searchActive) {
+                Button(
+                    onClick = onClearSearch,
+                    colors = swarmActionButtonColors(),
+                    modifier = Modifier.widthIn(max = 260.dp).testTag(UatTestTags.SEARCH_CLEAR_BUTTON),
+                ) {
+                    Text("Clear \u201c$appliedSearchQuery\u201d", fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            Spacer(Modifier.weight(1f))
             Button(onClick = onOpenBuzz, colors = swarmActionButtonColors()) {
                 Text("Ask Buzz", fontSize = 13.sp)
             }
@@ -965,15 +992,6 @@ private fun CatalogControls(
                     modifier = Modifier.size(22.dp),
                 )
             }
-            if (showClear) {
-                Button(
-                    onClick = onClear,
-                    colors = swarmActionButtonColors(),
-                    modifier = Modifier.testTag(UatTestTags.SEARCH_CLEAR_BUTTON),
-                ) {
-                    Text("Clear", fontSize = 13.sp)
-                }
-            }
         }
         if (unreachable.isNotEmpty()) {
             Spacer(Modifier.height(10.dp))
@@ -988,6 +1006,210 @@ private fun CatalogControls(
             Text(playbackError, color = SwarmAccent, fontSize = 12.sp)
         }
         Spacer(Modifier.height(16.dp))
+    }
+}
+
+private val TOP_NAV_SHAPE = RoundedCornerShape(4.dp)
+
+/**
+ * A top-bar destination: a squared-off (4dp corners, not the pill the action
+ * buttons use), see-through box. At rest it is transparent with a hairline
+ * border; the selected destination gets a faint light wash and full-strength
+ * text; focus adds a stronger wash and an accent border. Every interaction
+ * state is set explicitly rather than left to tv-material3's defaults.
+ */
+@Composable
+private fun TopNavButton(
+    onClick: () -> Unit,
+    selected: Boolean,
+    focusRequester: FocusRequester?,
+    testTag: String,
+    content: @Composable () -> Unit,
+) {
+    Card(
+        onClick = onClick,
+        colors = CardDefaults.colors(
+            containerColor = if (selected) SwarmText.copy(alpha = 0.12f) else Color.Transparent,
+            contentColor = SwarmText,
+            focusedContainerColor = SwarmText.copy(alpha = 0.2f),
+            focusedContentColor = SwarmText,
+            pressedContainerColor = SwarmText.copy(alpha = 0.3f),
+            pressedContentColor = SwarmText,
+        ),
+        scale = CardDefaults.scale(scale = 1f, focusedScale = 1f, pressedScale = 0.98f),
+        border = CardDefaults.border(
+            border = Border(BorderStroke(1.dp, if (selected) SwarmText.copy(alpha = 0.55f) else SwarmBorder.copy(alpha = 0.6f)), shape = TOP_NAV_SHAPE),
+            focusedBorder = Border(BorderStroke(2.dp, SwarmAccent), shape = TOP_NAV_SHAPE),
+            pressedBorder = Border(BorderStroke(2.dp, SwarmAccentHot), shape = TOP_NAV_SHAPE),
+        ),
+        shape = CardDefaults.shape(TOP_NAV_SHAPE, TOP_NAV_SHAPE, TOP_NAV_SHAPE),
+        modifier = Modifier
+            .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
+            .testTag(testTag),
+    ) {
+        Box(
+            modifier = Modifier.defaultMinSize(minHeight = 44.dp).padding(horizontal = 18.dp, vertical = 8.dp),
+            contentAlignment = Alignment.Center,
+        ) { content() }
+    }
+}
+
+private val CATEGORY_TILE_HEIGHT = 56.dp
+private val CATEGORY_TILE_SHAPE = RoundedCornerShape(10.dp)
+
+/**
+ * The first row of a Movies/Shows/Music page: one tile per category, most
+ * assets first ([rankCategories]). Tiles are the same width as an asset card
+ * but a third of the height, and deliberately look nothing like one — no
+ * artwork, an outlined accent frame on a transparent fill, centered text —
+ * so the row reads as "pick a category" rather than "more titles". Picking
+ * a tile filters the page to it; picking it again clears it.
+ */
+@Composable
+private fun CategoryRow(
+    categories: List<CategoryCount>,
+    selectedGenre: String?,
+    listState: LazyListState,
+    focusGenre: String?,
+    onFocusHandled: () -> Unit,
+    onSelect: (String) -> Unit,
+    onNavigateDown: (() -> Unit)?,
+) {
+    val tileFocusRequester = remember { FocusRequester() }
+    val focusIndex = if (focusGenre == null) -1 else categories.indexOfFirst { it.genre == focusGenre }
+    LaunchedEffect(focusGenre, categories) {
+        if (focusGenre != null) {
+            if (focusIndex >= 0) {
+                listState.scrollToItem(focusIndex)
+                withFrameNanos {}
+                runCatching { tileFocusRequester.requestFocus() }
+            }
+            onFocusHandled()
+        }
+    }
+    Column(
+        modifier = Modifier.fillMaxWidth()
+            .testTag(UatTestTags.CATEGORY_ROW)
+            .onPreviewKeyEvent { event ->
+                if (onNavigateDown != null && event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown) {
+                    onNavigateDown()
+                    true
+                } else {
+                    false
+                }
+            },
+    ) {
+        ShelfHeader("Categories", GENRE_TITLE_SIZE)
+        Spacer(Modifier.height(GENRE_TITLE_SPACING))
+        LazyRow(
+            state = listState,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            contentPadding = PaddingValues(horizontal = 12.dp),
+        ) {
+            itemsIndexed(
+                items = categories,
+                key = { _, category -> category.genre },
+                contentType = { _, _ -> "category" },
+            ) { index, category ->
+                CategoryTile(
+                    label = category.genre,
+                    selected = category.genre == selectedGenre,
+                    onClick = { onSelect(category.genre) },
+                    focusRequester = tileFocusRequester.takeIf { index == focusIndex },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun CategoryTile(label: String, selected: Boolean, onClick: () -> Unit, focusRequester: FocusRequester?) {
+    Card(
+        onClick = onClick,
+        colors = CardDefaults.colors(
+            containerColor = if (selected) SwarmAccent else Color.Transparent,
+            contentColor = if (selected) ON_ACCENT else SwarmText,
+            focusedContainerColor = if (selected) SwarmAccent else SwarmSurfaceMuted,
+            focusedContentColor = if (selected) ON_ACCENT else SwarmText,
+            pressedContainerColor = SwarmAccentHot,
+            pressedContentColor = ON_ACCENT,
+        ),
+        scale = CardDefaults.scale(scale = 1f, focusedScale = 1f, pressedScale = 0.99f),
+        border = CardDefaults.border(
+            border = Border(BorderStroke(1.5.dp, SwarmAccent.copy(alpha = if (selected) 1f else 0.55f)), shape = CATEGORY_TILE_SHAPE),
+            focusedBorder = Border(BorderStroke(3.dp, SwarmText), shape = CATEGORY_TILE_SHAPE),
+            pressedBorder = Border(BorderStroke(3.dp, SwarmAccentHot), shape = CATEGORY_TILE_SHAPE),
+        ),
+        shape = CardDefaults.shape(CATEGORY_TILE_SHAPE, CATEGORY_TILE_SHAPE, CATEGORY_TILE_SHAPE),
+        modifier = Modifier.width(CARD_WIDTH).height(CATEGORY_TILE_HEIGHT)
+            .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
+            .testTag(UatTestTags.FILTER_GENRE_PREFIX + label),
+    ) {
+        // Two lines, ellipsized, with inner padding: a long or multi-word
+        // category name wraps or truncates inside the tile instead of running
+        // over its edge.
+        Box(Modifier.fillMaxSize().padding(horizontal = 10.dp, vertical = 4.dp), contentAlignment = Alignment.Center) {
+            Text(
+                label,
+                color = if (selected) ON_ACCENT else SwarmText,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
+}
+
+/** Near-black navy text on [SwarmAccent] — this app's standing on-accent color. */
+private val ON_ACCENT = Color(0xFF04263A)
+
+/**
+ * The search popup. The top bar's search icon opens this instead of an inline
+ * text box; it hosts the same [TvOutlinedTextField] (so selecting the field
+ * brings up the same on-screen keyboard, and Done applies the search).
+ * Physical Back closes it — no on-screen Cancel.
+ */
+@Composable
+private fun SearchOverlay(
+    text: String,
+    onTextChange: (String) -> Unit,
+    onSubmit: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val fieldFocusRequester = remember { FocusRequester() }
+    BackHandler(onBack = onDismiss)
+    LaunchedEffect(Unit) { runCatching { fieldFocusRequester.requestFocus() } }
+    Box(
+        modifier = Modifier.fillMaxSize().background(SwarmBackground.copy(alpha = 0.94f)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            modifier = Modifier.width(640.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .background(SwarmSurface)
+                .padding(28.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Text("Search", color = SwarmText, fontSize = 22.sp, fontWeight = FontWeight.Black)
+            TvOutlinedTextField(
+                value = text,
+                onValueChange = onTextChange,
+                placeholder = { Text("Search title, artist, show…", color = SwarmMuted) },
+                colors = searchFieldColors(),
+                onSubmit = onSubmit,
+                modifier = Modifier.fillMaxWidth()
+                    .focusRequester(fieldFocusRequester)
+                    .testTag(UatTestTags.SEARCH_FIELD),
+            )
+            Text(
+                "Select the box to type, then press Done. Results cover Movies, Shows and Music.",
+                color = SwarmMuted,
+                fontSize = 12.sp,
+            )
+        }
     }
 }
 
@@ -1058,8 +1280,10 @@ private fun GenreFilteredGrid(
     initialFocusMovieKey: String?,
     initialFocusShowKey: String?,
     initialFocusArtistKey: String?,
+    hasHeader: Boolean,
     header: @Composable ((() -> Unit)?) -> Unit,
 ) {
+    val headerCount = if (hasHeader) 1 else 0
     val gridState = rememberLazyGridState()
     val focusNavigationScope = rememberCoroutineScope()
     val firstSection = when {
@@ -1068,7 +1292,7 @@ private fun GenreFilteredGrid(
         artists.isNotEmpty() -> "music"
         else -> null
     }
-    var nextGridIndex = 1 // Search controls.
+    var nextGridIndex = headerCount // Category row.
     var restoreGridIndex: Int? = null
     if (movies.isNotEmpty()) {
         nextGridIndex++ // Movies header.
@@ -1098,9 +1322,9 @@ private fun GenreFilteredGrid(
     }
     val navigateToFirstEntry = {
         focusNavigationScope.launch {
-            // Item 0 is the controls and item 1 is the first full-width
+            // Item 0 is the category row and item 1 is the first full-width
             // section header, so item 2 is the first focusable card.
-            runCatching { gridState.scrollToItem(2) }
+            runCatching { gridState.scrollToItem(headerCount + 1) }
             withFrameNanos {}
             runCatching { firstEntryFocusRequester.requestFocus() }
         }
@@ -1120,8 +1344,10 @@ private fun GenreFilteredGrid(
         // button.
         contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 32.dp, bottom = 12.dp),
     ) {
-        item(key = "catalog-controls", span = { GridItemSpan(maxLineSpan) }, contentType = "controls") {
-            header(navigateToFirstEntry)
+        if (hasHeader) {
+            item(key = "catalog-categories", span = { GridItemSpan(maxLineSpan) }, contentType = "categories") {
+                header(navigateToFirstEntry)
+            }
         }
         if (movies.isNotEmpty()) {
             item(span = { GridItemSpan(maxLineSpan) }) { GridSectionHeader("Movies") }
@@ -1201,201 +1427,6 @@ private fun GenreFilteredGrid(
 @Composable
 private fun GridSectionHeader(label: String) {
     Text(label, color = SwarmMuted, fontSize = TOP_LEVEL_TITLE_SIZE, fontWeight = FontWeight.Black, modifier = Modifier.padding(bottom = 4.dp))
-}
-
-@Composable
-private fun FilterRail(
-    expanded: Boolean,
-    onExpand: () -> Unit,
-    firstFocusRequester: FocusRequester,
-    onLeave: () -> Unit,
-    kindFilter: KindFilter,
-    onKindSelect: (KindFilter) -> Unit,
-    genres: List<String>,
-    genreFilter: String?,
-    onGenreSelect: (String?) -> Unit,
-    ratings: List<String>,
-    ratingFilter: String?,
-    onRatingSelect: (String?) -> Unit,
-    likedOnly: Boolean,
-    onLikedOnlyToggle: () -> Unit,
-    anyFilterActive: Boolean,
-    onClear: () -> Unit,
-) {
-    val railWidth by animateDpAsState(
-        targetValue = if (expanded) 190.dp else 42.dp,
-        label = "catalog-filter-rail-width",
-    )
-    var headerFocused by remember { mutableStateOf(false) }
-
-    Column(
-        modifier = Modifier.width(railWidth).fillMaxSize()
-            .clip(RoundedCornerShape(topEnd = 14.dp, bottomEnd = 14.dp))
-            .background(SwarmSurface)
-            .padding(horizontal = if (expanded) 10.dp else 4.dp, vertical = 8.dp)
-            .testTag(UatTestTags.FILTER_RAIL)
-            .onPreviewKeyEvent { event ->
-                if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionRight) {
-                    onLeave()
-                    true
-                } else {
-                    false
-                }
-            },
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        // This is a focus target, not a button. Merely arriving from the
-        // catalog expands the rail; D-pad Center has no action to invoke and
-        // therefore cannot reopen the retired modal/crash path.
-        Row(
-            modifier = Modifier.fillMaxWidth()
-                .clip(RoundedCornerShape(8.dp))
-                .background(if (headerFocused) SwarmSurfaceMuted else Color.Transparent)
-                .focusRequester(firstFocusRequester)
-                .onFocusChanged {
-                    headerFocused = it.isFocused
-                    if (it.isFocused) onExpand()
-                }
-                .focusable()
-                .padding(horizontal = if (expanded) 8.dp else 2.dp, vertical = 5.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
-        ) {
-            Image(
-                painter = painterResource(R.drawable.mascot),
-                contentDescription = "Filters",
-                modifier = Modifier.size(if (expanded) 30.dp else 26.dp),
-            )
-            if (expanded) Text("Filters", color = SwarmText, fontSize = 16.sp, fontWeight = FontWeight.Black)
-        }
-
-        if (!expanded) {
-            Spacer(Modifier.height(12.dp))
-            FilterRailIcon("▦", kindFilter != KindFilter.ALL)
-            FilterRailIcon("♥", likedOnly)
-            FilterRailIcon("◈", genreFilter != null)
-            FilterRailIcon("★", ratingFilter != null)
-            return@Column
-        }
-
-        Column(
-            modifier = Modifier.fillMaxWidth().weight(1f)
-                .verticalScroll(rememberScrollState())
-                .padding(top = 12.dp, bottom = 8.dp),
-        ) {
-            FilterRailSection("Media type") {
-                for (kind in KindFilter.entries) {
-                    FilterRailOption(
-                        label = kind.label,
-                        isSelected = kindFilter == kind,
-                        onClick = { onKindSelect(kind) },
-                        testTag = UatTestTags.FILTER_KIND_PREFIX + kind.name,
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(14.dp))
-            FilterRailSection("Favorites") {
-                FilterRailOption(
-                    "♥  Liked only",
-                    isSelected = likedOnly,
-                    onClick = onLikedOnlyToggle,
-                    testTag = UatTestTags.FILTER_LIKED_ONLY,
-                )
-            }
-
-            if (genres.isNotEmpty()) {
-                Spacer(Modifier.height(14.dp))
-                FilterRailSection("Genre") {
-                    FilterRailOption(
-                        "All genres",
-                        isSelected = genreFilter == null,
-                        onClick = { onGenreSelect(null) },
-                        testTag = UatTestTags.FILTER_GENRE_PREFIX + "ALL",
-                    )
-                    for (genre in genres) {
-                        FilterRailOption(
-                            genre,
-                            isSelected = genre == genreFilter,
-                            onClick = { onGenreSelect(genre) },
-                            testTag = UatTestTags.FILTER_GENRE_PREFIX + genre,
-                        )
-                    }
-                }
-            }
-
-            if (ratings.isNotEmpty()) {
-                Spacer(Modifier.height(14.dp))
-                FilterRailSection("Content rating") {
-                    FilterRailOption("Any rating", isSelected = ratingFilter == null, onClick = { onRatingSelect(null) })
-                    for (rating in ratings) {
-                        FilterRailOption(
-                            rating,
-                            isSelected = rating == ratingFilter,
-                            onClick = { onRatingSelect(rating) },
-                            testTag = UatTestTags.FILTER_RATING_PREFIX + rating,
-                        )
-                    }
-                }
-            }
-        }
-
-        if (anyFilterActive) {
-            Button(onClick = onClear, colors = swarmActionButtonColors(), modifier = Modifier.fillMaxWidth()) {
-                Text("Clear filters", fontSize = 13.sp)
-            }
-        }
-    }
-}
-
-@Composable
-private fun FilterRailIcon(icon: String, active: Boolean) {
-    Text(
-        icon,
-        color = if (active) SwarmAccent else SwarmMuted,
-        fontSize = 16.sp,
-        fontWeight = if (active) FontWeight.Black else FontWeight.Normal,
-        modifier = Modifier.padding(vertical = 7.dp),
-    )
-}
-
-@Composable
-private fun FilterRailSection(title: String, content: @Composable () -> Unit) {
-    Text(title, color = SwarmMuted, fontSize = 12.sp, fontWeight = FontWeight.Black)
-    Spacer(Modifier.height(6.dp))
-    Column(
-        verticalArrangement = Arrangement.spacedBy(5.dp),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        content()
-    }
-}
-
-@Composable
-private fun FilterRailOption(label: String, isSelected: Boolean, onClick: () -> Unit, testTag: String? = null) {
-    var isFocused by remember { mutableStateOf(false) }
-    Button(
-        onClick = onClick,
-        modifier = Modifier.fillMaxWidth().height(36.dp).onFocusChanged { isFocused = it.isFocused }
-            .then(if (testTag != null) Modifier.testTag(testTag) else Modifier),
-        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-        colors = ButtonDefaults.colors(
-            containerColor = if (isSelected) SwarmAccent else SwarmSurfaceMuted,
-            contentColor = if (isSelected) Color(0xFF04263A) else SwarmText,
-            focusedContainerColor = SwarmAccent,
-            focusedContentColor = Color(0xFF04263A),
-            pressedContainerColor = SwarmAccent,
-            pressedContentColor = Color(0xFF04263A),
-        ),
-    ) {
-        Text(
-            label,
-            color = if (isSelected || isFocused) Color(0xFF04263A) else SwarmText,
-            fontSize = 12.sp,
-            maxLines = 1,
-            modifier = Modifier.fillMaxWidth(),
-        )
-    }
 }
 
 @Composable

@@ -190,6 +190,11 @@ sealed class UiState {
         val allSwarms: List<SwarmSummary> = emptyList(),
         val joiningServer: Boolean = false,
         val joinServerError: String? = null,
+        /** The last roster fetch failed, so the SWARM service itself could not
+         * be reached. Distinct from a server being offline: with the service
+         * down every server is unknowable through it, and the dashboard must
+         * say that instead of claiming nobody has joined. */
+        val serviceUnreachable: Boolean = false,
     ) : UiState()
     /** [activeSwarmId] is null only once every swarm has been left — the device is still registered, just not a member of anything yet. */
     data class Settings(
@@ -982,7 +987,7 @@ class SwarmViewModel(
             return
         }
         val knownPaired = normalizeFingerprint(server.certFingerprint) in _pairedLanFingerprints.value
-        viewModelScope.launch { connectLanServerNow(server, deviceName, knownPaired) }
+        viewModelScope.launch { connectLanServerNow(server, deviceName, knownPaired, userInitiated = true) }
     }
 
     fun startLanPairing(server: LanServer, deviceName: String) {
@@ -1063,6 +1068,9 @@ class SwarmViewModel(
         clientName: String,
         knownPaired: Boolean,
         persistConnection: Boolean = true,
+        /** The person pressed Connect (or Browse) for this server, as opposed to a
+         * background reconnect. They are waiting for an answer. */
+        userInitiated: Boolean = false,
     ): Boolean {
         _lanPairingBusy.value = true
         _lanError.value = null
@@ -1116,6 +1124,14 @@ class SwarmViewModel(
                 val message = "Could not reach ${server.name} on the local network. If it hasn't approved this TV, open LAN pairing on the media server and enter its code."
                 _lanError.value = message
                 notify(message, ClientNotificationKind.WARNING)
+            } else if (userInitiated) {
+                // Silence is right for a background reconnect (#66) but wrong when
+                // the person just pressed Connect: "nothing happened" reads as a
+                // broken button. Say it plainly, without the security wording
+                // #66 removed, because nothing is wrong with the pairing.
+                val message = "Couldn't reach ${server.name} right now. Make sure it is turned on and on the same network as this TV."
+                _lanError.value = message
+                notify(message, ClientNotificationKind.WARNING)
             } else {
                 Log.w(logTag, "reconnect to already-paired LAN server ${server.name} failed; leaving it unreachable for this attempt")
             }
@@ -1132,7 +1148,11 @@ class SwarmViewModel(
             activeLocalServer = null
             _disconnectedServerFingerprints.value = _disconnectedServerFingerprints.value - fingerprint
             disconnectedServerStore.setDisconnected(swarmDashboard.swarm.id, fingerprint, disconnected = false)
-            _state.value = swarmDashboard
+            // The dashboard captured above predates this connection and may
+            // still list the server as offline (for instance when the SWARM
+            // roster could not be fetched). It just answered, so re-apply the
+            // LAN routes before restoring it.
+            _state.value = swarmDashboard.copy(devices = dashboardDevices(swarmDashboard.devices))
         } else {
             localSession = true
             activeLocalServer = server
@@ -3503,7 +3523,14 @@ class SwarmViewModel(
             if (current != null) {
                 Log.w(logTag, "could not refresh the saved STUN roster", e)
                 _state.value = current.copy(
-                    devices = current.devices.map { it.copy(online = false) },
+                    // The roster is what marks a server online, and it is
+                    // unavailable, so nothing is online *through SWARM*. A server
+                    // this TV can see on its own network is still reachable, so
+                    // re-apply the LAN routes immediately instead of waiting for
+                    // the next mDNS event, which may never come for a server that
+                    // was already discovered.
+                    devices = dashboardDevices(current.devices.map { it.copy(online = false) }),
+                    serviceUnreachable = true,
                     resyncing = false,
                     joiningServer = false,
                     joinServerError = if (current.joiningServer) {

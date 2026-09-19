@@ -108,6 +108,11 @@ impl StateDb {
                 paired_at INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_http_media_device_paired_at ON http_media_device(paired_at DESC);
+            CREATE TABLE IF NOT EXISTS swarm_dependent_device (
+                fingerprint TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS managed_swarm_identity (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 base_url TEXT NOT NULL,
@@ -277,6 +282,62 @@ impl StateDb {
     pub async fn remove_http_media_device(&self, token_hash: &str) -> sqlx::Result<()> {
         sqlx::query("DELETE FROM http_media_device WHERE token_hash = ?")
             .bind(token_hash)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Devices that reach this server through SWARM, as of the last roster
+    /// that could be fetched. Kept on disk because the answer is needed
+    /// precisely when the roster *cannot* be fetched: it decides whether an
+    /// outage affects anyone. Replaced wholesale so a device removed from the
+    /// swarm stops counting.
+    pub async fn replace_swarm_dependents(
+        &self,
+        devices: &[(String, String)],
+    ) -> sqlx::Result<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM swarm_dependent_device")
+            .execute(&mut *tx)
+            .await?;
+        for (fingerprint, name) in devices {
+            sqlx::query(
+                "INSERT OR REPLACE INTO swarm_dependent_device (fingerprint, name, updated_at) VALUES (?, ?, ?)",
+            )
+            .bind(fingerprint)
+            .bind(name)
+            .bind(now())
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await
+    }
+
+    /// `(fingerprint, name)` pairs, ordered by name.
+    pub async fn swarm_dependents(&self) -> sqlx::Result<Vec<(String, String)>> {
+        sqlx::query_as("SELECT fingerprint, name FROM swarm_dependent_device ORDER BY name, fingerprint")
+            .fetch_all(&self.pool)
+            .await
+    }
+
+    /// Forgets the saved SWARM service link and its swarm memberships.
+    pub async fn clear_stun_link(&self) -> sqlx::Result<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM stun_link_swarm WHERE stun_link_id = ?")
+            .bind(STUN_LINK_ROW_ID)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM stun_link WHERE id = ?")
+            .bind(STUN_LINK_ROW_ID)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await
+    }
+
+    /// Forgets the managed-swarm identity. The owner claim that pairs with it
+    /// lives in the credential store and must be deleted alongside it.
+    pub async fn clear_managed_swarm_identity(&self) -> sqlx::Result<()> {
+        sqlx::query("DELETE FROM managed_swarm_identity WHERE id = 1")
             .execute(&self.pool)
             .await?;
         Ok(())
@@ -467,6 +528,75 @@ mod tests {
             db.load_managed_swarm_identity().await.unwrap(),
             Some(identity)
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn swarm_dependents_are_replaced_wholesale_and_ordered() {
+        let dir = std::env::temp_dir().join(format!("swarm-state-db-deps-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = StateDb::open(&dir).await.unwrap();
+        assert!(db.swarm_dependents().await.unwrap().is_empty());
+
+        db.replace_swarm_dependents(&[
+            ("bb".repeat(32), "Den TV".into()),
+            ("aa".repeat(32), "Michael's TV".into()),
+        ])
+        .await
+        .unwrap();
+        let names: Vec<String> = db
+            .swarm_dependents()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(_, name)| name)
+            .collect();
+        assert_eq!(names, ["Den TV", "Michael's TV"]);
+
+        // A device that left the swarm must stop counting.
+        db.replace_swarm_dependents(&[("aa".repeat(32), "Michael's TV".into())])
+            .await
+            .unwrap();
+        assert_eq!(db.swarm_dependents().await.unwrap().len(), 1);
+
+        db.replace_swarm_dependents(&[]).await.unwrap();
+        assert!(db.swarm_dependents().await.unwrap().is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// "Forget this SWARM service" must leave nothing behind that could make
+    /// the next startup dial the old address again — not the link, not its
+    /// swarm rows, and not the managed identity that also carries a URL.
+    #[tokio::test]
+    async fn clearing_the_link_and_identity_removes_every_saved_service_address() {
+        let dir = std::env::temp_dir().join(format!("swarm-state-db-clear-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = StateDb::open(&dir).await.unwrap();
+        db.save_stun_link(&StunLinkRecord {
+            base_url: "http://192.168.0.235:8080".into(),
+            device_id: "device".into(),
+            swarms: vec![SwarmSummary {
+                id: "s1".into(),
+                name: "Home".into(),
+            }],
+        })
+        .await
+        .unwrap();
+        db.save_managed_swarm_identity(&ManagedSwarmIdentity {
+            base_url: "http://192.168.0.235:8080".into(),
+            swarm_id: "cd".repeat(32),
+        })
+        .await
+        .unwrap();
+
+        db.clear_stun_link().await.unwrap();
+        db.clear_managed_swarm_identity().await.unwrap();
+
+        assert_eq!(db.load_stun_link().await.unwrap(), None);
+        assert_eq!(db.load_managed_swarm_identity().await.unwrap(), None);
+        // Clearing an already-empty store is a no-op, not an error.
+        db.clear_stun_link().await.unwrap();
+        db.clear_managed_swarm_identity().await.unwrap();
         std::fs::remove_dir_all(&dir).ok();
     }
 }

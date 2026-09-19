@@ -139,7 +139,150 @@ async function loadHttpMediaDevices() {
   }
 }
 
+// ---- Remote access status --------------------------------------------------
+//
+// The server keeps a link to the SWARM service so TVs paired through SWARM can
+// reach it from outside the home network. The backend retries that link on its
+// own; this only decides what to tell the person, and the rule is: say nothing
+// unless something they use is affected. A LAN-only server, or one with a
+// stale saved address that nothing depends on, is healthy, and warning about it
+// just teaches people to ignore warnings. So the badge, the warning block and
+// the toast all key off `needs_attention` (link down AND a paired device
+// affected). Everything else is a quiet, neutral line. The jargon (addresses,
+// errors) lives under "Details".
+
+let lastSwarmLinkState = null;
+let lastNeedsAttention = false;
+let lastSwarmLinkHtml = null;
+let swarmLinkDetailsOpen = false;
+
+function formatOutage(failingSince) {
+  if (!failingSince) return "";
+  const seconds = Math.max(0, Math.floor(Date.now() / 1000) - failingSince);
+  if (seconds < 60) return "less than a minute";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  return hours < 48 ? `${hours} h` : `${Math.floor(hours / 24)} days`;
+}
+
+// "A", "A and B", "A, B and 2 others".
+function joinNames(names) {
+  if (names.length <= 1) return names[0] || "";
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  const others = names.length - 2;
+  return `${names[0]}, ${names[1]} and ${others} other${others === 1 ? "" : "s"}`;
+}
+
+function swarmLinkDetailsHtml(status, { showRetry }) {
+  const outage = formatOutage(status.failing_since);
+  return `<details id="swarmLinkDetails" class="link-details"${swarmLinkDetailsOpen ? " open" : ""}>
+      <summary>Details</summary>
+      <div class="link-status-meta">
+        ${status.base_url ? `<span class="mono">${esc(status.base_url)}</span>` : ""}
+        ${status.last_error ? `<span>${esc(status.last_error)}</span>` : ""}
+        ${outage ? `<span>Not connected for ${esc(outage)}</span>` : ""}
+      </div>
+      <div class="row action-row">
+        ${showRetry ? `<button id="retrySwarmLinkBtn" class="secondary-button compact"><i class="bi bi-arrow-repeat"></i>Try again now</button>` : ""}
+        <button id="forgetSwarmLinkBtn" class="danger-button compact" title="Stop trying to connect. Devices paired through SWARM will need to be paired again."><i class="bi bi-x-circle"></i>Turn off remote access</button>
+      </div>
+    </details>`;
+}
+
+function swarmLinkStatusHtml(status) {
+  const dependents = Array.isArray(status.dependents) ? status.dependents : [];
+  if (status.state === "unreachable" && status.needs_attention) {
+    return `<div class="link-status link-status-warn">
+      <strong><i class="bi bi-exclamation-triangle-fill"></i>Remote access is offline</strong>
+      <p>${esc(joinNames(dependents))} can't connect from outside your network until it's back. TVs at home still work. This keeps retrying on its own.</p>
+      <div class="row action-row">
+        <button id="retrySwarmLinkBtn" class="primary-button compact"><i class="bi bi-arrow-repeat"></i>Try again now</button>
+      </div>
+      ${swarmLinkDetailsHtml(status, { showRetry: false })}
+    </div>`;
+  }
+  if (status.state === "unreachable") {
+    return `<div class="link-status">
+      <span class="muted"><i class="bi bi-info-circle"></i> Remote access isn't connected. Nothing is using it, so nothing is affected.</span>
+      ${swarmLinkDetailsHtml(status, { showRetry: true })}
+    </div>`;
+  }
+  if (status.state === "connecting") {
+    return `<div class="link-status"><span class="muted"><i class="bi bi-arrow-repeat"></i> Connecting…</span></div>`;
+  }
+  if (status.state === "connected") {
+    return `<div class="link-status"><span class="note"><i class="bi bi-check-circle-fill"></i> Remote access is on</span></div>`;
+  }
+  return "";
+}
+
+async function refreshSwarmLinkStatus() {
+  let status;
+  try {
+    status = await invoke("get_swarm_link_status");
+  } catch {
+    // Best-effort background poll — a failed check isn't worth a toast every interval.
+    return;
+  }
+  const state = status && status.state ? status.state : "not_linked";
+  const needsAttention = state === "unreachable" && !!(status && status.needs_attention);
+  const dependents = status && Array.isArray(status.dependents) ? status.dependents : [];
+
+  const badge = document.getElementById("swarmLinkBadge");
+  if (badge) badge.classList.toggle("d-none", !needsAttention);
+
+  // Re-render only when the content changed, so a button under the cursor is
+  // not replaced out from under a click.
+  const box = document.getElementById("swarmLinkStatus");
+  const html = swarmLinkStatusHtml({ ...status, state });
+  if (box && html !== lastSwarmLinkHtml) {
+    lastSwarmLinkHtml = html;
+    box.innerHTML = html;
+    box.classList.toggle("d-none", html === "");
+    const details = document.getElementById("swarmLinkDetails");
+    if (details) {
+      details.addEventListener("toggle", () => { swarmLinkDetailsOpen = details.open; });
+    }
+    const retry = document.getElementById("retrySwarmLinkBtn");
+    if (retry) {
+      retry.addEventListener("click", async () => {
+        try {
+          await invoke("retry_swarm_link");
+          showToast("Trying to reconnect…", "success");
+          setTimeout(refreshSwarmLinkStatus, 1500);
+        } catch (err) {
+          showToast(String(err), "error");
+        }
+      });
+    }
+    const forget = document.getElementById("forgetSwarmLinkBtn");
+    if (forget) {
+      forget.addEventListener("click", async () => {
+        try {
+          await invoke("forget_swarm_link");
+          showToast("Remote access turned off.", "success");
+          await refreshSwarm();
+        } catch (err) {
+          showToast(String(err), "error");
+        }
+      });
+    }
+  }
+
+  // Toasts follow attention, not raw state: an outage nobody is affected by is
+  // not news.
+  if (needsAttention && !lastNeedsAttention) {
+    showToast(`Remote access is offline. ${joinNames(dependents)} can't connect from outside your network.`, "warning");
+  } else if (!needsAttention && lastNeedsAttention && state === "connected") {
+    showToast("Remote access is back.", "success");
+  }
+  lastNeedsAttention = needsAttention;
+  lastSwarmLinkState = state;
+}
+
 async function refreshSwarm() {
+  await refreshSwarmLinkStatus();
   loadLocalPeers();
   loadHttpMediaDevices();
   const content = document.getElementById("swarmContent");
@@ -153,7 +296,11 @@ async function refreshSwarm() {
   }
 
   if (!link) {
-    content.innerHTML = `<p class="muted"><i class="bi bi-link-45deg"></i> Not linked to a SWARM service yet.</p>`;
+    // The status block above already explains a link that exists but is not
+    // connected; saying "not set up" underneath it would contradict it.
+    content.innerHTML = lastSwarmLinkState === "unreachable" || lastSwarmLinkState === "connecting"
+      ? ""
+      : `<p class="muted"><i class="bi bi-link-45deg"></i> Remote access isn't set up.</p>`;
     return;
   }
 

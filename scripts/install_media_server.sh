@@ -22,6 +22,15 @@
 # 8-digit code works directly. A TV paired via a swarm/join code needs a
 # rendezvous server and will NOT reach this install — re-pair it over the LAN.
 #
+# The data directory is shared with `run_now.sh`. That script supplies its
+# rendezvous address through the environment, and the server treats a LAN-IP or
+# loopback address as a snapshot of one machine on one network: it uses it for
+# that run but does not save it, so this install never inherits it. (State
+# saved by older builds can still hold such an address. It is retried quietly,
+# and the Swarm tab only warns if a device paired through SWARM is affected;
+# "Turn off remote access" clears it. `GET /health` reports
+# `swarm_link.needs_attention` for anything monitoring the server.)
+#
 # Usage:
 #   ./scripts/install_media_server.sh              build + install + start
 #   ./scripts/install_media_server.sh --status

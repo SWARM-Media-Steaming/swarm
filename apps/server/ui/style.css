@@ -262,6 +262,24 @@ td.mono {
 .group-artwork-note { font-size: .76rem; }
 .swarm-actions { margin-top: 12px; }
 .swarm-card { margin-top: 10px; }
+
+/* SWARM service link status (Swarm tab). Amber, not red: an unreachable
+   service is a degraded state (SWARM-paired TVs can't see this server) while
+   everything on the LAN keeps working. */
+.link-status {
+  margin: 10px 0 14px; padding: 12px 14px; border-radius: 10px;
+  border: 1px solid var(--line-soft);
+  background: color-mix(in srgb, var(--panel-2) 72%, var(--panel));
+}
+.link-status p { margin: 6px 0 0; }
+.link-status strong { display: flex; align-items: center; gap: 8px; }
+.link-status-warn { border-color: color-mix(in srgb, var(--amber) 60%, var(--line-soft)); }
+.link-status-warn strong { color: var(--amber); }
+.link-details { margin-top: 10px; }
+.link-details summary { cursor: pointer; color: var(--muted); font-size: .8rem; }
+.link-details summary:hover { color: var(--text); }
+.link-details[open] summary { margin-bottom: 8px; }
+.link-status-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 8px; font-size: .8rem; color: var(--muted); }
 #onboardFolderView { height: 100vh; overflow: auto; }
 .icon-button i.bi, .modal-close i.bi, .toast-close i.bi { margin: 0; }
 

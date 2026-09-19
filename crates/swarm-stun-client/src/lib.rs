@@ -26,7 +26,7 @@ pub fn random_token() -> String {
     rand::rngs::OsRng.fill_bytes(&mut bytes);
     hex::encode(bytes)
 }
-pub use signaling::{SignalingClient, SignalingError};
+pub use signaling::{KeepAlive, SignalingClient, SignalingError};
 pub use token_store::{TokenStore, TokenStoreError};
 
 pub use swarm_core as core;

@@ -158,6 +158,8 @@ function invokeStub(command, args) {
       return 0;
     case "get_swarm_link":
       return null;
+    case "get_swarm_link_status":
+      return { state: "not_linked", base_url: null, last_error: null, failing_since: null, connected_since: null, attempts: 0, signaling: false, dependents: [], needs_attention: false };
     default:
       return {};
   }

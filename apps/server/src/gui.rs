@@ -3747,6 +3747,41 @@ async fn get_swarm_link<R: tauri::Runtime>(
     }))
 }
 
+/// Whether this server is currently reachable through the SWARM service,
+/// polled by the Swarm tab. Distinct from `get_swarm_link`, which is the saved
+/// link's contents: a link can be saved and the service still unreachable.
+#[tauri::command]
+async fn get_swarm_link_status<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+) -> Result<swarm_server::link::SwarmLinkStatus, String> {
+    let core = state.core(&app).await?;
+    Ok(core.swarm_link_status())
+}
+
+/// "Try again now" for an offline SWARM link: skips the retry backoff.
+#[tauri::command]
+async fn retry_swarm_link<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let core = state.core(&app).await?;
+    core.retry_swarm_link_now();
+    Ok(())
+}
+
+/// Forgets the saved SWARM service address, swarm memberships and credentials
+/// — the way out of a link stuck on an address that no longer exists. LAN
+/// pairings are untouched.
+#[tauri::command]
+async fn forget_swarm_link<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let core = state.core(&app).await?;
+    core.forget_swarm_link().await.map_err(|e| e.to_string())
+}
+
 /// Accepts the short-lived code displayed by a TV discovered on the LAN.
 /// This approval path is entirely local and independent of the SWARM service.
 #[tauri::command]
@@ -4285,6 +4320,9 @@ fn main() {
             upload_group_artwork,
             clear_scraped_metadata,
             get_swarm_link,
+            get_swarm_link_status,
+            retry_swarm_link,
+            forget_swarm_link,
             approve_lan_pairing,
             list_local_peers,
             revoke_local_peer,

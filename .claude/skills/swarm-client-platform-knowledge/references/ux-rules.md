@@ -114,6 +114,17 @@ Two navigation surfaces get **more than one Back tier**, and both must be reprod
 - Fail-open features (previews, prefetch, background sync, notification dismiss, like
   round-trip) never surface an error toast on failure. Fail-loud features (explicit user
   actions, connection state, active-playback failures) always do. See state-model.md.
+- **A user pressing Connect always gets an answer.** "Silent on failure" is right for a
+  background reconnect and wrong for a button someone just pressed: no feedback reads as a
+  broken button. A failed user-initiated connect says so in plain words ("Couldn't reach X
+  right now. Make sure it is turned on and on the same network as this TV.") without
+  implying the pairing is at fault, and a connect that takes seconds shows "Connecting…".
+- **A status word must mean what the control beside it needs.** "Connected" means there is
+  a session and Browse can open it. "Found on the network" is a different state ("available")
+  and must not share the word, or a list shows "connected" next to a greyed-out Browse. If a
+  found, paired server is on screen, the primary action must be able to use it (Browse
+  connects first, then opens the catalog) instead of dead-ending until the person finds the
+  row's own Connect button.
 
 ## Layout for a 10-foot screen
 

@@ -132,6 +132,30 @@ handlers can extract the real peer address for this — don't switch to
 plain `into_make_service()` (that's `mcp.rs`'s precedent, which never
 needs peer IP).
 
+## `/health` is a third, deliberately tiny route group
+
+`GET /health` answers "is this server up, and is it visible through the SWARM
+service?" for anything monitoring it from the LAN: `{"ok": true, "swarm_link":
+{"state", "failing_since", "attempts", "signaling", "needs_attention"}}`.
+`state` is `not_linked` (a LAN-only install — healthy), `connecting`,
+`connected` or `unreachable` (a service is configured or saved but not
+answering; LAN clients are unaffected).
+
+**Alert on `needs_attention`, not on `state`.** `needs_attention` is true only
+when the link is down *and* a device paired through SWARM is affected. An
+unreachable service nothing uses (a stale saved address, a LAN-only server) is
+`state: unreachable, needs_attention: false` and is not a problem; the dashboard
+stays silent for it and so should a monitor.
+
+It is unauthenticated, so it gets the same `require_lan` + `reject_cross_site`
+layers as `/pair/*` and reports only `SwarmLinkStatus::public()` — never the
+service address, error text or device names, which can name internal
+hosts and people. Do not add
+fields to it without checking that. The full status (address, last error) is
+the `get_swarm_link_status` Tauri command, owner-only. Where the state comes
+from and why it exists: `apps/server/src/link.rs` and `ServerCore`'s link
+supervisor.
+
 ## Adding a new route
 
 1. Decide which of the two `Router`s it belongs to (unauthenticated +

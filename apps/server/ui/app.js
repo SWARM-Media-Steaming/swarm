@@ -525,8 +525,11 @@ async function enterDashboard() {
   showTab("media");
   refreshNotificationBadge();
   refreshMediaRootHealth();
-  refreshLibraryScanStatus();
+  refreshSwarmLinkStatus();
   setInterval(refreshNotificationBadge, 30000);
+  // Faster than the notification badge: an unreachable SWARM service is the
+  // kind of thing you want to hear about while you can still act on it.
+  setInterval(refreshSwarmLinkStatus, 10000);
   if (!mediaRootHealthTimer) {
     mediaRootHealthTimer = setInterval(refreshMediaRootHealth, 10000);
   }

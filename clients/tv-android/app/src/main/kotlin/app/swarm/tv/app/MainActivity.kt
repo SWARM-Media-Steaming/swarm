@@ -912,6 +912,7 @@ private fun SwarmApp(
                     deviceName = defaultDeviceName,
                     joiningServer = state.joiningServer,
                     joinServerError = state.joinServerError,
+                    serviceUnreachable = state.serviceUnreachable,
                     onBrowseCatalog = onBrowseCatalog,
                     onOpenSettings = onOpenSettings,
                     onAddServer = { onStartActivation(defaultDeviceName) },

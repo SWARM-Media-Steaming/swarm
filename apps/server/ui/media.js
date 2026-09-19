@@ -559,7 +559,9 @@ function communityRating(entry) {
 function renderBrowse() {
   const body = document.getElementById("mediaSectionBody");
   if (!libraryEntries.length) {
-    body.innerHTML = `<span class="muted">No media found under the configured media roots.</span>`;
+    body.innerHTML = libraryScanning
+      ? `<span class="muted">Still scanning your media roots — items will appear here as they're found.</span>`
+      : `<span class="muted">No media found under the configured media roots.</span>`;
     return;
   }
   if (browsePath.kind === "root") return renderBrowseRoot(body);
@@ -1172,7 +1174,9 @@ function renderEpisodeDetail(body, entryKey) {
 function renderLibrary() {
   const library = document.getElementById("mediaSectionBody");
   if (!libraryEntries.length) {
-    library.innerHTML = `<span class="muted">No media found under the configured media roots.</span>`;
+    library.innerHTML = libraryScanning
+      ? `<span class="muted">Still scanning your media roots — items will appear here as they're found.</span>`
+      : `<span class="muted">No media found under the configured media roots.</span>`;
     return;
   }
   const entries = filteredEntries();

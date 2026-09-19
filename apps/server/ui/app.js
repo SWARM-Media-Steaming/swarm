@@ -395,6 +395,51 @@ document.getElementById("mediaRootWarningDetailsBtn").addEventListener("click", 
   showTab("settings");
 });
 
+// Issue #322: the initial library scan runs in the background and can take
+// minutes (or longer, over a slow network share) for a large library. Until
+// it's done, `list_entries` only returns whatever's been found so far, which
+// read as a frozen/empty app with no clue anything was happening. This polls
+// the same `scanning`/`scan_progress` fields already returned by get_status
+// (previously fetched only for the Metrics tab's playback-session tile) and
+// keeps the banner above every tab in sync, independent of which tab is open.
+let libraryScanTimer = null;
+// Read directly by media.js's empty-state copy (renderBrowse/renderLibrary)
+// so "no media yet" doesn't read as "nothing will ever be here" while the
+// startup scan just hasn't found/written anything out yet.
+let libraryScanning = false;
+
+function describeScanProgress(progress, entryCount) {
+  const loaded = entryCount ? `${entryCount.toLocaleString()} item${entryCount === 1 ? "" : "s"} loaded so far. ` : "";
+  if (!progress) return `${loaded}Looking for media…`;
+  if (progress.phase === "discovering") {
+    return `${loaded}Finding files… ${progress.found.toLocaleString()} found so far.`;
+  }
+  if (!progress.total) return `${loaded}Reading media files…`;
+  return `${loaded}Reading media files… ${progress.processed.toLocaleString()} of ${progress.total.toLocaleString()}.`;
+}
+
+async function refreshLibraryScanStatus() {
+  const banner = document.getElementById("libraryScanBanner");
+  try {
+    const status = await invoke("get_status");
+    banner.classList.toggle("d-none", !status.scanning);
+    if (status.scanning) {
+      document.getElementById("libraryScanBannerText").textContent =
+        describeScanProgress(status.scan_progress, status.entry_count);
+    } else if (libraryScanning) {
+      // The scan that was running when the dashboard came up just finished —
+      // refresh the open tab once so newly-found media shows up without the
+      // user having to leave and come back to notice anything changed.
+      const activeTabBtn = document.querySelector(".tab-active");
+      const activeTab = activeTabBtn && activeTabBtn.id.replace("tabBtn-", "");
+      if (activeTab === "media") refreshMedia();
+    }
+    libraryScanning = status.scanning;
+  } catch (_) {
+    // Best-effort background poll — a transient status failure isn't worth a toast here.
+  }
+}
+
 // The Full Disk Access pane covers network volumes, removable drives, and the
 // protected user folders in one grant — the single place a user can approve
 // SWARM's file access once, before or after macOS's own prompt (#196).
@@ -487,6 +532,11 @@ async function enterDashboard() {
   setInterval(refreshSwarmLinkStatus, 10000);
   if (!mediaRootHealthTimer) {
     mediaRootHealthTimer = setInterval(refreshMediaRootHealth, 10000);
+  }
+  // Polled faster than the health/notification timers above so the "found
+  // so far" counters actually look live rather than stepping once every 10s.
+  if (!libraryScanTimer) {
+    libraryScanTimer = setInterval(refreshLibraryScanStatus, 2000);
   }
 }
 

@@ -21,6 +21,7 @@ use stun_server::hub::Hub;
 use stun_server::routes::build_router;
 use stun_server::security::BruteForceBlocker;
 use stun_server::state::AppState;
+use swarm_core::rest::{DeviceRegistration, DeviceType};
 use swarm_media::roots::MediaRoot;
 use swarm_server::link::{SwarmLinkState, SwarmLinkStatus};
 use swarm_server::{ServerConfig, ServerCore, TokenStoreMode};
@@ -38,6 +39,22 @@ fn fast_timing() {
     std::env::set_var("SWARM_LINK_CHECK_MS", "100");
     std::env::set_var("SWARM_LINK_ATTEMPT_TIMEOUT_MS", "3000");
     std::env::set_var("SWARM_LINK_STARTUP_WAIT_MS", "1500");
+    // Off unless a test opts in: dormancy slows retries, which would make the
+    // recovery tests wait on it.
+    std::env::set_var("SWARM_LINK_DORMANT_AFTER_MS", "3600000");
+    std::env::set_var("SWARM_LINK_DORMANT_RETRY_MS", "600000");
+}
+
+fn tv(name: &str, fingerprint_byte: &str) -> DeviceRegistration {
+    DeviceRegistration {
+        name: name.into(),
+        device_type: DeviceType::Client,
+        machine_id: format!("link-test-{name}"),
+        cert_fingerprint: fingerprint_byte.repeat(32),
+        platform: "android-tv".into(),
+        app_version: "test".into(),
+        metadata: Default::default(),
+    }
 }
 
 /// An address nothing is listening on yet, but that a service can be started
@@ -217,6 +234,10 @@ async fn a_service_that_is_down_at_startup_is_connected_to_once_it_appears() {
     assert!(down.last_error.is_some(), "an outage must say why: {down:?}");
     assert!(down.failing_since.is_some());
     assert!(!down.signaling);
+    // Nothing is paired through SWARM, so this outage affects no one and must
+    // not be presented as a problem.
+    assert!(down.dependents.is_empty());
+    assert!(!down.needs_attention, "an unused link must not ask for attention: {down:?}");
 
     // The health endpoint tells a monitor the same thing, without leaking the
     // service address or error text to an unauthenticated caller.
@@ -224,6 +245,7 @@ async fn a_service_that_is_down_at_startup_is_connected_to_once_it_appears() {
     assert_eq!(json["ok"], true);
     assert_eq!(json["swarm_link"]["state"], "unreachable");
     assert_eq!(json["swarm_link"]["signaling"], false);
+    assert_eq!(json["swarm_link"]["needs_attention"], false);
     assert!(!body.contains(&url), "health leaked the service address: {body}");
     assert!(!body.contains("base_url") && !body.contains("last_error"), "{body}");
 
@@ -299,6 +321,10 @@ async fn a_stale_saved_address_is_reported_and_can_be_forgotten() {
     })
     .await;
     assert_eq!(stuck.base_url.as_deref(), Some(dead_url.as_str()));
+    // The reported incident: a dead saved address and no TV using SWARM. The
+    // user must not be warned about something that affects nothing.
+    assert!(stuck.dependents.is_empty());
+    assert!(!stuck.needs_attention, "a stale address nobody uses must stay quiet: {stuck:?}");
 
     core.forget_swarm_link().await.unwrap();
     let cleared = core.swarm_link_status();
@@ -329,6 +355,137 @@ async fn a_server_with_no_swarm_service_is_simply_not_linked() {
     let (json, _) = health(&core).await;
     assert_eq!(json["ok"], true);
     assert_eq!(json["swarm_link"]["state"], "not_linked");
+}
+
+/// The other side of the rule: when a TV *is* paired through SWARM, an outage
+/// affects it, so the user is told, and told who.
+#[tokio::test]
+async fn an_outage_is_flagged_when_a_tv_depends_on_the_link() {
+    let _guard = INTEGRATION_TEST_LOCK.lock().await;
+    fast_timing();
+    let addr = reserve_addr();
+    let url = format!("http://{addr}");
+    let mut service = RunningService::start(addr);
+
+    let core = ServerCore::start(test_config("dependents", Some(url.clone())))
+        .await
+        .unwrap();
+    wait_for(&core, "the initial connection", |s| {
+        s.state == SwarmLinkState::Connected
+    })
+    .await;
+
+    // A TV joins through SWARM activation, the way a real one does.
+    let tv_api = swarm_stun_client::StunClient::new(url);
+    let activation = tv_api
+        .create_activation(tv("Family Room TV", "44"), None)
+        .await
+        .unwrap();
+    core.lookup_activation(&activation.code).await.unwrap();
+    core.approve_activation(&activation.activation_id).await.unwrap();
+    let known = wait_for(&core, "the TV to be recorded as a dependent", |s| {
+        s.dependents == ["Family Room TV"]
+    })
+    .await;
+    assert!(!known.needs_attention, "a healthy link never asks for attention");
+
+    // The service goes away: now someone is affected, and it says who.
+    service.stop();
+    let hurt = wait_for(&core, "the outage to need attention", |s| {
+        s.state == SwarmLinkState::Unreachable && s.needs_attention
+    })
+    .await;
+    assert_eq!(hurt.dependents, ["Family Room TV"]);
+    let (json, body) = health(&core).await;
+    assert_eq!(json["swarm_link"]["needs_attention"], true);
+    assert!(!body.contains("Family Room TV"), "health leaked a device name: {body}");
+
+    // Back again (a fresh service that has never heard of the TV): recovered,
+    // and no longer asking for attention.
+    let _service = RunningService::start(addr);
+    let back = wait_for(&core, "recovery", |s| s.state == SwarmLinkState::Connected).await;
+    assert!(!back.needs_attention);
+}
+
+/// A LAN IP or loopback is a snapshot of one machine on one network. Using it
+/// for a run is fine; remembering it as the service's home is how an installed
+/// app ended up dialing a developer's old address forever.
+#[tokio::test]
+async fn a_snapshot_address_is_used_for_the_run_but_not_remembered() {
+    let _guard = INTEGRATION_TEST_LOCK.lock().await;
+    fast_timing();
+    let addr = reserve_addr();
+    let _service = RunningService::start(addr);
+
+    let config = test_config("snapshot", Some(format!("http://{addr}")));
+    let dev_run = ServerCore::start(config.clone()).await.unwrap();
+    wait_for(&dev_run, "the dev run to connect", |s| {
+        s.state == SwarmLinkState::Connected
+    })
+    .await;
+    let dev_swarm = dev_run.stun_link().await.unwrap().swarms[0].id.clone();
+
+    // The same data directory, started the way an installed app is: no
+    // environment address. It must not inherit the dev run's.
+    let mut installed = config.clone();
+    installed.managed_rendezvous_url = None;
+    let installed_run = ServerCore::start(installed).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let status = installed_run.swarm_link_status();
+    assert_eq!(status.state, SwarmLinkState::NotLinked, "{status:?}");
+    assert_eq!(status.attempts, 0);
+    assert!(installed_run.stun_link().await.is_none());
+
+    // The identity that matters (which swarm this server owns) *was* kept, so
+    // the next dev run renews the same swarm instead of creating another.
+    let next_dev_run = ServerCore::start(config).await.unwrap();
+    wait_for(&next_dev_run, "the next dev run to connect", |s| {
+        s.state == SwarmLinkState::Connected
+    })
+    .await;
+    assert_eq!(next_dev_run.stun_link().await.unwrap().swarms[0].id, dev_swarm);
+}
+
+/// An unused link that has been down for a long time stops chattering, yet
+/// still comes back by itself; and "Try again now" skips the wait.
+#[tokio::test]
+async fn an_unused_link_goes_dormant_and_try_again_skips_the_wait() {
+    let _guard = INTEGRATION_TEST_LOCK.lock().await;
+    fast_timing();
+    std::env::set_var("SWARM_LINK_DORMANT_AFTER_MS", "1000");
+    std::env::set_var("SWARM_LINK_DORMANT_RETRY_MS", "30000");
+    let addr = reserve_addr();
+    let core = ServerCore::start(test_config("dormant", Some(format!("http://{addr}"))))
+        .await
+        .unwrap();
+    wait_for(&core, "the outage", |s| s.attempts >= 2).await;
+
+    // Past the dormancy threshold the retry interval jumps to 30s, so the
+    // attempt counter stops moving.
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    let before = core.swarm_link_status().attempts;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let after = core.swarm_link_status().attempts;
+    assert!(
+        after <= before + 1,
+        "a dormant link kept retrying quickly: {before} -> {after}"
+    );
+    assert!(!core.swarm_link_status().needs_attention);
+
+    // The service returns. Left alone the next attempt is ~30s away; the
+    // button must not wait for it.
+    let _service = RunningService::start(addr);
+    let started = tokio::time::Instant::now();
+    core.retry_swarm_link_now();
+    wait_for(&core, "\"Try again now\" to connect", |s| {
+        s.state == SwarmLinkState::Connected
+    })
+    .await;
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "retry took {:?}; it waited out the dormant interval",
+        started.elapsed()
+    );
 }
 
 /// Writes the rows a previous run would have left behind: a managed identity

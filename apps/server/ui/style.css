@@ -275,6 +275,10 @@ td.mono {
 .link-status strong { display: flex; align-items: center; gap: 8px; }
 .link-status-warn { border-color: color-mix(in srgb, var(--amber) 60%, var(--line-soft)); }
 .link-status-warn strong { color: var(--amber); }
+.link-details { margin-top: 10px; }
+.link-details summary { cursor: pointer; color: var(--muted); font-size: .8rem; }
+.link-details summary:hover { color: var(--text); }
+.link-details[open] summary { margin-bottom: 8px; }
 .link-status-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 8px; font-size: .8rem; color: var(--muted); }
 #onboardFolderView { height: 100vh; overflow: auto; }
 .icon-button i.bi, .modal-close i.bi, .toast-close i.bi { margin: 0; }

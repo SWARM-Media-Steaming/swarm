@@ -45,7 +45,7 @@ use swarm_stun_client::{SignalingClient, StunClient, TokenStore};
 use tokio::sync::{mpsc, watch, Notify};
 use tokio::sync::Mutex;
 
-use crate::link::{AddressWatch, LinkPolicy, SwarmLinkState, SwarmLinkStatus};
+use crate::link::{is_transient_address, AddressWatch, LinkPolicy, SwarmLinkState, SwarmLinkStatus};
 use crate::punch_connect::{respond_to_punch_offer, ReceivedOffer};
 use crate::transcode_activity::{TranscodeActivityMeter, TranscodeActivitySample};
 use crate::transcription::{TranscriptionManager, TranscriptionStatus};
@@ -214,6 +214,9 @@ pub struct ServerCore {
     /// attempt that then re-creates the state it just deleted or overwrites
     /// its status.
     link_op: Mutex<()>,
+    /// Set by the GUI's "Try again" button so the next supervisor pass ignores
+    /// backoff and the minimum gap between attempts.
+    retry_now: AtomicBool,
     scraping: AtomicBool,
     /// Serializes every full scan (the initial background one, `rescan`, and
     /// `update_media_roots`) — `scan_roots` snapshots known entries then
@@ -485,6 +488,7 @@ impl ServerCore {
             signaling_error: std::sync::Mutex::new(None),
             roster_loop_started: AtomicBool::new(false),
             link_op: Mutex::new(()),
+            retry_now: AtomicBool::new(false),
             scraping: AtomicBool::new(false),
             scan_lock: tokio::sync::Mutex::new(()),
             scan_active,
@@ -496,6 +500,7 @@ impl ServerCore {
         // First attempt runs inline so a working link is in place by the time
         // `start` returns. A failure here is no longer final: the supervisor
         // keeps retrying and also notices later network changes.
+        core.load_swarm_dependents().await;
         if tokio::time::timeout(core.link_policy.startup_wait, core.connect_link())
             .await
             .is_err()
@@ -1257,7 +1262,16 @@ impl ServerCore {
             }
             None => {
                 let identity = ManagedSwarmIdentity {
-                    base_url: base_url.clone(),
+                    // A snapshot address (a LAN IP, loopback) is used for this
+                    // run but never remembered as the service's home; see
+                    // `is_transient_address` for the incident this prevents.
+                    // The identity itself (swarm id + owner claim) is what
+                    // must persist, so a later run can renew the same swarm.
+                    base_url: if is_transient_address(&base_url) {
+                        String::new()
+                    } else {
+                        base_url.clone()
+                    },
                     swarm_id: swarm_stun_client::random_token(),
                 };
                 let claim = swarm_stun_client::random_token();
@@ -1282,7 +1296,7 @@ impl ServerCore {
         // that endpoint. This lets a service survive a hostname/IP change
         // (notably DHCP after a desktop restart) without silently trusting
         // an address that did not prove it owns the same managed swarm.
-        if identity.base_url.trim_end_matches('/') != base_url {
+        if !is_transient_address(&base_url) && identity.base_url.trim_end_matches('/') != base_url {
             identity.base_url = base_url.clone();
             self.state_db.save_managed_swarm_identity(&identity).await?;
         }
@@ -1293,7 +1307,12 @@ impl ServerCore {
             device_id: response.device_id.clone(),
             swarms: vec![response.swarm.clone()],
         };
-        self.state_db.save_stun_link(&link).await?;
+        // Same rule as the identity above: a snapshot address is live for this
+        // run only. Saving it is what made an installed app dial a developer's
+        // old LAN address on every launch.
+        if !is_transient_address(&link.base_url) {
+            self.state_db.save_stun_link(&link).await?;
+        }
         self.establish_signaling(&link.base_url, &response.access_token, &link.device_id)
             .await;
         *self.stun.lock().await = Some(StunContext {
@@ -1318,6 +1337,11 @@ impl ServerCore {
         code: &str,
         device_name: &str,
     ) -> Result<SwarmSummary, ServerError> {
+        // Serialized with the supervisor and the other link mutations: a
+        // supervisor pass rebuilds the in-memory link from the saved record,
+        // and racing that against a change in flight can drop what was just
+        // added.
+        let _op = self.link_op.lock().await;
         let machine_id = swarm_stun_client::machine_id::ensure_machine_id(&self.data_dir)?;
         // Submitted immediately so a client checking the roster right after
         // this server joins doesn't have to wait for the first periodic
@@ -1335,6 +1359,7 @@ impl ServerCore {
             device_id: response.device_id.clone(),
             swarms: vec![response.swarm.clone()],
         };
+        let link_url = link.base_url.clone();
         self.state_db.save_stun_link(&link).await?;
 
         self.establish_signaling(&link.base_url, &response.access_token, &link.device_id)
@@ -1346,13 +1371,19 @@ impl ServerCore {
             link,
         });
         Arc::clone(self).spawn_roster_sync_loop();
-        self.link_wake.notify_one();
+        // Publish the outcome directly rather than waking the supervisor: it
+        // would immediately redo the restore and roster sync this call is about
+        // to finish, and a registration that did not fully come up (no
+        // signaling) is retried on the supervisor's normal schedule anyway.
+        self.finish_link_attempt(&link_url);
         self.sync_roster().await?;
         Ok(response.swarm)
     }
 
     /// Add an already-linked device to another swarm with a fresh code.
     pub async fn join_additional_swarm(&self, code: &str) -> Result<SwarmSummary, ServerError> {
+        // See `register_with_stun` for why link mutations take this lock.
+        let _op = self.link_op.lock().await;
         let swarm = {
             let mut guard = self.stun.lock().await;
             let ctx = guard.as_mut().ok_or(ServerError::Stun(
@@ -1374,6 +1405,8 @@ impl ServerCore {
     /// `join_additional_swarm`. Shrinks `allowed` via the roster resync
     /// that follows.
     pub async fn leave_swarm(&self, swarm_id: &str) -> Result<(), ServerError> {
+        // See `register_with_stun` for why link mutations take this lock.
+        let _op = self.link_op.lock().await;
         {
             let mut guard = self.stun.lock().await;
             let ctx = guard.as_mut().ok_or(ServerError::Stun(
@@ -1749,12 +1782,19 @@ impl ServerCore {
         self.link_status.send_if_modified(|status| {
             let before = status.clone();
             update(status);
+            status.refresh_attention();
             *status != before
         });
     }
 
     fn note_not_linked(&self) {
-        self.update_link_status(|status| *status = SwarmLinkStatus::not_linked());
+        self.update_link_status(|status| {
+            // Who depends on SWARM is remembered facts, not link state: it
+            // must survive the link coming and going.
+            let dependents = std::mem::take(&mut status.dependents);
+            *status = SwarmLinkStatus::not_linked();
+            status.dependents = dependents;
+        });
     }
 
     fn note_link_attempt(&self, base_url: &str) {
@@ -1782,12 +1822,23 @@ impl ServerCore {
         // Warn when an outage starts and then only every 10th attempt, so a
         // long outage is visible in the log without filling it.
         if status.attempts == 1 || status.attempts.is_multiple_of(10) {
-            tracing::warn!(
-                url = status.base_url.as_deref().unwrap_or("(none)"),
-                attempts = status.attempts,
-                %error,
-                "SWARM service unreachable; SWARM-paired TVs cannot see this server (LAN clients are unaffected). Retrying in the background"
-            );
+            if status.needs_attention {
+                tracing::warn!(
+                    url = status.base_url.as_deref().unwrap_or("(none)"),
+                    attempts = status.attempts,
+                    dependents = ?status.dependents,
+                    %error,
+                    "SWARM service unreachable; the devices paired through it cannot reach this server (LAN clients are unaffected). Retrying in the background"
+                );
+            } else {
+                // Nothing is paired through SWARM, so nothing is affected.
+                tracing::info!(
+                    url = status.base_url.as_deref().unwrap_or("(none)"),
+                    attempts = status.attempts,
+                    %error,
+                    "SWARM service unreachable, but nothing is paired through it. Retrying in the background"
+                );
+            }
         } else {
             tracing::debug!(attempts = status.attempts, %error, "SWARM service still unreachable");
         }
@@ -1844,7 +1895,12 @@ impl ServerCore {
         if self.stun.lock().await.is_some() || self.configured_managed_url.is_some() {
             return true;
         }
-        if matches!(self.state_db.load_managed_swarm_identity().await, Ok(Some(_))) {
+        // An identity with no saved address (see `provision_managed_swarm`)
+        // has nothing to dial unless the environment supplies one.
+        if matches!(
+            self.state_db.load_managed_swarm_identity().await,
+            Ok(Some(identity)) if !identity.base_url.is_empty()
+        ) {
             return true;
         }
         // A saved manual link is only actionable while its token exists;
@@ -1870,7 +1926,8 @@ impl ServerCore {
             .await
             .ok()
             .flatten()
-            .map(|identity| identity.base_url);
+            .map(|identity| identity.base_url)
+            .filter(|url| !url.is_empty());
         let managed_url = self.configured_managed_url.clone().or(stored_managed_url);
         let mut managed_failure: Option<(String, String)> = None;
         if let Some(base_url) = &managed_url {
@@ -1953,6 +2010,11 @@ impl ServerCore {
     ) -> std::time::Duration {
         let policy = self.link_policy;
 
+        if self.retry_now.swap(false, Ordering::SeqCst) {
+            *last_attempt = None;
+            *failures = 0;
+        }
+
         // A moved machine invalidates everything bound to its old address,
         // whether or not a SWARM service is configured: the LAN advertisement
         // must follow it, and the signaling socket is suspect.
@@ -1991,14 +2053,31 @@ impl ServerCore {
             }
             Ok(LinkOutcome::Failed) => {
                 *failures = failures.saturating_add(1);
-                policy.retry_delay(*failures)
+                self.next_retry_delay(*failures)
             }
             Err(_) => {
                 self.note_link_failure(None, "the SWARM service did not answer in time");
                 *failures = failures.saturating_add(1);
-                policy.retry_delay(*failures)
+                self.next_retry_delay(*failures)
             }
         }
+    }
+
+    /// Backoff for the next attempt, slowed right down once the link has been
+    /// down a long time and nothing uses it: still trying, so it recovers by
+    /// itself, but not worth the network chatter.
+    fn next_retry_delay(&self, failures: u32) -> std::time::Duration {
+        let dormant = self
+            .swarm_link_status()
+            .is_dormant(self.link_policy.dormant_after, unix_now());
+        self.link_policy.retry_delay_for(failures, dormant)
+    }
+
+    /// Makes the supervisor try again immediately, ignoring backoff — the
+    /// GUI's "Try again now".
+    pub fn retry_swarm_link_now(&self) {
+        self.retry_now.store(true, Ordering::SeqCst);
+        self.link_wake.notify_one();
     }
 
     /// Forgets the SWARM service entirely: the saved link, the managed
@@ -2017,9 +2096,12 @@ impl ServerCore {
         if let Ok(store) = self.managed_claim_store() {
             let _ = store.delete();
         }
+        // Nothing reaches this server through SWARM any more.
+        self.state_db.replace_swarm_dependents(&[]).await?;
         // Rebuilds `allowed` without the swarm roster now that no link exists.
         self.sync_roster().await?;
         self.note_not_linked();
+        self.update_link_status(|status| status.dependents.clear());
         self.link_wake.notify_one();
         Ok(())
     }
@@ -2062,11 +2144,19 @@ impl ServerCore {
             tracing::debug!(%err, "failed to self-report peer address this cycle");
         }
 
+        // Devices (TVs) that reach this server through SWARM, as opposed to
+        // just being on the LAN. Remembered so an outage can be judged by
+        // whether it affects anyone.
+        let mut dependents: BTreeMap<String, String> = BTreeMap::new();
         for swarm in &ctx.link.swarms {
             match ctx.client.swarm_devices(&ctx.access_token, &swarm.id).await {
                 Ok(roster) => {
                     for device in roster.devices {
                         if device.cert_fingerprint != self.identity.fingerprint {
+                            if device.device_type == DeviceType::Client {
+                                dependents
+                                    .insert(device.cert_fingerprint.clone(), device.name.clone());
+                            }
                             client_names.insert(device.cert_fingerprint.clone(), device.name);
                             fingerprints.insert(device.cert_fingerprint);
                         }
@@ -2083,11 +2173,42 @@ impl ServerCore {
                 }
             }
         }
+        // Only reached when every roster was fetched, so a transient failure
+        // never wipes what is known.
+        self.record_swarm_dependents(dependents).await;
         let count = fingerprints.len();
         self.allowed.replace(fingerprints);
         self.service.replace_client_names(client_names);
         tracing::debug!(count, "allowed-peer set synced from swarm roster(s)");
         Ok(count)
+    }
+
+    async fn record_swarm_dependents(&self, dependents: BTreeMap<String, String>) {
+        let devices: Vec<(String, String)> = dependents.into_iter().collect();
+        if let Err(err) = self.state_db.replace_swarm_dependents(&devices).await {
+            tracing::warn!(%err, "could not save which devices are paired through SWARM");
+        }
+        let mut names: Vec<String> = devices.into_iter().map(|(_, name)| name).collect();
+        names.sort();
+        names.dedup();
+        self.update_link_status(|status| status.dependents = names);
+    }
+
+    /// Loads the remembered dependents into the status at startup, before the
+    /// first connection attempt, so even that attempt's failure is judged
+    /// correctly.
+    async fn load_swarm_dependents(&self) {
+        let mut names: Vec<String> = self
+            .state_db
+            .swarm_dependents()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(_, name)| name)
+            .collect();
+        names.sort();
+        names.dedup();
+        self.update_link_status(|status| status.dependents = names);
     }
 }
 

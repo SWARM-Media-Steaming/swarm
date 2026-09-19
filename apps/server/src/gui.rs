@@ -3759,6 +3759,17 @@ async fn get_swarm_link_status<R: tauri::Runtime>(
     Ok(core.swarm_link_status())
 }
 
+/// "Try again now" for an offline SWARM link: skips the retry backoff.
+#[tauri::command]
+async fn retry_swarm_link<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let core = state.core(&app).await?;
+    core.retry_swarm_link_now();
+    Ok(())
+}
+
 /// Forgets the saved SWARM service address, swarm memberships and credentials
 /// — the way out of a link stuck on an address that no longer exists. LAN
 /// pairings are untouched.
@@ -4310,6 +4321,7 @@ fn main() {
             clear_scraped_metadata,
             get_swarm_link,
             get_swarm_link_status,
+            retry_swarm_link,
             forget_swarm_link,
             approve_lan_pairing,
             list_local_peers,

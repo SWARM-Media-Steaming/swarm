@@ -1,15 +1,18 @@
 #!/usr/bin/env node
 //
-// The Swarm tab must say so when the media server can't reach the SWARM
-// service. Before this existed the link was attempted once at startup and a
-// failure was silent: SWARM-paired TVs showed the server offline for days
-// while every screen here looked healthy.
+// The Swarm tab must tell people when remote access is broken *and something
+// they use is affected* -- and stay silent otherwise. Before this existed the
+// link was attempted once at startup and a failure was invisible: paired TVs
+// showed the server offline for days while every screen here looked healthy.
+// The first fix warned about every unreachable service, which then alarmed a
+// user whose only unreachable service was a stale address nothing used. So the
+// rule under test is: badge, warning and toast key off `needs_attention`
+// (link down AND a paired device affected); an unused outage is one quiet line.
 //
 // Loads the real index.html and scripts in jsdom (same approach as
 // boot_order.test.js) with an invoke() stub whose link status the test
-// controls, then drives refreshSwarmLinkStatus() -- the same function the
-// 10-second poll calls -- through unreachable -> connected -> unreachable ->
-// not linked.
+// controls, then drives refreshSwarmLinkStatus() -- the function the 10-second
+// poll calls -- through the states.
 //
 // Run: cd apps/server/ui/test && npm install && npm test
 
@@ -23,6 +26,7 @@ const invokeCalls = [];
 const baseStatus = {
   state: "not_linked", base_url: null, last_error: null,
   failing_since: null, connected_since: null, attempts: 0, signaling: false,
+  dependents: [], needs_attention: false,
 };
 let linkStatus = { ...baseStatus };
 
@@ -46,6 +50,8 @@ function invokeStub(command) {
       return linkStatus;
     case "forget_swarm_link":
       linkStatus = { ...baseStatus };
+      return null;
+    case "retry_swarm_link":
       return null;
     case "get_swarm_link":
       return null;
@@ -72,14 +78,15 @@ async function main() {
   const failures = [];
   const expect = (condition, message) => { if (!condition) failures.push(message); };
 
-  // Untrusted text: an address and an error message come from saved state and
-  // the network, so they must be shown as text, never parsed as markup.
+  // The reported situation: a dead saved address and nothing paired through
+  // SWARM. Present from the very first poll, i.e. at boot.
+  const outageStart = Math.floor(Date.now() / 1000) - 3 * 3600;
   linkStatus = {
     ...baseStatus,
     state: "unreachable",
     base_url: "http://192.168.0.235:8080/<b id=\"injected\">x</b>",
     last_error: "<img id=\"injected-img\" src=x onerror=alert(1)>",
-    failing_since: Math.floor(Date.now() / 1000) - 3 * 3600,
+    failing_since: outageStart,
     attempts: 42,
   };
 
@@ -109,47 +116,68 @@ async function main() {
   const box = () => document.getElementById("swarmLinkStatus");
   const toasts = (type) => [...document.querySelectorAll(`.toast-${type} .toast-message`)].map((el) => el.textContent);
 
-  // 1. Unreachable at startup is reported, loudly and once.
   expect(typeof refreshSwarmLinkStatus === "function", "Expected swarm.js to define refreshSwarmLinkStatus().");
-  expect(!badge().classList.contains("d-none"), "Expected the Swarm tab badge to show while the SWARM service is unreachable.");
-  expect(!box().classList.contains("d-none"), "Expected the status block to show while unreachable.");
-  expect(box().textContent.includes("SWARM service unreachable"), "Expected the status block to say the service is unreachable.");
-  expect(box().textContent.includes("SWARM-paired TVs show this server as offline"), "Expected the block to say what the outage means for TVs.");
-  expect(box().textContent.includes("<b id=\"injected\">"), "Expected the saved address to be shown as literal text.");
+  const warnings = () => toasts("warning");
+  const visibleText = () => box().textContent.replace(/\s+/g, " ").trim();
+
+  // 1. An outage nobody is affected by is NOT a problem: no badge, no toast,
+  //    no warning, and no jargon in what is said.
+  expect(badge().classList.contains("d-none"), "An unused outage must not put a badge on the Swarm tab.");
+  expect(warnings().length === 0, `An unused outage must not toast; got: ${warnings().join(" | ")}`);
+  expect(!box().querySelector(".link-status-warn"), "An unused outage must not render the warning block.");
+  expect(visibleText().includes("Nothing is using it, so nothing is affected"), `Expected a plain reassurance, got: ${visibleText()}`);
+  expect(!/rendezvous|stun|swarm service/i.test(box().querySelector(".muted").textContent), "The headline must not use infrastructure jargon.");
+  // The technical detail is still there for whoever wants it, and escaped.
+  expect(box().textContent.includes("<b id=\"injected\">"), "Expected the saved address to be shown as literal text under Details.");
   expect(!box().querySelector("#injected, #injected-img"), "The address/error text was parsed as HTML -- it must go through esc().");
-  expect(box().textContent.includes("Unreachable for 3 h"), `Expected the outage length to be shown, got: ${box().textContent}`);
-  expect(toasts("warning").filter((t) => t.includes("Can't reach the SWARM service")).length === 1,
-    "Expected exactly one warning toast for the initial outage.");
+  expect(box().textContent.includes("Not connected for 3 h"), `Expected the outage length under Details, got: ${visibleText()}`);
 
-  // 2. A poll that finds the same state must not toast again.
+  // 2. Someone IS affected: now it is a warning, it names them, and it says
+  //    what still works.
+  linkStatus = { ...linkStatus, dependents: ["Michael's TV", "<i id=\"injected-name\">Den</i>"], needs_attention: true };
+  await refreshSwarmLinkStatus();
+  expect(!badge().classList.contains("d-none"), "Expected the Swarm tab badge once a paired device is affected.");
+  expect(!!box().querySelector(".link-status-warn"), "Expected the warning block once a paired device is affected.");
+  expect(visibleText().includes("Remote access is offline"), `Expected the plain headline, got: ${visibleText()}`);
+  expect(visibleText().includes("Michael's TV and <i id=\"injected-name\">Den</i> can't connect from outside your network"), `Expected the affected devices by name (escaped), got: ${visibleText()}`);
+  expect(!box().querySelector("#injected-name"), "A device name was parsed as HTML -- it must go through esc().");
+  expect(visibleText().includes("TVs at home still work"), "Expected the warning to say what still works.");
+  expect(warnings().filter((t) => t.includes("Remote access is offline")).length === 1, "Expected exactly one warning toast when the outage starts to matter.");
+
+  // 3. Polling the same state must not repeat the toast.
   await refreshSwarmLinkStatus();
   await refreshSwarmLinkStatus();
-  expect(toasts("warning").filter((t) => t.includes("Can't reach the SWARM service")).length === 1,
-    "Polling the same unreachable state must not repeat the warning toast.");
+  expect(warnings().filter((t) => t.includes("Remote access is offline")).length === 1, "Polling the same state must not repeat the warning toast.");
 
-  // 3. Recovery clears the badge and says so.
-  linkStatus = { ...baseStatus, state: "connected", signaling: true, connected_since: 1 };
+  // 4. "Try again now" reaches the backend.
+  invokeCalls.length = 0;
+  document.getElementById("retrySwarmLinkBtn").click();
+  await tick(60);
+  expect(invokeCalls.includes("retry_swarm_link"), "Expected Try again now to invoke retry_swarm_link.");
+
+  // 5. Recovery clears the badge and says so.
+  linkStatus = { ...baseStatus, state: "connected", signaling: true, connected_since: 1, dependents: ["Michael's TV"] };
   await refreshSwarmLinkStatus();
   expect(badge().classList.contains("d-none"), "Expected the badge to hide once connected.");
-  expect(box().textContent.includes("Connected to the SWARM service"), "Expected the block to confirm the connection.");
-  expect(toasts("success").some((t) => t.includes("Reconnected to the SWARM service")), "Expected a success toast on recovery.");
+  expect(visibleText().includes("Remote access is on"), "Expected the block to confirm remote access is on.");
+  expect(toasts("success").some((t) => t.includes("Remote access is back")), "Expected a success toast on recovery.");
 
-  // 4. Forget calls the backend and returns the tab to "not linked".
-  linkStatus = { ...baseStatus, state: "unreachable", base_url: "http://192.168.0.235:8080", last_error: "connection refused", failing_since: Math.floor(Date.now() / 1000) - 5 };
+  // 6. Turning it off calls the backend and returns the tab to "not set up".
+  linkStatus = { ...baseStatus, state: "unreachable", base_url: "http://192.168.0.235:8080", last_error: "connection refused", failing_since: Math.floor(Date.now() / 1000) - 5, dependents: ["Michael's TV"], needs_attention: true };
   await refreshSwarmLinkStatus();
   const forget = document.getElementById("forgetSwarmLinkBtn");
-  expect(!!forget, "Expected a Forget button while the service is unreachable.");
+  expect(!!forget, "Expected a Turn off remote access button under Details.");
   if (forget) {
     invokeCalls.length = 0;
     forget.click();
     await tick(60);
-    expect(invokeCalls.includes("forget_swarm_link"), "Expected the Forget button to invoke forget_swarm_link.");
+    expect(invokeCalls.includes("forget_swarm_link"), "Expected the button to invoke forget_swarm_link.");
   }
 
-  // 5. Nothing configured is healthy and must stay quiet.
+  // 7. Nothing configured is healthy and must stay quiet.
   await refreshSwarmLinkStatus();
-  expect(badge().classList.contains("d-none"), "Expected no badge when no SWARM service is configured.");
-  expect(box().classList.contains("d-none"), "Expected no status block when no SWARM service is configured.");
+  expect(badge().classList.contains("d-none"), "Expected no badge when remote access is not set up.");
+  expect(box().classList.contains("d-none"), "Expected no status block when remote access is not set up.");
 
   dom.window.close();
 
@@ -157,7 +185,7 @@ async function main() {
     console.error("FAIL: swarm_link_status.test.js\n  " + failures.join("\n  "));
     process.exitCode = 1;
   } else {
-    console.log("PASS: swarm_link_status.test.js -- an unreachable SWARM service is shown once, escaped, and clears on recovery.");
+    console.log("PASS: swarm_link_status.test.js -- an unused outage is silent; an affecting one is named, escaped, toasted once, and clears on recovery.");
   }
 }
 

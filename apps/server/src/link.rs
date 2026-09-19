@@ -51,6 +51,14 @@ pub struct SwarmLinkStatus {
     /// server "online" in a swarm roster, so it is reported separately from
     /// `state` for diagnosis.
     pub signaling: bool,
+    /// Names of the devices that reach this server through the SWARM service
+    /// (last known — the roster cannot be fetched during an outage).
+    pub dependents: Vec<String>,
+    /// Whether the outage is worth interrupting the user for: the link is
+    /// down *and* something that uses it is affected. Derived — see
+    /// [`SwarmLinkStatus::refresh_attention`]. Everything that decides whether
+    /// to show a badge, toast or warning reads this and nothing else.
+    pub needs_attention: bool,
 }
 
 impl SwarmLinkStatus {
@@ -63,7 +71,28 @@ impl SwarmLinkStatus {
             connected_since: None,
             attempts: 0,
             signaling: false,
+            dependents: Vec::new(),
+            needs_attention: false,
         }
+    }
+
+    /// Recomputes [`Self::needs_attention`]. An unreachable service nobody is
+    /// using is not a problem the user can or should act on: a LAN-only
+    /// server, or one left with a stale saved address, is perfectly healthy.
+    /// Warning about it just teaches people to ignore the warning.
+    pub fn refresh_attention(&mut self) {
+        self.needs_attention =
+            self.state == SwarmLinkState::Unreachable && !self.dependents.is_empty();
+    }
+
+    /// Unreachable for long enough, and unused, that background retries can
+    /// slow right down. (Anyone depending on the link keeps the fast schedule.)
+    pub fn is_dormant(&self, dormant_after: Duration, now_unix: u64) -> bool {
+        self.state == SwarmLinkState::Unreachable
+            && self.dependents.is_empty()
+            && self
+                .failing_since
+                .is_some_and(|since| now_unix.saturating_sub(since) >= dormant_after.as_secs())
     }
 
     /// The part that is safe to serve to any device on the LAN without
@@ -74,17 +103,19 @@ impl SwarmLinkStatus {
             failing_since: self.failing_since,
             attempts: self.attempts,
             signaling: self.signaling,
+            needs_attention: self.needs_attention,
         }
     }
 }
 
-/// See [`SwarmLinkStatus::public`].
+/// See [`SwarmLinkStatus::public`]. Deliberately carries no device names.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PublicLinkStatus {
     pub state: SwarmLinkState,
     pub failing_since: Option<u64>,
     pub attempts: u32,
     pub signaling: bool,
+    pub needs_attention: bool,
 }
 
 /// Timing for the supervisor. Environment overrides exist so integration
@@ -107,6 +138,13 @@ pub struct LinkPolicy {
     /// waits on the core, so an unreachable service must never hold startup
     /// hostage.
     pub startup_wait: Duration,
+    /// How long an unused link may stay unreachable before retries slow down.
+    /// Long enough that a service that is merely slow to come up (a reboot,
+    /// a network still joining) is never treated as abandoned.
+    pub dormant_after: Duration,
+    /// Retry interval once dormant. Still retrying, so it wakes on its own if
+    /// the service returns, just not worth the network chatter.
+    pub dormant_retry: Duration,
 }
 
 impl Default for LinkPolicy {
@@ -120,6 +158,8 @@ impl Default for LinkPolicy {
             health_interval: Duration::from_secs(15),
             attempt_timeout: Duration::from_secs(20),
             startup_wait: Duration::from_secs(5),
+            dormant_after: Duration::from_secs(60 * 60),
+            dormant_retry: Duration::from_secs(10 * 60),
         }
     }
 }
@@ -141,6 +181,18 @@ impl LinkPolicy {
             health_interval: millis("SWARM_LINK_CHECK_MS", default.health_interval),
             attempt_timeout: millis("SWARM_LINK_ATTEMPT_TIMEOUT_MS", default.attempt_timeout),
             startup_wait: millis("SWARM_LINK_STARTUP_WAIT_MS", default.startup_wait),
+            dormant_after: millis("SWARM_LINK_DORMANT_AFTER_MS", default.dormant_after),
+            dormant_retry: millis("SWARM_LINK_DORMANT_RETRY_MS", default.dormant_retry),
+        }
+    }
+
+    /// [`Self::retry_delay`], slowed to `dormant_retry` when dormant.
+    pub fn retry_delay_for(&self, failures: u32, dormant: bool) -> Duration {
+        let delay = self.retry_delay(failures);
+        if dormant {
+            delay.max(self.dormant_retry)
+        } else {
+            delay
         }
     }
 
@@ -151,6 +203,46 @@ impl LinkPolicy {
         self.initial_retry
             .saturating_mul(1u32 << doublings)
             .min(self.max_retry)
+    }
+}
+
+/// Whether `base_url` points somewhere that will not mean the same thing
+/// later or elsewhere: `localhost`, or a loopback / private / link-local IP
+/// literal. Such an address is a snapshot of one machine on one network (a
+/// DHCP lease, a dev harness), so it must not be saved as if it were the
+/// service's permanent home — that is how a developer's `192.168.x.y` ended up
+/// as the address an installed app kept dialing forever. A hostname is a name
+/// somebody chose to keep stable, so it is treated as durable, as is a
+/// carrier-grade-NAT (`100.64/10`) address, which VPN overlays keep fixed per
+/// device.
+pub fn is_transient_address(base_url: &str) -> bool {
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    let rest = base_url
+        .split_once("://")
+        .map_or(base_url, |(_, rest)| rest);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    let authority = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+    let host = if let Some(bracketed) = authority.strip_prefix('[') {
+        bracketed.split(']').next().unwrap_or(bracketed)
+    } else {
+        authority.split(':').next().unwrap_or(authority)
+    };
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    match host.parse::<IpAddr>() {
+        Ok(IpAddr::V4(ip)) => {
+            ip.is_loopback() || ip.is_private() || ip.is_link_local() || ip == Ipv4Addr::UNSPECIFIED
+        }
+        Ok(IpAddr::V6(ip)) => {
+            let first = ip.segments()[0];
+            ip.is_loopback()
+                || ip == Ipv6Addr::UNSPECIFIED
+                || (first & 0xfe00) == 0xfc00 // unique local
+                || (first & 0xffc0) == 0xfe80 // link local
+        }
+        Err(_) => false,
     }
 }
 
@@ -262,11 +354,96 @@ mod tests {
             connected_since: None,
             attempts: 3,
             signaling: false,
+            dependents: vec!["Michael's TV".into()],
+            needs_attention: true,
         };
         let json = serde_json::to_string(&status.public()).unwrap();
         assert!(!json.contains("192.168"), "leaked address: {json}");
         assert!(!json.contains("refused"), "leaked error: {json}");
         assert!(json.contains("\"state\":\"unreachable\""), "{json}");
         assert!(json.contains("\"attempts\":3"), "{json}");
+        assert!(json.contains("\"needs_attention\":true"), "{json}");
+        // Device names are the user's own data; the unauthenticated endpoint
+        // never carries them.
+        assert!(!json.contains("Michael"), "leaked a device name: {json}");
+    }
+
+    fn status(state: SwarmLinkState, dependents: &[&str]) -> SwarmLinkStatus {
+        let mut status = SwarmLinkStatus::not_linked();
+        status.state = state;
+        status.dependents = dependents.iter().map(|d| d.to_string()).collect();
+        status.refresh_attention();
+        status
+    }
+
+    /// The rule the whole "don't confuse people" change rests on.
+    #[test]
+    fn an_outage_needs_attention_only_when_something_depends_on_it() {
+        use SwarmLinkState::*;
+        assert!(status(Unreachable, &["Michael's TV"]).needs_attention);
+        // Nothing uses it — the stale-saved-address case. Not the user's problem.
+        assert!(!status(Unreachable, &[]).needs_attention);
+        // Working, or not in play at all: never a warning.
+        assert!(!status(Connected, &["Michael's TV"]).needs_attention);
+        assert!(!status(Connecting, &["Michael's TV"]).needs_attention);
+        assert!(!status(NotLinked, &["Michael's TV"]).needs_attention);
+    }
+
+    #[test]
+    fn only_an_unused_long_outage_is_dormant() {
+        let after = Duration::from_secs(3600);
+        let mut s = status(SwarmLinkState::Unreachable, &[]);
+        s.failing_since = Some(1_000);
+        assert!(!s.is_dormant(after, 1_000 + 3599), "not yet an hour");
+        assert!(s.is_dormant(after, 1_000 + 3600));
+        // Someone depends on it: retries stay fast however long it has been.
+        let mut used = status(SwarmLinkState::Unreachable, &["Michael's TV"]);
+        used.failing_since = Some(1_000);
+        assert!(!used.is_dormant(after, 1_000 + 999_999));
+        // Not in an outage at all.
+        assert!(!status(SwarmLinkState::Connected, &[]).is_dormant(after, u64::MAX));
+    }
+
+    #[test]
+    fn dormant_retries_slow_down_but_never_speed_up() {
+        let policy = LinkPolicy::default();
+        assert_eq!(policy.retry_delay_for(1, false), Duration::from_secs(5));
+        assert_eq!(policy.retry_delay_for(1, true), Duration::from_secs(600));
+        assert_eq!(policy.retry_delay_for(50, false), Duration::from_secs(60));
+        assert_eq!(policy.retry_delay_for(50, true), Duration::from_secs(600));
+    }
+
+    #[test]
+    fn private_and_loopback_addresses_are_transient_names_are_not() {
+        for transient in [
+            "http://192.168.0.235:8080",
+            "http://192.168.0.235:8080/",
+            "https://10.0.0.5",
+            "http://172.16.4.4:9",
+            "http://172.31.255.1",
+            "http://127.0.0.1:8080",
+            "http://localhost:8080",
+            "http://LOCALHOST",
+            "http://169.254.10.10",
+            "http://[::1]:8080",
+            "http://[fd12:3456::1]:8080",
+            "http://[fe80::1]",
+            "http://0.0.0.0:8080",
+            "http://user:pw@192.168.1.2:8080/path?x=1",
+            "192.168.0.235:8080",
+        ] {
+            assert!(is_transient_address(transient), "{transient} should be transient");
+        }
+        for durable in [
+            "https://swarm.example.com",
+            "https://swarm.example.com:8443/api",
+            "http://my-mac.local:8080",
+            "http://8.8.8.8:8080",
+            "http://172.32.0.1",
+            "http://100.125.107.15:8080", // VPN overlay address, stable per device
+            "http://[2001:db8::1]:8080",
+        ] {
+            assert!(!is_transient_address(durable), "{durable} should be durable");
+        }
     }
 }

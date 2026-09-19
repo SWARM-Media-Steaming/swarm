@@ -85,9 +85,10 @@ real estate the user has to navigate around, and every overlay already gets a wo
 physical Back for free once it's wired up.
 
 Two navigation surfaces get **more than one Back tier**, and both must be reproduced:
-- A persistent filter rail: Back first collapses/exits the rail if it's expanded or
-  focused; only a *second* Back (with the rail already collapsed and focus elsewhere)
-  continues to the screen's real Back action.
+- The catalog browse page: Back first closes the search popup if it's open, then scrolls
+  to the top and focuses the top bar (search icon / Movies / Shows / Music); only a
+  *second* Back (with the top bar already focused) continues to the screen's real Back
+  action.
 - The video/music player: video's Back pauses first, then a second Back (from the paused
   overlay) actually exits; music's Back **minimizes** the player instead of stopping it —
   the visible on-screen Close/Stop control is the only way to actually end music playback.

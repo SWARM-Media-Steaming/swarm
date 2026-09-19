@@ -46,8 +46,8 @@ instructions and the same gap list in narrative form.
 | Music/artist shelf (grouped) | Complete (+ genre sub-shelves) | Partial | Grouped by artist, first 10 artists, no genre sub-shelves. Selecting an artist **plays its first track directly** — no album/track grid yet |
 | Continue Watching row (cap 6) | Complete | Not implemented | |
 | Watchlist row | Complete | Not implemented | Watchlist *toggle* exists (`MovieDetailScreen`) and persists; there's no row surfacing it yet |
-| Persistent filter rail (kind/liked/genre/rating) | Complete | Not implemented | |
-| Search (submit-only, not live-filter) | Complete | Not implemented | |
+| Netflix-style top bar (search icon, Movies default, Shows, Music) + category-tile first row (genres ranked by asset count, no artwork, no "liked"); replaced the filter sidebar in #324 | Complete | Not implemented | |
+| Search (submit-only, not live-filter; opened from the top-bar search icon as a popup, spans all kinds) | Complete | Not implemented | |
 | "Browse All" grids (alphabetical) | Complete | Not implemented | Shelves are capped at 10 items with no overflow grid |
 | Genre-filtered full grid | Complete | Not implemented | |
 | Live catalog change-feed (long-poll delta) | Complete | Not implemented | `CatalogTask` does one full `/catalog/manifest` fetch per screen visit, no `.gz`, no `/catalog/changes` delta polling — documented v1 simplification, real bandwidth cost on a large library |
@@ -110,7 +110,7 @@ instructions and the same gap list in narrative form.
 | Loading indicator + themed message rotation | Complete (50-message rotation + GIF) | Partial | `LoadingScreen` shows one static message, no rotation, no animated asset |
 | Exit-confirm modal | Complete | Not implemented | |
 | Keep-awake during active playback only | Complete | Not implemented | No explicit keep-awake call yet (worth checking whether the `Video` node's own playing state already covers this on Roku before adding one) |
-| Two-tier filter-rail Back | Complete | N/A | No filter rail exists yet in this pass |
+| Two-tier catalog Back (scroll to top bar, then exit) | Complete | N/A | No top bar/search yet in this pass |
 | Two-tier player Back (video pause-then-exit; music minimize) | Complete | Deviation (simplified) | Roku v1's Back always tears down + exits immediately (no pause-first tier, no music-minimize) |
 
 ## Server/protocol surface consumed by the client

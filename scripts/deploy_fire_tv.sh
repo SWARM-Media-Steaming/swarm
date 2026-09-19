@@ -96,12 +96,17 @@ fi
 # the scan doesn't leave stray adb connections behind. Prints one
 # "name<TAB>ip" pair per line to stdout.
 inspect_fire_tv_candidates() {
-    local candidates="$1" ip manufacturer name found connect_failed
+    local candidates="$1" ip manufacturer name found connect_failed connect_out
     found=0
     connect_failed=0
     while IFS= read -r ip; do
         [ -n "$ip" ] || continue
-        if ! "$ADB" connect "$ip:$ADB_PORT" >/dev/null 2>&1; then
+        # `adb connect` exits 0 even when it fails ("failed to connect to ...:
+        # No route to host"), so judge success by its output. Checking only the
+        # exit status meant the stale-daemon retry below never fired, and the
+        # scan reported "no Fire TVs" while three were reachable.
+        connect_out="$("$ADB" connect "$ip:$ADB_PORT" 2>&1 || true)"
+        if [[ "$connect_out" != *"connected to"* ]]; then
             connect_failed=1
             continue
         fi
@@ -163,8 +168,13 @@ scan_lan_for_fire_tvs() {
     [ -n "$live_ips" ] || return 0
 
     echo "==> Checking live hosts for adb (port $ADB_PORT) ..." >&2
+    # -G 1 (BSD/macOS connect timeout) is required, not just -w1: a host that
+    # answers ping but silently drops SYNs to this port (seen firsthand on a
+    # Wi-Fi device) made `nc -z -w1` block indefinitely, since -w doesn't bound
+    # connect() on macOS — and one stuck probe stalls the whole xargs pool, so
+    # the scan hung with no output and never reached the device list.
     open_ips="$(printf '%s\n' "$live_ips" | xargs -P 32 -I{} bash -c \
-        'nc -z -w1 "$1" '"$ADB_PORT"' 2>/dev/null && echo "$1"' _ {} | sort || true)"
+        'nc -z -G 1 -w1 "$1" '"$ADB_PORT"' 2>/dev/null && echo "$1"' _ {} | sort || true)"
 
     [ -n "$open_ips" ] || return 0
     inspect_status=0

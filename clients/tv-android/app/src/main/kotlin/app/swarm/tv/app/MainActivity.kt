@@ -964,7 +964,7 @@ private fun SwarmApp(
                     },
                     // A Browse All tile press remembers a per-kind sentinel so
                     // pressing Back out of the full grid lands focus back on
-                    // that tile rather than the filter rail (#159).
+                    // that tile rather than the top of the page (#159).
                     onOpenMovieShelf = { movies ->
                         lastFocusedMovieKey = BROWSE_ALL_TILE_FOCUS_KEY
                         lastFocusedShowKey = null

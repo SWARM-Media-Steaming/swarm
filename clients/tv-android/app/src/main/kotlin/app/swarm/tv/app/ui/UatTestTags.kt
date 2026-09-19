@@ -23,13 +23,18 @@ object UatTestTags {
     const val CARD_ARTIST_PREFIX = "uat_card_artist_"
     const val CARD_QUICK_ACCESS_PREFIX = "uat_card_quick_access_"
 
-    // CatalogScreen: filter rail.
+    // CatalogScreen: top bar + category row (#324 replaced the left filter rail).
+    // FILTER_RAIL now tags the top navigation bar, and the FILTER_* names are kept
+    // so the existing instrumented suite keeps compiling; FILTER_LIKED_ONLY and
+    // FILTER_RATING_PREFIX no longer exist on screen.
     const val FILTER_RAIL = "uat_filter_rail"
-    const val FILTER_KIND_PREFIX = "uat_filter_kind_" // + KindFilter.name (ALL/MOVIES/SHOWS/MUSIC)
+    const val FILTER_KIND_PREFIX = "uat_filter_kind_" // + KindFilter.name (MOVIES/SHOWS/MUSIC) — the top-bar tabs
     const val FILTER_LIKED_ONLY = "uat_filter_liked_only"
-    const val FILTER_GENRE_PREFIX = "uat_filter_genre_" // + genre name
+    const val FILTER_GENRE_PREFIX = "uat_filter_genre_" // + genre name — a category tile
     const val FILTER_RATING_PREFIX = "uat_filter_rating_" // + rating value
-    const val SEARCH_FIELD = "uat_search_field"
+    const val CATEGORY_ROW = "uat_category_row"
+    const val SEARCH_BUTTON = "uat_search_button" // the top-bar search icon
+    const val SEARCH_FIELD = "uat_search_field" // inside the search popup
     const val SEARCH_CLEAR_BUTTON = "uat_search_clear_button"
     const val SEARCH_NO_MATCHES = "uat_search_no_matches"
     const val BROWSE_PREVIEW_PREFIX = "uat_browse_preview_" // + playback session id

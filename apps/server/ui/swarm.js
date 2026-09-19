@@ -139,7 +139,100 @@ async function loadHttpMediaDevices() {
   }
 }
 
+// ---- SWARM service link status ---------------------------------------------
+//
+// The server's link to the SWARM service used to be attempted once at startup;
+// if it failed nothing said so, and every SWARM-paired TV showed this server
+// offline while everything here looked healthy. The backend now retries on its
+// own and reports where it stands, so this only has to say so out loud: a tab
+// badge (visible from any tab), a status block on this tab, and a toast when
+// the state changes.
+
+let lastSwarmLinkState = null;
+let lastSwarmLinkHtml = null;
+
+function formatOutage(failingSince) {
+  if (!failingSince) return "";
+  const seconds = Math.max(0, Math.floor(Date.now() / 1000) - failingSince);
+  if (seconds < 60) return "less than a minute";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  return hours < 48 ? `${hours} h` : `${Math.floor(hours / 24)} days`;
+}
+
+function swarmLinkStatusHtml(status) {
+  if (status.state === "unreachable") {
+    const outage = formatOutage(status.failing_since);
+    return `<div class="link-status link-status-warn">
+      <strong><i class="bi bi-exclamation-triangle-fill"></i>SWARM service unreachable</strong>
+      <p class="muted">SWARM-paired TVs show this server as offline until it reconnects. TVs on this network are unaffected. Retrying automatically.</p>
+      <div class="link-status-meta">
+        ${status.base_url ? `<span class="mono">${esc(status.base_url)}</span>` : ""}
+        ${status.last_error ? `<span>${esc(status.last_error)}</span>` : ""}
+        ${outage ? `<span>Unreachable for ${esc(outage)}</span>` : ""}
+      </div>
+      <div class="row action-row">
+        <button id="forgetSwarmLinkBtn" class="danger-button compact" title="Only if this address is no longer right"><i class="bi bi-x-circle"></i>Forget this SWARM service</button>
+      </div>
+    </div>`;
+  }
+  if (status.state === "connecting") {
+    return `<div class="link-status"><span class="muted"><i class="bi bi-arrow-repeat"></i> Connecting to the SWARM service…</span></div>`;
+  }
+  if (status.state === "connected") {
+    return `<div class="link-status"><span class="note"><i class="bi bi-check-circle-fill"></i> Connected to the SWARM service</span></div>`;
+  }
+  return "";
+}
+
+async function refreshSwarmLinkStatus() {
+  let status;
+  try {
+    status = await invoke("get_swarm_link_status");
+  } catch {
+    // Best-effort background poll — a failed check isn't worth a toast every interval.
+    return;
+  }
+  const state = status && status.state ? status.state : "not_linked";
+
+  const badge = document.getElementById("swarmLinkBadge");
+  if (badge) badge.classList.toggle("d-none", state !== "unreachable");
+
+  // Re-render only when the content changed, so a button under the cursor is
+  // not replaced out from under a click.
+  const box = document.getElementById("swarmLinkStatus");
+  const html = swarmLinkStatusHtml({ ...status, state });
+  if (box && html !== lastSwarmLinkHtml) {
+    lastSwarmLinkHtml = html;
+    box.innerHTML = html;
+    box.classList.toggle("d-none", html === "");
+    const forget = document.getElementById("forgetSwarmLinkBtn");
+    if (forget) {
+      forget.addEventListener("click", async () => {
+        try {
+          await invoke("forget_swarm_link");
+          showToast("Forgot the SWARM service.", "success");
+          await refreshSwarm();
+        } catch (err) {
+          showToast(String(err), "error");
+        }
+      });
+    }
+  }
+
+  if (state !== lastSwarmLinkState) {
+    if (state === "unreachable") {
+      showToast("Can't reach the SWARM service. SWARM-paired TVs will show this server as offline until it reconnects.", "warning");
+    } else if (state === "connected" && lastSwarmLinkState === "unreachable") {
+      showToast("Reconnected to the SWARM service.", "success");
+    }
+    lastSwarmLinkState = state;
+  }
+}
+
 async function refreshSwarm() {
+  refreshSwarmLinkStatus();
   loadLocalPeers();
   loadHttpMediaDevices();
   const content = document.getElementById("swarmContent");

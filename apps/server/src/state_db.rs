@@ -282,6 +282,29 @@ impl StateDb {
         Ok(())
     }
 
+    /// Forgets the saved SWARM service link and its swarm memberships.
+    pub async fn clear_stun_link(&self) -> sqlx::Result<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM stun_link_swarm WHERE stun_link_id = ?")
+            .bind(STUN_LINK_ROW_ID)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM stun_link WHERE id = ?")
+            .bind(STUN_LINK_ROW_ID)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await
+    }
+
+    /// Forgets the managed-swarm identity. The owner claim that pairs with it
+    /// lives in the credential store and must be deleted alongside it.
+    pub async fn clear_managed_swarm_identity(&self) -> sqlx::Result<()> {
+        sqlx::query("DELETE FROM managed_swarm_identity WHERE id = 1")
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn load_managed_swarm_identity(&self) -> sqlx::Result<Option<ManagedSwarmIdentity>> {
         let row: Option<(String, String)> =
             sqlx::query_as("SELECT base_url, swarm_id FROM managed_swarm_identity WHERE id = 1")
@@ -467,6 +490,42 @@ mod tests {
             db.load_managed_swarm_identity().await.unwrap(),
             Some(identity)
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// "Forget this SWARM service" must leave nothing behind that could make
+    /// the next startup dial the old address again — not the link, not its
+    /// swarm rows, and not the managed identity that also carries a URL.
+    #[tokio::test]
+    async fn clearing_the_link_and_identity_removes_every_saved_service_address() {
+        let dir = std::env::temp_dir().join(format!("swarm-state-db-clear-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = StateDb::open(&dir).await.unwrap();
+        db.save_stun_link(&StunLinkRecord {
+            base_url: "http://192.168.0.235:8080".into(),
+            device_id: "device".into(),
+            swarms: vec![SwarmSummary {
+                id: "s1".into(),
+                name: "Home".into(),
+            }],
+        })
+        .await
+        .unwrap();
+        db.save_managed_swarm_identity(&ManagedSwarmIdentity {
+            base_url: "http://192.168.0.235:8080".into(),
+            swarm_id: "cd".repeat(32),
+        })
+        .await
+        .unwrap();
+
+        db.clear_stun_link().await.unwrap();
+        db.clear_managed_swarm_identity().await.unwrap();
+
+        assert_eq!(db.load_stun_link().await.unwrap(), None);
+        assert_eq!(db.load_managed_swarm_identity().await.unwrap(), None);
+        // Clearing an already-empty store is a no-op, not an error.
+        db.clear_stun_link().await.unwrap();
+        db.clear_managed_swarm_identity().await.unwrap();
         std::fs::remove_dir_all(&dir).ok();
     }
 }

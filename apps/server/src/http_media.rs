@@ -38,6 +38,7 @@
 //! the same moment it learns its bearer token — it has no other way to
 //! obtain it, since the CA is generated fresh per server install.
 
+use crate::link::SwarmLinkStatus;
 use crate::state_db::StateDb;
 use axum::extract::{ConnectInfo, Extension, Json, OriginalUri, Path as AxumPath, State};
 use axum::http::{header, HeaderMap, StatusCode};
@@ -315,6 +316,8 @@ struct AppState {
     /// isn't running — such a device is LAN-only and has no relay path to
     /// need a trust anchor for.
     http_ca_pem: Option<String>,
+    /// Live SWARM-link status for `/health`.
+    link_status: tokio::sync::watch::Receiver<SwarmLinkStatus>,
 }
 
 #[derive(Clone)]
@@ -330,6 +333,7 @@ pub async fn start(
     state_db: Arc<StateDb>,
     bind: SocketAddr,
     tls: Option<HttpMediaTlsConfig>,
+    link_status: tokio::sync::watch::Receiver<SwarmLinkStatus>,
 ) -> std::io::Result<HttpMediaService> {
     let pairing = Arc::new(Mutex::new(PairingState::default()));
     let pair_limiter = Arc::new(AllocationLimiter::new(20, Duration::from_secs(3600)));
@@ -340,11 +344,21 @@ pub async fn start(
         pairing: Arc::clone(&pairing),
         pair_limiter,
         http_ca_pem,
+        link_status,
     };
 
     let pairing_routes = Router::new()
         .route("/pair/begin", post(pair_begin))
         .route("/pair/poll", post(pair_poll))
+        .layer(middleware::from_fn(reject_cross_site))
+        .layer(middleware::from_fn(require_lan));
+
+    // Answers "is this server reachable, and is it visible to SWARM-paired
+    // clients?" for anything monitoring it from the LAN. Unauthenticated like
+    // pairing, so it is held to the same LAN-only and cross-site guards and
+    // reports only the sanitized link status.
+    let health_routes = Router::new()
+        .route("/health", get(health))
         .layer(middleware::from_fn(reject_cross_site))
         .layer(middleware::from_fn(require_lan));
 
@@ -390,7 +404,7 @@ pub async fn start(
     // binary at all (`cfg(debug_assertions)`), and never behind
     // `require_bearer`: it isn't reachable by a TV client, only by the
     // closed-loop TV UAT suite running on this same machine.
-    let mut app = pairing_routes.merge(media_routes);
+    let mut app = pairing_routes.merge(health_routes).merge(media_routes);
     #[cfg(debug_assertions)]
     {
         app = app.merge(Router::new().route("/errors/{id}/resolve", post(resolve_client_error_debug)));
@@ -460,6 +474,14 @@ async fn start_tls_listener(app: Router, config: HttpMediaTlsConfig) -> std::io:
     });
 
     Ok(tls_local_addr)
+}
+
+/// `GET /health`. `ok` means this HTTP surface is serving; `swarm_link` says
+/// whether the server is visible through the SWARM service, which can be
+/// down while everything on the LAN works.
+async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let link = state.link_status.borrow().public();
+    Json(serde_json::json!({ "ok": true, "swarm_link": link }))
 }
 
 async fn require_lan(

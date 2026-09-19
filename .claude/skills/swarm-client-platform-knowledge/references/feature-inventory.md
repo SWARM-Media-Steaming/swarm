@@ -32,6 +32,7 @@ instructions and the same gap list in narrative form.
 | Manual server address entry | N/A (Fire TV always has LAN+STUN) | Not implemented | Deferred — needs a Keyboard-overlay component not yet built. Real gap for the "mDNS didn't work" fallback case. |
 | Disconnect / reconnect / forget a server | Complete | Partial | "Forget this server" implemented (`DashboardScreen`); there is only ever one saved connection at a time (v1 simplification — Fire TV supports multiple known LAN servers), so reconnect/switch-between-servers doesn't apply yet |
 | Dashboard presence refresh (10s poll) | Complete | Not implemented | |
+| SWARM service outage vs. server offline messaging | Complete — a failed roster fetch shows "Can't reach the SWARM service" (`Dashboard.serviceUnreachable`), a registered-but-disconnected server is named as offline, and only an actually empty swarm says nobody has joined; servers this TV can see over mDNS stay online through a roster outage | Not implemented | **Gap, tracked with "Remote (off-LAN) server reach"**: Roku never reads the SWARM roster today, so it cannot hit this failure. Whoever builds Roku's SWARM path must show the same three distinct messages (service down / server offline / nobody joined) — one "no servers" line for all three sent people debugging the wrong thing. |
 | Device/app-build testing mode (debug builds) | Complete | Not implemented | Lower priority — dev/QA convenience, not user-facing |
 
 ## Catalog & browsing

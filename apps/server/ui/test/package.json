@@ -4,7 +4,7 @@
   "description": "Node/jsdom regression tests for apps/server/ui's plain HTML/JS pages. Separate from the Rust workspace's own Cargo.toml on purpose — this is the one place in the repo that needs an npm toolchain at all.",
   "type": "commonjs",
   "scripts": {
-    "test": "node boot_order.test.js"
+    "test": "node boot_order.test.js && node swarm_link_status.test.js"
   },
   "devDependencies": {
     "jsdom": "^25.0.0"

@@ -76,6 +76,7 @@ fun SwarmDashboardScreen(
     deviceName: String,
     joiningServer: Boolean,
     joinServerError: String?,
+    serviceUnreachable: Boolean = false,
     onBrowseCatalog: () -> Unit,
     onOpenSettings: () -> Unit,
     onAddServer: () -> Unit,
@@ -213,8 +214,8 @@ fun SwarmDashboardScreen(
                     if (serversInSwarm.isEmpty()) {
                         item {
                             Text(
-                                "No media servers have joined this swarm yet.",
-                                color = SwarmMuted,
+                                swarmServersEmptyMessage(devices, serviceUnreachable),
+                                color = if (serviceUnreachable) SwarmError else SwarmMuted,
                                 fontSize = 14.sp,
                             )
                         }
@@ -460,6 +461,27 @@ internal fun visibleSwarmServers(devices: List<SwarmDevice>): List<SwarmDevice> 
     devices.filter {
         it.online && (it.deviceType == DeviceType.SERVER || it.deviceType == DeviceType.BOTH)
     }
+
+/** What the "Servers in this swarm" section says when it has no online
+ * server to list. Each cause needs its own words: the SWARM service being
+ * down, a known server being disconnected from it, and a swarm nobody has
+ * joined are three different problems with three different fixes, and one
+ * "nobody has joined" line for all of them sent people looking in the wrong
+ * place. */
+internal fun swarmServersEmptyMessage(devices: List<SwarmDevice>, serviceUnreachable: Boolean): String {
+    if (serviceUnreachable) {
+        return "Can't reach the SWARM service right now. Servers found on this network are listed below."
+    }
+    val offline = devices
+        .filter { (it.deviceType == DeviceType.SERVER || it.deviceType == DeviceType.BOTH) && !it.online }
+        .map { it.name }
+        .distinct()
+    return when (offline.size) {
+        0 -> "No media servers have joined this swarm yet."
+        1 -> "${offline.single()} is offline. It isn't connected to SWARM right now."
+        else -> "${offline.joinToString()} are offline. They aren't connected to SWARM right now."
+    }
+}
 
 /** Keeps paired servers visible after their mDNS advertisement disappears,
  * while preferring the current address and ports for servers still online. */

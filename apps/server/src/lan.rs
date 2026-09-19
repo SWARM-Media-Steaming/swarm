@@ -204,16 +204,29 @@ fn started_from(activation: &PendingActivation) -> ActivationStarted {
     }
 }
 
+/// Everything needed to rebuild the mDNS record for a different address.
+#[derive(Clone)]
+struct AdvertiseParams {
+    server_fingerprint: String,
+    peer_port: u16,
+    pairing_port: u16,
+    http_media_port: u16,
+    http_media_tls_port: Option<u16>,
+}
+
 struct Advertisement {
     daemon: ServiceDaemon,
     fullname: String,
+    params: AdvertiseParams,
 }
 
 pub struct LanService {
     pairing: Arc<Mutex<PairingState>>,
     state_db: Arc<StateDb>,
     allowed: AllowedPeers,
-    advertisement: Option<Advertisement>,
+    /// Behind a lock because the record's address must be replaced when the
+    /// machine changes networks — see [`LanService::refresh_advertisement`].
+    advertisement: std::sync::Mutex<Option<Advertisement>>,
 }
 
 impl LanService {
@@ -266,19 +279,44 @@ impl LanService {
             }
         });
 
-        let advertisement = advertise(
-            &server_fingerprint,
-            peer_addr,
+        let advertisement = advertise(AdvertiseParams {
+            server_fingerprint,
+            peer_port: peer_addr.port(),
             pairing_port,
             http_media_port,
             http_media_tls_port,
-        );
+        });
         Ok(Self {
             pairing,
             state_db,
             allowed,
-            advertisement,
+            advertisement: std::sync::Mutex::new(advertisement),
         })
+    }
+
+    /// Re-announces this server on the machine's *current* LAN address.
+    ///
+    /// The record used to be built once at startup with whatever address the
+    /// machine had then. A laptop that moved to another network (or got a new
+    /// DHCP lease) kept advertising the old address, so LAN clients kept
+    /// discovering a server they could not connect to and showed it offline.
+    /// Registering the same service name again replaces the record and
+    /// re-announces it. Returns the address now advertised, or `None` when
+    /// nothing is being advertised at all.
+    pub fn refresh_advertisement(&self) -> Option<IpAddr> {
+        let guard = self.advertisement.lock().unwrap_or_else(|p| p.into_inner());
+        let advertisement = guard.as_ref()?;
+        let address = swarm_p2p::local_addr::detect_local_ipv4();
+        let info = build_service_info(&advertisement.params, address)
+            .map_err(|err| tracing::warn!(%err, "could not rebuild mDNS advertisement"))
+            .ok()?;
+        advertisement
+            .daemon
+            .register(info)
+            .map_err(|err| tracing::warn!(%err, "could not re-register mDNS advertisement"))
+            .ok()?;
+        tracing::info!(%address, "re-announced media server on the LAN after a network change");
+        Some(address)
     }
 
     pub async fn approve_pairing_code(
@@ -291,40 +329,33 @@ impl LanService {
 
 impl Drop for LanService {
     fn drop(&mut self) {
-        if let Some(advertisement) = &self.advertisement {
+        let guard = self.advertisement.get_mut().unwrap_or_else(|p| p.into_inner());
+        if let Some(advertisement) = guard.as_ref() {
             let _ = advertisement.daemon.unregister(&advertisement.fullname);
             let _ = advertisement.daemon.shutdown();
         }
     }
 }
 
-fn advertise(
-    server_fingerprint: &str,
-    peer_addr: SocketAddr,
-    pairing_port: u16,
-    http_media_port: u16,
-    http_media_tls_port: Option<u16>,
-) -> Option<Advertisement> {
-    let daemon = ServiceDaemon::new()
-        .map_err(|err| tracing::warn!(%err, "could not start mDNS advertiser"))
-        .ok()?;
-    let short = &server_fingerprint[..server_fingerprint.len().min(12)];
+/// Builds the mDNS record advertising this server at `address`.
+fn build_service_info(params: &AdvertiseParams, address: IpAddr) -> Result<ServiceInfo, String> {
+    let short = &params.server_fingerprint[..params.server_fingerprint.len().min(12)];
     let instance = format!("SWARM Media Server {short}");
     let hostname = format!("swarm-{short}.local.");
-    let peer_port = peer_addr.port().to_string();
-    let pair_port = pairing_port.to_string();
+    let peer_port = params.peer_port.to_string();
+    let pair_port = params.pairing_port.to_string();
     // Not consumed by the Fire TV client — it only ever reads
     // fingerprint/peer_port/pair_port here and pairs over QUIC, never these
     // two. Advertised for an HTTP-only client (Roku) that can't speak QUIC
     // at all and has no other way to discover these ports; adding them
     // costs nothing and means that client's own resolver work doesn't also
     // need a server-side change.
-    let http_media_port_str = http_media_port.to_string();
-    let http_media_tls_port_str = http_media_tls_port.map(|port| port.to_string());
+    let http_media_port_str = params.http_media_port.to_string();
+    let http_media_tls_port_str = params.http_media_tls_port.map(|port| port.to_string());
     let mut properties = vec![
         ("protocol", "2"),
         ("name", "SWARM Media Server"),
-        ("fingerprint", server_fingerprint),
+        ("fingerprint", params.server_fingerprint.as_str()),
         ("peer_port", peer_port.as_str()),
         ("pair_port", pair_port.as_str()),
         ("http_media_port", http_media_port_str.as_str()),
@@ -335,17 +366,24 @@ fn advertise(
     if let Some(tls_port) = &http_media_tls_port_str {
         properties.push(("http_media_tls_port", tls_port.as_str()));
     }
-    let address = swarm_p2p::local_addr::detect_local_ipv4().to_string();
-    let info = ServiceInfo::new(
+    ServiceInfo::new(
         SERVICE_TYPE,
         &instance,
         &hostname,
-        address,
-        peer_addr.port(),
+        address.to_string(),
+        params.peer_port,
         &properties[..],
     )
-    .map_err(|err| tracing::warn!(%err, "could not build mDNS advertisement"))
-    .ok()?;
+    .map_err(|err| err.to_string())
+}
+
+fn advertise(params: AdvertiseParams) -> Option<Advertisement> {
+    let daemon = ServiceDaemon::new()
+        .map_err(|err| tracing::warn!(%err, "could not start mDNS advertiser"))
+        .ok()?;
+    let info = build_service_info(&params, swarm_p2p::local_addr::detect_local_ipv4())
+        .map_err(|err| tracing::warn!(%err, "could not build mDNS advertisement"))
+        .ok()?;
     let fullname = info.get_fullname().to_string();
     daemon
         .register(info)
@@ -353,11 +391,15 @@ fn advertise(
         .ok()?;
     tracing::info!(
         service = %fullname,
-        pairing_port,
-        http_media_port,
+        pairing_port = params.pairing_port,
+        http_media_port = params.http_media_port,
         "advertising media server on the LAN"
     );
-    Some(Advertisement { daemon, fullname })
+    Some(Advertisement {
+        daemon,
+        fullname,
+        params,
+    })
 }
 
 #[derive(Deserialize)]
@@ -699,6 +741,52 @@ fn is_lan_address(ip: IpAddr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn advertise_params() -> AdvertiseParams {
+        AdvertiseParams {
+            server_fingerprint: "ea138cad6b4d4625fb8e3ba8e77f0472d5fad17be61108e99bdcf5b391af97c0"
+                .into(),
+            peer_port: 8543,
+            pairing_port: 8543,
+            http_media_port: 8546,
+            http_media_tls_port: Some(8547),
+        }
+    }
+
+    /// The whole point of refreshing: the same service must be re-announced
+    /// with a different address, under the same name (so it replaces the old
+    /// record instead of appearing as a second server).
+    #[test]
+    fn the_advertised_record_follows_the_address_it_is_built_for() {
+        let params = advertise_params();
+        let home = build_service_info(&params, "192.168.0.133".parse().unwrap()).unwrap();
+        let away = build_service_info(&params, "10.4.2.9".parse().unwrap()).unwrap();
+
+        assert_eq!(home.get_fullname(), away.get_fullname());
+        assert!(home.get_addresses().iter().any(|a| a.to_string() == "192.168.0.133"));
+        assert!(!home.get_addresses().iter().any(|a| a.to_string() == "10.4.2.9"));
+        assert!(away.get_addresses().iter().any(|a| a.to_string() == "10.4.2.9"));
+        assert!(!away.get_addresses().iter().any(|a| a.to_string() == "192.168.0.133"));
+    }
+
+    #[test]
+    fn the_record_carries_the_ports_and_fingerprint_clients_read() {
+        let info = build_service_info(&advertise_params(), "192.168.0.133".parse().unwrap()).unwrap();
+        let prop = |key: &str| info.get_property_val_str(key).map(str::to_string);
+        assert_eq!(prop("peer_port").as_deref(), Some("8543"));
+        assert_eq!(prop("http_media_port").as_deref(), Some("8546"));
+        assert_eq!(prop("http_media_tls_port").as_deref(), Some("8547"));
+        assert!(prop("fingerprint").unwrap().starts_with("ea138cad6b4d"));
+        assert_eq!(info.get_port(), 8543);
+    }
+
+    #[test]
+    fn a_tls_port_is_only_advertised_when_its_listener_exists() {
+        let mut params = advertise_params();
+        params.http_media_tls_port = None;
+        let info = build_service_info(&params, "192.168.0.133".parse().unwrap()).unwrap();
+        assert_eq!(info.get_property_val_str("http_media_tls_port"), None);
+    }
 
     #[test]
     fn only_private_link_local_or_loopback_addresses_can_pair() {

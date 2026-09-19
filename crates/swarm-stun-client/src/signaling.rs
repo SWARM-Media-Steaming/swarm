@@ -20,7 +20,33 @@ type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 /// How often this client sends `Ping` — signaling is client-driven per
 /// `docs/PROTOCOL.md` ("`ping`/`pong` keepalive (client-driven, ~30s)").
 const PING_INTERVAL: Duration = Duration::from_secs(30);
+/// A session that has heard nothing at all — not even a `Pong` — for this
+/// long is treated as dead. Three missed keepalives, so one slow round trip
+/// never tears down a healthy session.
+const DEAD_AFTER: Duration = Duration::from_secs(90);
 const HELLO_ACK_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Keepalive timing for a signaling session. Only tests need anything other
+/// than [`KeepAlive::default`].
+#[derive(Debug, Clone, Copy)]
+pub struct KeepAlive {
+    /// How often a `Ping` is sent.
+    pub ping_interval: Duration,
+    /// How long the peer may stay completely silent before the session is
+    /// closed. Without this a network change (wifi roam, DHCP move, VPN
+    /// toggle) can leave the socket "open" but black-holed, and neither side
+    /// finds out until TCP gives up minutes later.
+    pub dead_after: Duration,
+}
+
+impl Default for KeepAlive {
+    fn default() -> Self {
+        Self {
+            ping_interval: PING_INTERVAL,
+            dead_after: DEAD_AFTER,
+        }
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum SignalingError {
@@ -69,6 +95,27 @@ impl SignalingClient {
         device_id: &str,
         capabilities: Option<CapabilityProfile>,
     ) -> Result<(Self, mpsc::UnboundedReceiver<SignalMessage>), SignalingError> {
+        Self::connect_with_keepalive(
+            base_url,
+            access_token,
+            device_id,
+            capabilities,
+            KeepAlive::default(),
+        )
+        .await
+    }
+
+    /// [`Self::connect`] with explicit keepalive timing. When the session
+    /// dies (closed by either side, or silent past `keepalive.dead_after`)
+    /// the returned receiver yields `None`, which is the caller's cue to
+    /// reconnect.
+    pub async fn connect_with_keepalive(
+        base_url: &str,
+        access_token: &str,
+        device_id: &str,
+        capabilities: Option<CapabilityProfile>,
+        keepalive: KeepAlive,
+    ) -> Result<(Self, mpsc::UnboundedReceiver<SignalMessage>), SignalingError> {
         let ws_url = to_ws_url(base_url)?;
         let (mut ws, _) = tokio_tungstenite::connect_async(ws_url)
             .await
@@ -108,7 +155,7 @@ impl SignalingClient {
 
         let (outbound_tx, outbound_rx) = mpsc::unbounded_channel();
         let (inbound_tx, inbound_rx) = mpsc::unbounded_channel();
-        tokio::spawn(run(ws, outbound_rx, inbound_tx));
+        tokio::spawn(run(ws, outbound_rx, inbound_tx, keepalive));
 
         Ok((
             Self {
@@ -156,15 +203,22 @@ async fn run(
     mut ws: WsStream,
     mut outbound_rx: mpsc::UnboundedReceiver<SignalMessage>,
     inbound_tx: mpsc::UnboundedSender<SignalMessage>,
+    keepalive: KeepAlive,
 ) {
     let mut ping_seq: u64 = 0;
-    let mut ping_timer = tokio::time::interval(PING_INTERVAL);
+    let mut ping_timer = tokio::time::interval(keepalive.ping_interval);
     ping_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     ping_timer.tick().await; // first tick fires immediately; hello_ack just happened, nothing to prove yet
+    // Any inbound frame proves the path is alive, so this is refreshed on
+    // every frame, not just `Pong`.
+    let mut last_heard = tokio::time::Instant::now();
 
     loop {
         tokio::select! {
             _ = ping_timer.tick() => {
+                if last_heard.elapsed() > keepalive.dead_after {
+                    break;
+                }
                 ping_seq += 1;
                 if ws.send(to_ws_message(&SignalMessage::Ping { seq: ping_seq })).await.is_err() {
                     break;
@@ -184,6 +238,9 @@ async fn run(
                 }
             }
             incoming = ws.next() => {
+                if matches!(incoming, Some(Ok(_))) {
+                    last_heard = tokio::time::Instant::now();
+                }
                 match incoming {
                     Some(Ok(WsMessage::Text(text))) => {
                         let Ok(message) = serde_json::from_str::<SignalMessage>(&text) else { continue };

@@ -7,6 +7,7 @@ pub mod ai;
 mod bandwidth;
 mod http_media;
 pub mod lan;
+pub mod link;
 pub mod punch_connect;
 pub mod reorganize;
 mod state_db;
@@ -17,7 +18,7 @@ pub mod transcription;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use swarm_core::peer::MediaKind;
 use swarm_core::rest::{
@@ -41,9 +42,10 @@ use swarm_media::transcode::TranscodeConfig;
 use swarm_p2p::identity::DeviceIdentity;
 use swarm_p2p::pin::AllowedPeers;
 use swarm_stun_client::{SignalingClient, StunClient, TokenStore};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch, Notify};
 use tokio::sync::Mutex;
 
+use crate::link::{AddressWatch, LinkPolicy, SwarmLinkState, SwarmLinkStatus};
 use crate::punch_connect::{respond_to_punch_offer, ReceivedOffer};
 use crate::transcode_activity::{TranscodeActivityMeter, TranscodeActivitySample};
 use crate::transcription::{TranscriptionManager, TranscriptionStatus};
@@ -133,6 +135,31 @@ pub struct DeleteAssetReport {
     pub cleanup_warnings: Vec<String>,
 }
 
+/// Longest a single attempt to open the signaling WebSocket may take.
+const SIGNALING_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How one pass of `connect_link` ended.
+enum LinkOutcome {
+    /// Registered and holding a live signaling session.
+    Linked,
+    /// A service is known but this attempt did not get a working link.
+    Failed,
+    /// Nothing is configured or saved, so there was nothing to attempt.
+    NothingToLink,
+}
+
+enum RestoreOutcome {
+    NothingSaved,
+    Restored(String),
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 struct StunContext {
     client: StunClient,
     token_store: TokenStore,
@@ -162,6 +189,31 @@ pub struct ServerCore {
     static_fingerprints: Vec<String>,
     token_store_mode: TokenStoreMode,
     stun: Mutex<Option<StunContext>>,
+    /// Managed rendezvous URL from the environment/build, if any. Kept so the
+    /// supervisor can re-resolve it on every attempt: it wins over anything
+    /// saved, so fixing the environment fixes the link without a re-pair.
+    configured_managed_url: Option<String>,
+    /// Published on every transition; read by the GUI and `/health`.
+    link_status: watch::Sender<SwarmLinkStatus>,
+    link_policy: LinkPolicy,
+    /// Woken to make the supervisor act now instead of at its next tick.
+    link_wake: Arc<Notify>,
+    /// Identifies the live signaling session. Bumping it retires the old
+    /// session's dispatch loop (see `retire_signaling`).
+    signaling_generation: AtomicU64,
+    signaling_alive: AtomicBool,
+    signaling_cancel: watch::Sender<u64>,
+    /// Why the last attempt to open a signaling session failed, for the
+    /// status report.
+    signaling_error: std::sync::Mutex<Option<String>>,
+    /// Guards against stacking a second roster-sync loop each time the link
+    /// is re-established.
+    roster_loop_started: AtomicBool,
+    /// Held for the whole of a supervisor connection attempt and of
+    /// `forget_swarm_link`, so a forget can never land in the middle of an
+    /// attempt that then re-creates the state it just deleted or overwrites
+    /// its status.
+    link_op: Mutex<()>,
     scraping: AtomicBool,
     /// Serializes every full scan (the initial background one, `rescan`, and
     /// `update_media_roots`) — `scan_roots` snapshots known entries then
@@ -376,11 +428,13 @@ impl ServerCore {
             }),
             _ => None,
         };
+        let (link_status, link_status_rx) = watch::channel(SwarmLinkStatus::not_linked());
         let http_media = http_media::start(
             Arc::clone(&service),
             Arc::clone(&state_db),
             config.http_media_bind,
             http_media_tls,
+            link_status_rx,
         )
         .await?;
         // Startup always schedules an initial scan below. Start in the active
@@ -421,6 +475,16 @@ impl ServerCore {
             static_fingerprints,
             token_store_mode: config.token_store_mode,
             stun: Mutex::new(None),
+            configured_managed_url,
+            link_status,
+            link_policy: LinkPolicy::from_env(),
+            link_wake: Arc::new(Notify::new()),
+            signaling_generation: AtomicU64::new(0),
+            signaling_alive: AtomicBool::new(false),
+            signaling_cancel: watch::channel(0).0,
+            signaling_error: std::sync::Mutex::new(None),
+            roster_loop_started: AtomicBool::new(false),
+            link_op: Mutex::new(()),
             scraping: AtomicBool::new(false),
             scan_lock: tokio::sync::Mutex::new(()),
             scan_active,
@@ -429,34 +493,19 @@ impl ServerCore {
             comprehensive_check: AtomicBool::new(config.scan_options.comprehensive_check),
             scan_music_tracks: AtomicBool::new(config.scan_options.scan_music_tracks),
         });
-        // A configured or previously-created managed swarm takes precedence
-        // over an old manual link. Previously this restored the old link first
-        // and skipped provisioning whenever *any* link existed. The resulting
-        // token could browse a normal swarm but did not own a managed one, so
-        // TV activation lookup/approval failed with 403.
-        let stored_managed_url = core
-            .state_db
-            .load_managed_swarm_identity()
-            .await?
-            .map(|identity| identity.base_url);
-        let managed_url = configured_managed_url.or(stored_managed_url);
-        let mut managed_ready = false;
-        if let Some(base_url) = managed_url {
-            let name =
-                std::env::var("SWARM_DEVICE_NAME").unwrap_or_else(|_| "SWARM Media Server".into());
-            match Arc::clone(&core)
-                .provision_managed_swarm(&base_url, &name)
-                .await
-            {
-                Ok(_) => managed_ready = true,
-                Err(err) => {
-                    tracing::warn!(%err, "automatic SWARM provisioning failed; trying the saved link");
-                }
-            }
+        // First attempt runs inline so a working link is in place by the time
+        // `start` returns. A failure here is no longer final: the supervisor
+        // keeps retrying and also notices later network changes.
+        if tokio::time::timeout(core.link_policy.startup_wait, core.connect_link())
+            .await
+            .is_err()
+        {
+            // Every GUI command waits on the core, so a service that does not
+            // answer (a black-holed address takes minutes to time out) must
+            // not hold startup. The supervisor carries on in the background.
+            core.note_link_failure(None, "the SWARM service did not answer in time");
         }
-        if !managed_ready {
-            Arc::clone(&core).restore_stun_link().await;
-        }
+        core.spawn_connectivity_supervisor();
 
         // Mark Scanning synchronously, before returning, so a caller that
         // calls wait_for_scan() immediately after start() can never observe
@@ -1254,6 +1303,9 @@ impl ServerCore {
             link,
         });
         Arc::clone(&self).spawn_roster_sync_loop();
+        // Deliberately no `link_wake` here: the supervisor calls this, and
+        // waking itself from inside an attempt turns every attempt into an
+        // immediate next one, bypassing backoff.
         self.sync_roster().await?;
         Ok(response.swarm)
     }
@@ -1294,6 +1346,7 @@ impl ServerCore {
             link,
         });
         Arc::clone(self).spawn_roster_sync_loop();
+        self.link_wake.notify_one();
         self.sync_roster().await?;
         Ok(response.swarm)
     }
@@ -1444,18 +1497,24 @@ impl ServerCore {
         Ok(())
     }
 
-    async fn restore_stun_link(self: Arc<Self>) {
+    /// Brings the saved manual link (join-code registration) back up.
+    /// `skip_url` is an address that was just tried and failed: dialing it a
+    /// second time in the same attempt only doubles the wait on a dead host.
+    async fn restore_stun_link(self: &Arc<Self>, skip_url: Option<&str>) -> RestoreOutcome {
         let Some(link) = self.state_db.load_stun_link().await.unwrap_or_else(|err| {
             tracing::warn!(%err, "could not read saved STUN link; starting unlinked");
             None
         }) else {
-            return;
+            return RestoreOutcome::NothingSaved;
         };
+        if skip_url.is_some_and(|skip| skip.trim_end_matches('/') == link.base_url.trim_end_matches('/')) {
+            return RestoreOutcome::NothingSaved;
+        }
         let token_store = match self.token_store() {
             Ok(store) => store,
             Err(err) => {
                 tracing::warn!(%err, "could not open token store; STUN link not restored");
-                return;
+                return RestoreOutcome::NothingSaved;
             }
         };
         let access_token = match token_store.load() {
@@ -1464,16 +1523,17 @@ impl ServerCore {
                 tracing::warn!(
                     "stun-link.json present but no access token stored; re-registration required"
                 );
-                return;
+                return RestoreOutcome::NothingSaved;
             }
             Err(err) => {
                 tracing::warn!(%err, "could not read stored access token; re-registration required");
-                return;
+                return RestoreOutcome::NothingSaved;
             }
         };
         let client = StunClient::new(link.base_url.clone());
         self.establish_signaling(&link.base_url, &access_token, &link.device_id)
             .await;
+        let base_url = link.base_url.clone();
         *self.stun.lock().await = Some(StunContext {
             client,
             token_store,
@@ -1481,53 +1541,105 @@ impl ServerCore {
             link,
         });
         tracing::info!("restored STUN link, starting roster sync");
-        Arc::clone(&self).spawn_roster_sync_loop();
+        Arc::clone(self).spawn_roster_sync_loop();
         if let Err(err) = self.sync_roster().await {
             tracing::debug!(%err, "initial roster sync after restore failed; will retry on schedule");
         }
+        RestoreOutcome::Restored(base_url)
     }
 
     /// Opens a signaling session and, if that succeeds, resolves the
     /// reflector's address and starts the punch-dispatch loop. Best-effort
     /// and never fatal to the caller: a server with no working signaling
     /// session still serves LAN direct-play peers via `peer_addr` just
-    /// fine, it just can't accept a connection from anyone off-LAN —
-    /// logged, not propagated as an error.
+    /// fine, it just can't accept a connection from anyone off-LAN. The
+    /// supervisor (`supervise_once`) is what retries.
     async fn establish_signaling(
         self: &Arc<Self>,
         base_url: &str,
         access_token: &str,
         device_id: &str,
     ) {
-        let (signaling, signal_rx) = match SignalingClient::connect(
-            base_url,
-            access_token,
-            device_id,
-            None,
-        )
-        .await
+        if let Err(err) = self
+            .try_establish_signaling(base_url, access_token, device_id)
+            .await
         {
-            Ok(pair) => pair,
-            Err(err) => {
+            // The first failure of an outage is worth a warning; the
+            // supervisor's retries of the same outage are not.
+            if self.link_status.borrow().attempts == 0 {
                 tracing::warn!(%err, "could not open a signaling session; hole-punch connections unavailable on this link");
-                return;
+            } else {
+                tracing::debug!(%err, "signaling session still unavailable");
             }
-        };
+        }
+    }
+
+    async fn try_establish_signaling(
+        self: &Arc<Self>,
+        base_url: &str,
+        access_token: &str,
+        device_id: &str,
+    ) -> Result<(), String> {
+        // Retire whatever session came before: two live sessions for one
+        // device would each receive (and fight over) punch offers.
+        self.retire_signaling();
+        let generation = self.signaling_generation.load(Ordering::SeqCst);
+        let result = self
+            .open_signaling(base_url, access_token, device_id, generation)
+            .await;
+        *self.signaling_error.lock().unwrap_or_else(|p| p.into_inner()) = result.clone().err();
+        result
+    }
+
+    async fn open_signaling(
+        self: &Arc<Self>,
+        base_url: &str,
+        access_token: &str,
+        device_id: &str,
+        generation: u64,
+    ) -> Result<(), String> {
+        // `connect_async` has no deadline of its own, and a black-holed
+        // address would otherwise hold this call for the OS connect timeout.
+        let connect = SignalingClient::connect(base_url, access_token, device_id, None);
+        let (signaling, signal_rx) = tokio::time::timeout(SIGNALING_CONNECT_TIMEOUT, connect)
+            .await
+            .map_err(|_| "timed out opening the signaling session".to_string())?
+            .map_err(|err| err.to_string())?;
         let Some(reflector_addr) =
             resolve_reflector_addr(base_url, &signaling.reflector_ports).await
         else {
-            tracing::warn!("could not resolve the reflector's address; hole-punch connections unavailable on this link");
-            return;
+            return Err("could not resolve the reflector's address".to_string());
         };
-        Arc::clone(self).spawn_punch_dispatch_loop(signaling, signal_rx, reflector_addr);
+        if self.signaling_generation.load(Ordering::SeqCst) != generation {
+            // A newer session was requested while this one connected.
+            return Ok(());
+        }
+        self.signaling_alive.store(true, Ordering::SeqCst);
+        self.update_link_status(|status| status.signaling = true);
+        Arc::clone(self).spawn_punch_dispatch_loop(signaling, signal_rx, reflector_addr, generation);
+        Ok(())
     }
 
-    /// Owns the signaling receiver for as long as this link lives: reacts to
+    /// Ends the current signaling session, if any: its dispatch loop exits and
+    /// drops the connection. Used before opening a replacement and when the
+    /// machine's network address changes, because a socket opened on the old
+    /// network can look healthy for minutes after it stopped working.
+    fn retire_signaling(&self) {
+        let generation = self.signaling_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        self.signaling_alive.store(false, Ordering::SeqCst);
+        let _ = self.signaling_cancel.send(generation);
+        self.update_link_status(|status| status.signaling = false);
+    }
+
+    /// Owns the signaling receiver for as long as this session lives: reacts to
     /// an incoming `Offer` from a swarm-mate by answering it, punching, and
     /// — once mutually confirmed — serving the resulting QUIC connection
     /// exactly like one accepted on the main listener. Everything else
     /// (presence, stray signals) is ignored; nothing else on this server
     /// reads from this receiver, so there's no contention to design around.
+    ///
+    /// When the session ends for any reason other than being retired, the
+    /// supervisor is woken to reconnect.
     ///
     /// Known limitation, not solved here: only one punch negotiation runs
     /// at a time, since answering one offer borrows this receiver until
@@ -1540,15 +1652,26 @@ impl ServerCore {
         signaling: SignalingClient,
         mut signal_rx: mpsc::UnboundedReceiver<SignalMessage>,
         reflector_addr: SocketAddr,
+        generation: u64,
     ) {
+        let mut cancel = self.signaling_cancel.subscribe();
         tokio::spawn(async move {
             loop {
-                let message = match signal_rx.recv().await {
-                    Some(message) => message,
-                    None => {
-                        tracing::debug!("signaling session closed; no longer accepting hole-punched connections");
-                        return;
+                let message = tokio::select! {
+                    message = signal_rx.recv() => message,
+                    _ = cancel.changed() => {
+                        if *cancel.borrow() != generation {
+                            // Retired: dropping `signaling` and `signal_rx`
+                            // closes the connection.
+                            return;
+                        }
+                        continue;
                     }
+                };
+                let Some(message) = message else {
+                    tracing::debug!("signaling session closed; no longer accepting hole-punched connections");
+                    self.note_signaling_lost(generation);
+                    return;
                 };
                 let SignalMessage::Signal {
                     from: Some(from),
@@ -1592,6 +1715,10 @@ impl ServerCore {
     }
 
     fn spawn_roster_sync_loop(self: Arc<Self>) {
+        // One loop per core: re-establishing the link must not stack another.
+        if self.roster_loop_started.swap(true, Ordering::SeqCst) {
+            return;
+        }
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(ROSTER_SYNC_INTERVAL);
             interval.tick().await; // fires immediately; start()/register already did one sync
@@ -1602,6 +1729,299 @@ impl ServerCore {
                 }
             }
         });
+    }
+
+    // ---------- link supervision ----------
+    //
+    // See `link.rs` for why this exists. The short version: the link used to
+    // be attempted once at startup, so a service that was unreachable then
+    // (or a network change later) left the server invisible to SWARM-paired
+    // TVs until someone restarted it, with nothing in the UI saying so.
+
+    /// The current state of the SWARM link, for the GUI.
+    pub fn swarm_link_status(&self) -> SwarmLinkStatus {
+        self.link_status.borrow().clone()
+    }
+
+    /// Applies `update` and publishes the result only if something changed, so
+    /// subscribers are not woken by no-op refreshes.
+    fn update_link_status(&self, update: impl FnOnce(&mut SwarmLinkStatus)) {
+        self.link_status.send_if_modified(|status| {
+            let before = status.clone();
+            update(status);
+            *status != before
+        });
+    }
+
+    fn note_not_linked(&self) {
+        self.update_link_status(|status| *status = SwarmLinkStatus::not_linked());
+    }
+
+    fn note_link_attempt(&self, base_url: &str) {
+        self.update_link_status(|status| {
+            status.base_url = Some(base_url.to_string());
+            if status.state == SwarmLinkState::NotLinked {
+                status.state = SwarmLinkState::Connecting;
+            }
+        });
+    }
+
+    fn note_link_failure(&self, base_url: Option<&str>, error: &str) {
+        self.update_link_status(|status| {
+            status.state = SwarmLinkState::Unreachable;
+            if let Some(url) = base_url {
+                status.base_url = Some(url.to_string());
+            }
+            status.last_error = Some(error.to_string());
+            status.failing_since.get_or_insert_with(unix_now);
+            status.connected_since = None;
+            status.signaling = false;
+            status.attempts = status.attempts.saturating_add(1);
+        });
+        let status = self.swarm_link_status();
+        // Warn when an outage starts and then only every 10th attempt, so a
+        // long outage is visible in the log without filling it.
+        if status.attempts == 1 || status.attempts.is_multiple_of(10) {
+            tracing::warn!(
+                url = status.base_url.as_deref().unwrap_or("(none)"),
+                attempts = status.attempts,
+                %error,
+                "SWARM service unreachable; SWARM-paired TVs cannot see this server (LAN clients are unaffected). Retrying in the background"
+            );
+        } else {
+            tracing::debug!(attempts = status.attempts, %error, "SWARM service still unreachable");
+        }
+    }
+
+    fn note_link_connected(&self, base_url: &str) {
+        let before = self.swarm_link_status();
+        self.update_link_status(|status| {
+            if status.state != SwarmLinkState::Connected {
+                status.connected_since = Some(unix_now());
+            }
+            status.state = SwarmLinkState::Connected;
+            status.base_url = Some(base_url.to_string());
+            status.last_error = None;
+            status.failing_since = None;
+            status.attempts = 0;
+            status.signaling = true;
+        });
+        if before.state != SwarmLinkState::Connected {
+            let outage_secs = before
+                .failing_since
+                .map(|since| unix_now().saturating_sub(since));
+            tracing::info!(url = base_url, ?outage_secs, "connected to the SWARM service");
+        }
+    }
+
+    /// Called by a signaling session's dispatch loop when the connection
+    /// ended on its own (peer closed it, or the keepalive deadline passed).
+    fn note_signaling_lost(&self, generation: u64) {
+        if self.signaling_generation.load(Ordering::SeqCst) != generation {
+            return; // that session was retired on purpose, not lost
+        }
+        self.signaling_alive.store(false, Ordering::SeqCst);
+        self.update_link_status(|status| {
+            status.signaling = false;
+            if status.state == SwarmLinkState::Connected {
+                status.state = SwarmLinkState::Unreachable;
+                status.failing_since = Some(unix_now());
+                status.connected_since = None;
+                status.last_error = Some("the signaling session ended".to_string());
+            }
+        });
+        tracing::warn!("SWARM signaling session lost; reconnecting");
+        self.link_wake.notify_one();
+    }
+
+    async fn link_is_healthy(&self) -> bool {
+        self.signaling_alive.load(Ordering::SeqCst) && self.stun.lock().await.is_some()
+    }
+
+    /// Whether there is anything to connect to: a configured service, a
+    /// managed identity, or a saved link that can actually be used.
+    async fn link_wanted(&self) -> bool {
+        if self.stun.lock().await.is_some() || self.configured_managed_url.is_some() {
+            return true;
+        }
+        if matches!(self.state_db.load_managed_swarm_identity().await, Ok(Some(_))) {
+            return true;
+        }
+        // A saved manual link is only actionable while its token exists;
+        // without one, re-registration is the only fix and retrying is noise.
+        let has_link = matches!(self.state_db.load_stun_link().await, Ok(Some(_)));
+        has_link
+            && self
+                .token_store()
+                .ok()
+                .is_some_and(|store| matches!(store.load(), Ok(Some(_))))
+    }
+
+    /// One attempt to bring the link up, publishing the outcome through
+    /// [`Self::swarm_link_status`]. A configured or previously-created managed
+    /// swarm takes precedence over an old manual link: the resulting token can
+    /// browse a normal swarm but does not own a managed one, so TV activation
+    /// lookup/approval would fail with 403.
+    async fn connect_link(self: &Arc<Self>) -> LinkOutcome {
+        let _op = self.link_op.lock().await;
+        let stored_managed_url = self
+            .state_db
+            .load_managed_swarm_identity()
+            .await
+            .ok()
+            .flatten()
+            .map(|identity| identity.base_url);
+        let managed_url = self.configured_managed_url.clone().or(stored_managed_url);
+        let mut managed_failure: Option<(String, String)> = None;
+        if let Some(base_url) = &managed_url {
+            self.note_link_attempt(base_url);
+            let name =
+                std::env::var("SWARM_DEVICE_NAME").unwrap_or_else(|_| "SWARM Media Server".into());
+            match Arc::clone(self)
+                .provision_managed_swarm(base_url, &name)
+                .await
+            {
+                Ok(_) => return self.finish_link_attempt(base_url),
+                // Provisioning can fail *after* it linked (its closing roster
+                // sync), and the session is what matters.
+                Err(_) if self.link_is_healthy().await => return self.finish_link_attempt(base_url),
+                Err(err) => managed_failure = Some((base_url.clone(), err.to_string())),
+            }
+        }
+        match self.restore_stun_link(managed_url.as_deref()).await {
+            RestoreOutcome::Restored(url) => self.finish_link_attempt(&url),
+            RestoreOutcome::NothingSaved => match managed_failure {
+                Some((url, error)) => {
+                    self.note_link_failure(Some(&url), &error);
+                    LinkOutcome::Failed
+                }
+                None => {
+                    self.note_not_linked();
+                    LinkOutcome::NothingToLink
+                }
+            },
+        }
+    }
+
+    /// The service answered the REST calls; the link is only *up* if the
+    /// signaling session (what marks this server online) is too.
+    fn finish_link_attempt(&self, base_url: &str) -> LinkOutcome {
+        if self.signaling_alive.load(Ordering::SeqCst) {
+            self.note_link_connected(base_url);
+            LinkOutcome::Linked
+        } else {
+            let error = self
+                .signaling_error
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
+                .unwrap_or_else(|| "no signaling session".to_string());
+            self.note_link_failure(Some(base_url), &error);
+            LinkOutcome::Failed
+        }
+    }
+
+    fn spawn_connectivity_supervisor(self: &Arc<Self>) {
+        // Weak, so a dropped core (tests, shutdown) ends the task instead of
+        // being kept alive by it.
+        let weak = Arc::downgrade(self);
+        let wake = Arc::clone(&self.link_wake);
+        let mut watch = AddressWatch::new(swarm_p2p::local_addr::detect_local_ipv4());
+        tokio::spawn(async move {
+            let mut failures: u32 = 0;
+            let mut last_attempt: Option<tokio::time::Instant> = None;
+            loop {
+                let delay = {
+                    let Some(core) = weak.upgrade() else { return };
+                    core.supervise_once(&mut watch, &mut failures, &mut last_attempt)
+                        .await
+                };
+                tokio::select! {
+                    _ = tokio::time::sleep(delay) => {}
+                    _ = wake.notified() => {}
+                }
+            }
+        });
+    }
+
+    /// One pass of the supervisor. Returns how long to wait before the next.
+    async fn supervise_once(
+        self: &Arc<Self>,
+        watch: &mut AddressWatch,
+        failures: &mut u32,
+        last_attempt: &mut Option<tokio::time::Instant>,
+    ) -> std::time::Duration {
+        let policy = self.link_policy;
+
+        // A moved machine invalidates everything bound to its old address,
+        // whether or not a SWARM service is configured: the LAN advertisement
+        // must follow it, and the signaling socket is suspect.
+        if let Some(address) = watch.observe(swarm_p2p::local_addr::detect_local_ipv4()) {
+            tracing::info!(%address, "local network address changed");
+            self.lan_service.refresh_advertisement();
+            self.retire_signaling();
+            *failures = 0;
+        }
+
+        if !self.link_wanted().await {
+            self.note_not_linked();
+            return policy.health_interval;
+        }
+        if self.link_is_healthy().await {
+            if let Some(url) = self.stun.lock().await.as_ref().map(|ctx| ctx.link.base_url.clone()) {
+                self.note_link_connected(&url);
+            }
+            *failures = 0;
+            return policy.health_interval;
+        }
+        // However the supervisor was woken, never attempt more often than the
+        // first retry delay. A service that accepts a session and immediately
+        // drops it would otherwise be redialed as fast as the network allows.
+        if let Some(last) = *last_attempt {
+            let since = last.elapsed();
+            if since < policy.initial_retry {
+                return policy.initial_retry - since;
+            }
+        }
+        *last_attempt = Some(tokio::time::Instant::now());
+        match tokio::time::timeout(policy.attempt_timeout, self.connect_link()).await {
+            Ok(LinkOutcome::Linked | LinkOutcome::NothingToLink) => {
+                *failures = 0;
+                policy.health_interval
+            }
+            Ok(LinkOutcome::Failed) => {
+                *failures = failures.saturating_add(1);
+                policy.retry_delay(*failures)
+            }
+            Err(_) => {
+                self.note_link_failure(None, "the SWARM service did not answer in time");
+                *failures = failures.saturating_add(1);
+                policy.retry_delay(*failures)
+            }
+        }
+    }
+
+    /// Forgets the SWARM service entirely: the saved link, the managed
+    /// identity and their credentials. For a server stuck pointing at an
+    /// address that no longer exists. An address supplied through the
+    /// environment is not saved state and will be used again.
+    pub async fn forget_swarm_link(&self) -> Result<(), ServerError> {
+        let _op = self.link_op.lock().await;
+        self.retire_signaling();
+        *self.stun.lock().await = None;
+        self.state_db.clear_stun_link().await?;
+        self.state_db.clear_managed_swarm_identity().await?;
+        if let Ok(store) = self.token_store() {
+            let _ = store.delete();
+        }
+        if let Ok(store) = self.managed_claim_store() {
+            let _ = store.delete();
+        }
+        // Rebuilds `allowed` without the swarm roster now that no link exists.
+        self.sync_roster().await?;
+        self.note_not_linked();
+        self.link_wake.notify_one();
+        Ok(())
     }
 
     /// Fetch every joined swarm's roster and rebuild `allowed` as

@@ -54,6 +54,55 @@ class ServerStatusTest {
         assertEquals("disconnected", connectionStatusLabel(online = true, disconnected = true))
     }
 
+    @Test
+    fun `an unreachable SWARM service is reported as that, not as an empty swarm`() {
+        val known = swarmDevice("SWARM Media Server", DeviceType.SERVER, online = false)
+
+        assertEquals(
+            "Can't reach the SWARM service right now. Servers found on this network are listed below.",
+            swarmServersEmptyMessage(listOf(known), serviceUnreachable = true),
+        )
+        assertEquals(
+            swarmServersEmptyMessage(emptyList(), serviceUnreachable = true),
+            swarmServersEmptyMessage(listOf(known), serviceUnreachable = true),
+        )
+    }
+
+    @Test
+    fun `a known server that is disconnected from SWARM is named as offline`() {
+        val server = swarmDevice("SWARM Media Server", DeviceType.SERVER, online = false)
+        val phone = swarmDevice("Michael's Phone", DeviceType.CLIENT, online = false)
+
+        assertEquals(
+            "SWARM Media Server is offline. It isn't connected to SWARM right now.",
+            swarmServersEmptyMessage(listOf(server, phone), serviceUnreachable = false),
+        )
+        assertEquals(
+            "Den, Garage are offline. They aren't connected to SWARM right now.",
+            swarmServersEmptyMessage(
+                listOf(
+                    swarmDevice("Den", DeviceType.SERVER, online = false),
+                    swarmDevice("Garage", DeviceType.BOTH, online = false),
+                ),
+                serviceUnreachable = false,
+            ),
+        )
+    }
+
+    @Test
+    fun `a swarm with no servers says nobody has joined`() {
+        val phone = swarmDevice("Michael's Phone", DeviceType.CLIENT, online = true)
+
+        assertEquals(
+            "No media servers have joined this swarm yet.",
+            swarmServersEmptyMessage(emptyList(), serviceUnreachable = false),
+        )
+        assertEquals(
+            "No media servers have joined this swarm yet.",
+            swarmServersEmptyMessage(listOf(phone), serviceUnreachable = false),
+        )
+    }
+
     private fun swarmDevice(id: String, type: DeviceType, online: Boolean) = SwarmDevice(
         deviceId = id,
         name = id,

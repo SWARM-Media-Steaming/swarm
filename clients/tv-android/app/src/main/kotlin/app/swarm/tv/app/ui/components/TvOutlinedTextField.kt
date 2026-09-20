@@ -23,6 +23,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.TextFieldColors
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -46,6 +47,12 @@ fun TvOutlinedTextField(
     placeholder: @Composable (() -> Unit)? = null,
     colors: TextFieldColors = OutlinedTextFieldDefaults.colors(),
     /**
+     * Starts editing as soon as D-pad focus arrives. Keep this false for
+     * ordinary forms, where merely navigating across a field must not summon
+     * the IME; use it for actions whose explicit purpose is text entry.
+     */
+    startEditingOnFocus: Boolean = false,
+    /**
      * Fires when the user presses Done on the IME — the field's own value
      * has already been updated live via [onValueChange] as they typed;
      * this is purely a "they're finished" signal for callers that want to
@@ -55,6 +62,13 @@ fun TvOutlinedTextField(
 ) {
     val keyboardController = LocalSoftwareKeyboardController.current
     var isEditing by remember { mutableStateOf(false) }
+
+    // Showing the IME after `readOnly` has recomposed to false is important:
+    // requesting it in the same focus callback can race the creation of the
+    // editable input connection on Fire TV and silently do nothing.
+    LaunchedEffect(isEditing) {
+        if (isEditing) keyboardController?.show()
+    }
 
     OutlinedTextField(
         value = value,
@@ -72,6 +86,9 @@ fun TvOutlinedTextField(
         }),
         modifier = modifier
             .onFocusChanged { state ->
+                if (state.isFocused && startEditingOnFocus) {
+                    isEditing = true
+                }
                 if (!state.isFocused && isEditing) {
                     isEditing = false
                     keyboardController?.hide()
@@ -80,7 +97,6 @@ fun TvOutlinedTextField(
             .onPreviewKeyEvent { event ->
                 if (!isEditing && event.type == KeyEventType.KeyUp && (event.key == Key.DirectionCenter || event.key == Key.Enter)) {
                     isEditing = true
-                    keyboardController?.show()
                     true
                 } else {
                     false

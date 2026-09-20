@@ -49,8 +49,8 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.grid.itemsIndexed as gridItemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -69,6 +69,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
@@ -80,6 +81,7 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -296,9 +298,16 @@ internal fun CatalogScreen(
     val initialCatalogFocusRequester = remember { FocusRequester() }
     val watchlistRowFocusRequester = remember { FocusRequester() }
     val topBarFocusRequester = remember { FocusRequester() }
+    // Where DOWN from the top bar lands: the category tile row's entry tile.
+    val categoryEntryFocusRequester = remember { FocusRequester() }
     val catalogListState = rememberLazyListState()
+    // Hoisted (rather than owned by GenreFilteredGrid) so the top bar can
+    // scroll the picked-category grid back to its first row before focusing
+    // into it. Keyed like the tile row: each pick starts a fresh grid at the top.
+    val genreGridState = remember(genreFilter) { LazyGridState() }
     val categoryListState = remember(kindFilter) { LazyListState() }
     val focusNavigationScope = rememberCoroutineScope()
+    val focusManager = LocalFocusManager.current
 
     // Tabs are navigation, not filters: switching drops any search/genre so
     // each tab always opens on its own unfiltered page, and focus stays on
@@ -331,7 +340,7 @@ internal fun CatalogScreen(
     BackHandler(enabled = searchOpen) { searchOpen = false }
     BackHandler(enabled = !searchOpen && !topBarHasFocus) {
         focusNavigationScope.launch {
-            runCatching { catalogListState.scrollToItem(0) }
+            runCatching { if (genreFilter != null) genreGridState.scrollToItem(0) else catalogListState.scrollToItem(0) }
             withFrameNanos {}
             runCatching { topBarFocusRequester.requestFocus() }
         }
@@ -361,10 +370,42 @@ internal fun CatalogScreen(
             genreFilter = null
         }
     }
+    // DOWN from the top bar. The top bar sits outside the lazy list, so the
+    // default geometric focus search cannot be trusted to find (or compose) a
+    // target inside it — real bug from live use: the top bar could be reached
+    // but never left downward. Like every other "leave a header downward" hop
+    // on this screen it is explicit: scroll the target into composition,
+    // wait a frame, then request focus. It lands on the picked category's
+    // tile (else the first tile), or straight on the first asset when the
+    // page has no category row.
+    val categoryEntryIndex = categories.indexOfFirst { it.genre == genreFilter }.coerceAtLeast(0)
+    val enterContentFromTopBar: () -> Unit = {
+        automaticInitialFocusEnabled = false
+        focusNavigationScope.launch {
+            val inGrid = genreFilter != null
+            var focused = false
+            if (showCategoryRow) {
+                runCatching { if (inGrid) genreGridState.scrollToItem(0) else catalogListState.scrollToItem(0) }
+                runCatching { categoryListState.scrollToItem(categoryEntryIndex) }
+                withFrameNanos {}
+                focused = runCatching { categoryEntryFocusRequester.requestFocus() }.isSuccess
+            } else {
+                runCatching { if (inGrid) genreGridState.scrollToItem(headerCount + 1) else catalogListState.scrollToItem(headerCount) }
+                withFrameNanos {}
+                focused = runCatching { catalogEntryFocusRequester.requestFocus() }.isSuccess
+            }
+            withFrameNanos {}
+            // Nothing took the request (or it didn't move focus off the top
+            // bar): fall back to the platform's own DOWN search.
+            if (!focused || topBarHasFocus) focusManager.moveFocus(FocusDirection.Down)
+        }
+    }
     val categoryRow: @Composable ((() -> Unit)?) -> Unit = { onNavigateDown ->
         CategoryRow(
             categories = categories,
             selectedGenre = genreFilter,
+            entryIndex = categoryEntryIndex,
+            entryFocusRequester = categoryEntryFocusRequester,
             listState = categoryListState,
             focusGenre = categoryFocusGenre,
             onFocusHandled = { categoryFocusGenre = null },
@@ -399,6 +440,7 @@ internal fun CatalogScreen(
                 playbackError = playbackError,
                 focusRequester = topBarFocusRequester,
                 onFocusChanged = { topBarHasFocus = it },
+                onNavigateDown = enterContentFromTopBar.takeIf { !loading && entries.isNotEmpty() },
             )
             Column(modifier = Modifier.weight(1f).fillMaxWidth()) {
                 when {
@@ -682,6 +724,7 @@ internal fun CatalogScreen(
                                     initialFocusArtistKey = initialFocusArtistKey,
                                     hasHeader = showCategoryRow,
                                     header = categoryRow,
+                                    gridState = genreGridState,
                                 )
                             } else {
                                 val navigateToFirstCatalogEntry = {
@@ -924,10 +967,20 @@ private fun CatalogTopBar(
     playbackError: String?,
     focusRequester: FocusRequester,
     onFocusChanged: (Boolean) -> Unit,
+    onNavigateDown: (() -> Unit)?,
 ) {
     Column(
         modifier = Modifier.fillMaxWidth()
             .onFocusChanged { onFocusChanged(it.hasFocus) }
+            // DOWN from any control on the bar drops into the page below.
+            .onPreviewKeyEvent { event ->
+                if (onNavigateDown != null && event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown) {
+                    onNavigateDown()
+                    true
+                } else {
+                    false
+                }
+            }
             .testTag(UatTestTags.FILTER_RAIL),
     ) {
         Row(
@@ -1069,6 +1122,8 @@ private val CATEGORY_TILE_SHAPE = RoundedCornerShape(10.dp)
 private fun CategoryRow(
     categories: List<CategoryCount>,
     selectedGenre: String?,
+    entryIndex: Int,
+    entryFocusRequester: FocusRequester,
     listState: LazyListState,
     focusGenre: String?,
     onFocusHandled: () -> Unit,
@@ -1116,6 +1171,7 @@ private fun CategoryRow(
                     selected = category.genre == selectedGenre,
                     onClick = { onSelect(category.genre) },
                     focusRequester = tileFocusRequester.takeIf { index == focusIndex },
+                    entryFocusRequester = entryFocusRequester.takeIf { index == entryIndex },
                 )
             }
         }
@@ -1123,7 +1179,13 @@ private fun CategoryRow(
 }
 
 @Composable
-private fun CategoryTile(label: String, selected: Boolean, onClick: () -> Unit, focusRequester: FocusRequester?) {
+private fun CategoryTile(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    focusRequester: FocusRequester?,
+    entryFocusRequester: FocusRequester?,
+) {
     Card(
         onClick = onClick,
         colors = CardDefaults.colors(
@@ -1143,6 +1205,7 @@ private fun CategoryTile(label: String, selected: Boolean, onClick: () -> Unit, 
         shape = CardDefaults.shape(CATEGORY_TILE_SHAPE, CATEGORY_TILE_SHAPE, CATEGORY_TILE_SHAPE),
         modifier = Modifier.width(CARD_WIDTH).height(CATEGORY_TILE_HEIGHT)
             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
+            .then(if (entryFocusRequester != null) Modifier.focusRequester(entryFocusRequester) else Modifier)
             .testTag(UatTestTags.FILTER_GENRE_PREFIX + label),
     ) {
         // Two lines, ellipsized, with inner padding: a long or multi-word
@@ -1282,9 +1345,9 @@ private fun GenreFilteredGrid(
     initialFocusArtistKey: String?,
     hasHeader: Boolean,
     header: @Composable ((() -> Unit)?) -> Unit,
+    gridState: LazyGridState,
 ) {
     val headerCount = if (hasHeader) 1 else 0
-    val gridState = rememberLazyGridState()
     val focusNavigationScope = rememberCoroutineScope()
     val firstSection = when {
         movies.isNotEmpty() -> "movies"

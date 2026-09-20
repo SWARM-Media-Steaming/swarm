@@ -88,7 +88,10 @@ Two navigation surfaces get **more than one Back tier**, and both must be reprod
 - The catalog browse page: Back first closes the search popup if it's open, then scrolls
   to the top and focuses the top bar (search icon / Movies / Shows / Music); only a
   *second* Back (with the top bar already focused) continues to the screen's real Back
-  action.
+  action. The top bar sits outside the scrolling page, so DOWN from it is explicit (scroll
+  the target into composition, then focus the picked category's tile, else the first tile,
+  else the first asset) rather than left to the platform's geometric focus search — which
+  left the top bar reachable but impossible to leave downward.
 - The video/music player: video's Back pauses first, then a second Back (from the paused
   overlay) actually exits; music's Back **minimizes** the player instead of stopping it —
   the visible on-screen Close/Stop control is the only way to actually end music playback.

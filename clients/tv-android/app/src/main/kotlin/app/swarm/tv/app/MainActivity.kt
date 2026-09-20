@@ -105,7 +105,7 @@ import app.swarm.tv.app.ui.screens.resumeEpisode
 import app.swarm.tv.app.ui.screens.ShowShelfScreen
 import app.swarm.tv.app.ui.screens.SwarmDashboardScreen
 import app.swarm.tv.app.ui.screens.SwarmSettingsScreen
-import app.swarm.tv.app.ui.theme.SwarmBackground
+import app.swarm.tv.app.ui.theme.SwarmBackdrop
 import app.swarm.tv.app.ui.theme.SwarmError
 import app.swarm.tv.app.ui.theme.SwarmText
 import app.swarm.tv.app.ui.theme.SwarmTvTheme
@@ -197,7 +197,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             SwarmTvTheme {
-                Box(modifier = Modifier.fillMaxSize().background(SwarmBackground)) {
+                SwarmBackdrop(modifier = Modifier.fillMaxSize()) backdrop@{
                     // AndroidDeviceIdentity touches AndroidKeyStore and, on
                     // first launch (or whenever the alias is missing),
                     // synchronously generates an EC keypair in secure
@@ -228,7 +228,7 @@ class MainActivity : ComponentActivity() {
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                             SwarmStartupImage()
                         }
-                        return@Box
+                        return@backdrop
                     }
                     val resolvedIdentity = resolvedStartup.identity
                     val factory = remember(resolvedStartup) {

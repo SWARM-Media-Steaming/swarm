@@ -4,7 +4,12 @@
  */
 package app.swarm.tv.app.ui.theme
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.darkColorScheme
@@ -36,4 +41,29 @@ private val SwarmColorScheme = darkColorScheme(
 @Composable
 fun SwarmTvTheme(content: @Composable () -> Unit) {
     MaterialTheme(colorScheme = SwarmColorScheme, content = content)
+}
+
+/**
+ * Quiet app-wide backdrop that carries the cyan and gold interaction accents
+ * into otherwise empty screen space. The low-opacity stops keep artwork and
+ * controls visually dominant while avoiding the flat, single-color canvas.
+ */
+@Composable
+fun SwarmBackdrop(
+    modifier: Modifier = Modifier,
+    content: @Composable BoxScope.() -> Unit,
+) {
+    Box(
+        modifier = modifier
+            .background(SwarmBackground)
+            .background(
+                Brush.linearGradient(
+                    0.0f to SwarmAccent.copy(alpha = 0.11f),
+                    0.30f to Color.Transparent,
+                    0.72f to Color.Transparent,
+                    1.0f to SwarmAccentHot.copy(alpha = 0.08f),
+                ),
+            ),
+        content = content,
+    )
 }

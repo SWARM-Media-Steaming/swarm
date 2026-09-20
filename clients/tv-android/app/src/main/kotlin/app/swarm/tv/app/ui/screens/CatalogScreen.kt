@@ -16,8 +16,8 @@
  * button would. Like Netflix, a fixed top bar (search icon, Movies, Shows,
  * Music) picks which kind of library the page shows, and the first row of
  * the page is a strip of category tiles ([CategoryRow]) — no filter sidebar.
- * The search icon opens [SearchOverlay], which drives the same on-screen
- * keyboard flow the old inline search box did.
+ * The search icon opens [SearchKeyboardInput], which hands focus straight to
+ * the Fire TV alphanumeric pad without an intermediate app-owned dialog.
  */
 package app.swarm.tv.app.ui.screens
 
@@ -53,7 +53,6 @@ import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed as gridItemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -104,7 +103,6 @@ import app.swarm.tv.app.ui.PrefetchArtworkRow
 import app.swarm.tv.app.ui.UatTestTags
 import app.swarm.tv.app.ui.theme.SwarmAccent
 import app.swarm.tv.app.ui.theme.SwarmAccentHot
-import app.swarm.tv.app.ui.theme.SwarmBackground
 import app.swarm.tv.app.ui.theme.SwarmLike
 import app.swarm.tv.app.ui.theme.SwarmBorder
 import app.swarm.tv.app.ui.theme.SwarmMuted
@@ -904,7 +902,7 @@ internal fun CatalogScreen(
             }
         }
         if (searchOpen) {
-            SearchOverlay(
+            SearchKeyboardInput(
                 text = searchText,
                 onTextChange = { searchText = it },
                 onSubmit = {
@@ -1230,13 +1228,13 @@ private fun CategoryTile(
 private val ON_ACCENT = Color(0xFF04263A)
 
 /**
- * The search popup. The top bar's search icon opens this instead of an inline
- * text box; it hosts the same [TvOutlinedTextField] (so selecting the field
- * brings up the same on-screen keyboard, and Done applies the search).
- * Physical Back closes it — no on-screen Cancel.
+ * Invisible input bridge between the top-bar search action and Fire TV's
+ * full-screen alphanumeric pad. The platform IME is the complete search UI:
+ * focus starts editing immediately, Done applies the search, and there is no
+ * intermediate app-owned "Search" dialog to select through first.
  */
 @Composable
-private fun SearchOverlay(
+private fun SearchKeyboardInput(
     text: String,
     onTextChange: (String) -> Unit,
     onSubmit: () -> Unit,
@@ -1245,35 +1243,16 @@ private fun SearchOverlay(
     val fieldFocusRequester = remember { FocusRequester() }
     BackHandler(onBack = onDismiss)
     LaunchedEffect(Unit) { runCatching { fieldFocusRequester.requestFocus() } }
-    Box(
-        modifier = Modifier.fillMaxSize().background(SwarmBackground.copy(alpha = 0.94f)),
-        contentAlignment = Alignment.Center,
-    ) {
-        Column(
-            modifier = Modifier.width(640.dp)
-                .clip(RoundedCornerShape(16.dp))
-                .background(SwarmSurface)
-                .padding(28.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            Text("Search", color = SwarmText, fontSize = 22.sp, fontWeight = FontWeight.Black)
-            TvOutlinedTextField(
-                value = text,
-                onValueChange = onTextChange,
-                placeholder = { Text("Search title, artist, show…", color = SwarmMuted) },
-                colors = searchFieldColors(),
-                onSubmit = onSubmit,
-                modifier = Modifier.fillMaxWidth()
-                    .focusRequester(fieldFocusRequester)
-                    .testTag(UatTestTags.SEARCH_FIELD),
-            )
-            Text(
-                "Select the box to type, then press Done. Results cover Movies, Shows and Music.",
-                color = SwarmMuted,
-                fontSize = 12.sp,
-            )
-        }
-    }
+    TvOutlinedTextField(
+        value = text,
+        onValueChange = onTextChange,
+        startEditingOnFocus = true,
+        onSubmit = onSubmit,
+        modifier = Modifier.size(1.dp)
+            .alpha(0f)
+            .focusRequester(fieldFocusRequester)
+            .testTag(UatTestTags.SEARCH_FIELD),
+    )
 }
 
 /** Ranks [entries]' genres by how many entries in this specific kind carry each one (descending), keeps only genres whose *grouped* asset count reaches [MIN_GENRE_SHELF_SIZE] (a scraping gap, not a real category, otherwise), takes the top [MAX_GENRE_SHELVES] of those (or fewer, if fewer qualify), and groups each genre's matching subset via [group] — [ShowGroup]/[ArtistGroup] for Shows/Music, the identity function for the already-flat Movies list. */
@@ -1491,15 +1470,6 @@ private fun GenreFilteredGrid(
 private fun GridSectionHeader(label: String) {
     Text(label, color = SwarmMuted, fontSize = TOP_LEVEL_TITLE_SIZE, fontWeight = FontWeight.Black, modifier = Modifier.padding(bottom = 4.dp))
 }
-
-@Composable
-private fun searchFieldColors() = OutlinedTextFieldDefaults.colors(
-    focusedTextColor = SwarmText,
-    unfocusedTextColor = SwarmText,
-    focusedBorderColor = SwarmAccent,
-    unfocusedBorderColor = SwarmBorder,
-    cursorColor = SwarmAccent,
-)
 
 // Top-level shelf titles (Movies/Shows/Music) read noticeably larger/bolder
 // than genre sub-shelf titles beneath them, so the row hierarchy is visible

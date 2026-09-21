@@ -19,6 +19,11 @@ name: Release media server
 #     is closed on the app side with a custom version comparator (see
 #     apps/server/src/gui.rs's `release_is_newer`), not by avoiding the
 #     suffix here.
+#   - Those suffixes are not valid WiX ProductVersions. The publish job
+#     keeps this semver for the updater and writes a numeric
+#     `bundle.windows.wix.version` for the MSI only
+#     (scripts/ci/stamp-media-server-version.mjs). A numeric-only
+#     pre-release would sort older than already published `-beta.<n>` builds.
 #
 # SERVER_TAURI_SIGNING_PRIVATE_KEY and
 # SERVER_TAURI_SIGNING_PRIVATE_KEY_PASSWORD are repository secrets generated
@@ -36,6 +41,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/release-media-server.yml"
+      - "scripts/ci/stamp-media-server-version.mjs"
   workflow_dispatch:
 
 concurrency:
@@ -166,16 +172,13 @@ jobs:
       # the build, is what makes app.package_info().version (surfaced in the
       # UI's sidebar and used by the updater's own "current version" check)
       # equal the exact version this workflow just computed, suffix and all.
+      # The same step writes bundle.windows.wix.version. WiX rejects
+      # `-beta.<n>` / `+main.<n>` ("pre-release identifier" / "build
+      # metadata" must be numeric and <= 65535), which failed the Windows
+      # publish after the other platforms had already uploaded the release.
       - name: Stamp the computed version into tauri.conf.json
         shell: bash
-        run: |
-          node -e '
-            const fs = require("fs");
-            const path = "apps/server/tauri.conf.json";
-            const conf = JSON.parse(fs.readFileSync(path, "utf8"));
-            conf.version = process.argv[1];
-            fs.writeFileSync(path, JSON.stringify(conf, null, 2) + "\n");
-          ' "${{ needs.version.outputs.version }}"
+        run: node scripts/ci/stamp-media-server-version.mjs "${{ needs.version.outputs.version }}"
 
       - uses: tauri-apps/tauri-action@v0
         env:

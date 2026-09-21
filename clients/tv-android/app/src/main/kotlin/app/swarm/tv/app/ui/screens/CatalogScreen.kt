@@ -1077,6 +1077,13 @@ private fun TopNavButton(
     testTag: String,
     content: @Composable () -> Unit,
 ) {
+    // A click must be a whole press that began while this button held focus.
+    // Focus lands here without the user asking for it (scrolling back up to the
+    // bar, or the bar being refocused after the search keyboard closes), and a
+    // select key-up that was still in flight then arrives with no matching
+    // key-down — tv-material would turn that into a click and, for the search
+    // icon, pop the keyboard up unprompted. Such a stray key-up is swallowed.
+    var pressStartedHere by remember { mutableStateOf(false) }
     Card(
         onClick = onClick,
         colors = CardDefaults.colors(
@@ -1096,6 +1103,23 @@ private fun TopNavButton(
         shape = CardDefaults.shape(TOP_NAV_SHAPE, TOP_NAV_SHAPE, TOP_NAV_SHAPE),
         modifier = Modifier
             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
+            .onFocusChanged { if (!it.isFocused) pressStartedHere = false }
+            .onPreviewKeyEvent { event ->
+                val isSelectKey = event.key == Key.DirectionCenter || event.key == Key.Enter || event.key == Key.NumPadEnter
+                when {
+                    !isSelectKey -> false
+                    event.type == KeyEventType.KeyDown -> {
+                        pressStartedHere = true
+                        false
+                    }
+                    event.type == KeyEventType.KeyUp && !pressStartedHere -> true
+                    event.type == KeyEventType.KeyUp -> {
+                        pressStartedHere = false
+                        false
+                    }
+                    else -> false
+                }
+            }
             .testTag(testTag),
     ) {
         Box(

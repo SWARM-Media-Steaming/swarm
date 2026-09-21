@@ -344,6 +344,16 @@ internal fun CatalogScreen(
         }
     }
     BackHandler(enabled = !searchOpen && topBarHasFocus, onBack = onBack)
+    // A picked category is a level deeper than the tab's own page: Back first
+    // returns to that page (the shelves plus category row) from wherever focus
+    // is, and only then does the layered handling above apply. Registered last
+    // so it wins over the two handlers above while a category is picked. Focus
+    // is handed back to the tile that was open, as when un-picking it.
+    BackHandler(enabled = !searchOpen && genreFilter != null) {
+        automaticInitialFocusEnabled = false
+        categoryFocusGenre = genreFilter
+        genreFilter = null
+    }
 
     // Categories follow the selected tab and are ranked by how many assets
     // carry each one. They belong to a tab's own page, so a search hides them.

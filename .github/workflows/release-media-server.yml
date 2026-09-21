@@ -6,21 +6,23 @@ name: Release media server
 # to this monorepo (the STUN server, the TV clients, shared docs, etc. all
 # live here too and must not trigger a media-server release).
 #
-# Versioning:
-#   - `ai-main` (beta channel) always publishes, as
-#     `<Cargo.toml version>-beta.<run_number>` — unique by construction, and
-#     flagged `prerelease` so it never becomes the repo's "Latest release".
-#   - `main` (stable channel) always publishes too. If the workspace version
-#     hasn't been bumped since the last published stable release, build
-#     metadata (`+main.<run_number>`) is appended for uniqueness instead.
-#     `semver` deliberately ignores build metadata when *ordering* two
-#     versions, so two `+main.<n>` releases in a row would compare equal
-#     under the updater plugin's default "is this newer?" check — that gap
-#     is closed on the app side with a custom version comparator (see
-#     apps/server/src/gui.rs's `release_is_newer`), not by avoiding the
-#     suffix here.
-#   - Those suffixes are not valid WiX ProductVersions. The publish job
-#     keeps this semver for the updater and writes a numeric
+# Versioning (see .claude/rules/versioning.md):
+#   - The version is computed from the VERSION file and git history by
+#     scripts/ci/compute-release-version.mjs, never from Cargo.toml (whose
+#     version is only a placeholder). VERSION holds the version as of the
+#     commit that last changed it, and every later commit on the branch adds
+#     one to the patch. Minor and major change only by editing VERSION.
+#   - `main` (stable channel) publishes `<version>`; `ai-main` (beta channel)
+#     publishes `<version>-beta.<run_number>`, flagged `prerelease` so it never
+#     becomes the repo's "Latest release".
+#   - Every stable publish is therefore a strictly greater plain semver. (The
+#     older `+main.<run_number>` releases relied on the app's custom
+#     `release_is_newer` comparator in apps/server/src/gui.rs, which is kept so
+#     installs still on those builds update.) The patch counts every commit on
+#     the branch, including ones that publish nothing here, so published
+#     versions can skip a number but never repeat or go backwards.
+#   - Beta suffixes are not valid WiX ProductVersions. The publish job keeps
+#     this semver for the updater and writes a numeric
 #     `bundle.windows.wix.version` for the MSI only
 #     (scripts/ci/stamp-media-server-version.mjs). A numeric-only
 #     pre-release would sort older than already published `-beta.<n>` builds.
@@ -40,8 +42,10 @@ on:
       - "crates/swarm-p2p/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "VERSION"
       - ".github/workflows/release-media-server.yml"
       - "scripts/ci/stamp-media-server-version.mjs"
+      - "scripts/ci/compute-release-version.mjs"
   workflow_dispatch:
 
 concurrency:
@@ -63,40 +67,25 @@ jobs:
       prerelease: ${{ steps.compute.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The patch number counts commits, so a shallow clone cannot work.
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
       - name: Compute the release version
         id: compute
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          base_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
-          if [ -z "$base_version" ]; then
-            echo "could not read [workspace.package] version from Cargo.toml" >&2
-            exit 1
-          fi
-
           if [ "${{ github.ref_name }}" = "ai-main" ]; then
-            version="${base_version}-beta.${{ github.run_number }}"
+            channel=beta
             prerelease=true
           else
-            # Find the most recently published *stable* release this same
-            # pipeline made, and compare its base version (its tag with the
-            # server-v prefix and any +main.<n> suffix stripped) against the
-            # current one. Only append build metadata when they match —
-            # an actual version bump publishes cleanly with no suffix.
-            last_stable_tag="$(gh api "repos/$REPO/releases" --paginate --jq \
-              '[.[] | select(.draft == false and .prerelease == false and (.tag_name | startswith("server-v")))][0].tag_name // empty')"
-            last_stable_version="${last_stable_tag#server-v}"
-            last_stable_base="${last_stable_version%%+*}"
-            if [ "$last_stable_base" = "$base_version" ]; then
-              version="${base_version}+main.${{ github.run_number }}"
-            else
-              version="$base_version"
-            fi
+            channel=stable
             prerelease=false
           fi
-
+          version="$(node scripts/ci/compute-release-version.mjs \
+            --channel "$channel" --run-number "${{ github.run_number }}")"
           tag="server-v${version}"
           echo "Publishing $tag (prerelease=$prerelease)"
           {

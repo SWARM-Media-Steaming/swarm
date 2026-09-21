@@ -1,0 +1,3 @@
+# SWARM Server product version as of the commit that last changed this file: MAJOR.MINOR.PATCH.
+# Every later commit on a branch adds 1 to the patch (see .claude/rules/versioning.md).
+0.1.1

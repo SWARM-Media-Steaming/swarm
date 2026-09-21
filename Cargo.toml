@@ -11,6 +11,8 @@ members = [
 ]
 
 [workspace.package]
+# Placeholder: the published server version is computed from VERSION (see
+# .claude/rules/versioning.md) and stamped in by the release workflow.
 version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-or-later"

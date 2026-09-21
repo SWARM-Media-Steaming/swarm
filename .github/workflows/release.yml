@@ -30,6 +30,8 @@ jobs:
       - run: cargo clippy --workspace --all-targets
         continue-on-error: true
       - run: cargo test --workspace --locked
+      - name: Release script tests
+        run: node --test scripts/ci/compute-release-version.test.mjs scripts/ci/stamp-media-server-version.test.mjs
 
   test-android:
     runs-on: ubuntu-latest

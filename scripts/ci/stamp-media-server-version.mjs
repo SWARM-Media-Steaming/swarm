@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Stamp the release version into apps/server/tauri.conf.json.
 //
-// The app version stays the workflow's semver (`0.1.0-beta.<n>` on ai-main,
-// `0.1.0+main.<n>` when a stable publish reuses the Cargo version). WiX
+// The app version stays the workflow's semver (`0.1.5` on main,
+// `0.1.5-beta.<n>` on ai-main; older releases also used `0.1.0+main.<n>`). WiX
 // ProductVersion cannot carry those suffixes: it must be numeric
 // major.minor.patch[.build], and the last two fields must be <= 65535.
 // bundle.windows.wix.version is only the MSI product version. NSIS, the

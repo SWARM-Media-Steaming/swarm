@@ -722,6 +722,9 @@ internal fun CatalogScreen(
                                     hasHeader = showCategoryRow,
                                     header = categoryRow,
                                     gridState = genreGridState,
+                                    genre = genreFilter,
+                                    preview = preview,
+                                    previewCoordinator = previewCoordinator,
                                 )
                             } else {
                                 val navigateToFirstCatalogEntry = {
@@ -1339,8 +1342,15 @@ private fun GenreFilteredGrid(
     hasHeader: Boolean,
     header: @Composable ((() -> Unit)?) -> Unit,
     gridState: LazyGridState,
+    genre: String?,
+    preview: BrowsePreview?,
+    previewCoordinator: BrowsePreviewCoordinator,
 ) {
     val headerCount = if (hasHeader) 1 else 0
+    // One stable representative episode per show for the hover preview, kept
+    // across recompositions/focus changes so it doesn't resample — same rule
+    // as [ShowShelfRow] and the Browse All shows grid.
+    val showPreviewEntries = remember(shows) { shows.map(CatalogGrouping::randomPreviewEpisode) }
     val focusNavigationScope = rememberCoroutineScope()
     val firstSection = when {
         movies.isNotEmpty() -> "movies"
@@ -1367,10 +1377,15 @@ private fun GenreFilteredGrid(
         val selected = initialFocusArtistKey?.let { key -> artists.indexOfFirst { it.artist == key } } ?: -1
         if (selected >= 0) restoreGridIndex = nextGridIndex + selected
     }
-    LaunchedEffect(restoreGridIndex, movies, shows, artists, requestInitialFocus) {
+    // Keyed on stable scalars, never the lists themselves: the live catalog
+    // feed (#147) rebuilds them on every merged delta, and re-running this
+    // would yank focus and scroll back to the first card, cancelling any
+    // in-flight hover preview (#190). A new genre is a new grid, so it re-runs.
+    val currentRestoreGridIndex by rememberUpdatedState(restoreGridIndex)
+    LaunchedEffect(genre, movies.isEmpty(), shows.isEmpty(), artists.isEmpty(), requestInitialFocus) {
         if (requestInitialFocus) {
-            if (restoreGridIndex != null) {
-                gridState.scrollToItem(restoreGridIndex!!)
+            currentRestoreGridIndex?.let {
+                gridState.scrollToItem(it)
                 withFrameNanos {}
             }
             runCatching { firstFocusRequester.requestFocus() }
@@ -1412,19 +1427,38 @@ private fun GenreFilteredGrid(
                 key = { _, entry -> "movie-${entry.entry.entryKey}" },
                 contentType = { _, _ -> "movie" },
             ) { index, entry ->
-                CatalogCard(
-                    entry,
-                    artworkUrl(entry),
+                val focusRequester = if (
+                    entry.entry.entryKey == initialFocusMovieKey ||
+                    (restoreGridIndex == null && firstSection == "movies" && index == 0)
+                ) firstFocusRequester else null
+                val additionalFocusRequester = firstEntryFocusRequester.takeIf { firstSection == "movies" && index == 0 }
+                BrowsePreviewGridCard(
+                    columnIndex = index,
+                    previewEntry = entry,
+                    coordinator = previewCoordinator,
+                    preview = preview,
                     onClick = { onOpenMovie(entry) },
-                    focusRequester = if (
-                        entry.entry.entryKey == initialFocusMovieKey ||
-                        (restoreGridIndex == null && firstSection == "movies" && index == 0)
-                    ) firstFocusRequester else null,
-                    additionalFocusRequester = firstEntryFocusRequester.takeIf { firstSection == "movies" && index == 0 },
-                    widthModifier = Modifier.fillMaxWidth(),
-                    isLiked = isLiked(entry),
-                    testTag = UatTestTags.CARD_MOVIE_PREFIX + entry.entry.entryKey,
-                )
+                    cardModifier = Modifier
+                        .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
+                        .then(if (additionalFocusRequester != null) Modifier.focusRequester(additionalFocusRequester) else Modifier)
+                        .testTag(UatTestTags.CARD_MOVIE_PREFIX + entry.entry.entryKey),
+                ) {
+                    ArtworkImage(
+                        label = entry.entry.displayTitle(),
+                        placeholderType = "Movie",
+                        primaryUrl = artworkUrl(entry),
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                    if (isLiked(entry)) {
+                        Text(
+                            "♥",
+                            color = SwarmLike,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Black,
+                            modifier = Modifier.align(Alignment.TopEnd).padding(6.dp),
+                        )
+                    }
+                }
             }
         }
         if (shows.isNotEmpty()) {
@@ -1435,19 +1469,29 @@ private fun GenreFilteredGrid(
                 contentType = { _, _ -> "show" },
             ) { index, show ->
                 val representative = show.seasons.firstOrNull()?.episodes?.firstOrNull()
-                GroupCard(
-                    title = show.show,
-                    subtitle = "${show.seasons.size} season" + if (show.seasons.size == 1) "" else "s",
-                    artworkUrl = representative?.let(artworkUrl),
+                val focusRequester = if (
+                    show.show == initialFocusShowKey ||
+                    (restoreGridIndex == null && firstSection == "shows" && index == 0)
+                ) firstFocusRequester else null
+                val additionalFocusRequester = firstEntryFocusRequester.takeIf { firstSection == "shows" && index == 0 }
+                BrowsePreviewGridCard(
+                    columnIndex = index,
+                    previewEntry = showPreviewEntries.getOrNull(index),
+                    coordinator = previewCoordinator,
+                    preview = preview,
                     onClick = { onOpenShow(show) },
-                    focusRequester = if (
-                        show.show == initialFocusShowKey ||
-                        (restoreGridIndex == null && firstSection == "shows" && index == 0)
-                    ) firstFocusRequester else null,
-                    additionalFocusRequester = firstEntryFocusRequester.takeIf { firstSection == "shows" && index == 0 },
-                    widthModifier = Modifier.fillMaxWidth(),
-                    testTag = UatTestTags.CARD_SHOW_PREFIX + show.show,
-                )
+                    cardModifier = Modifier
+                        .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
+                        .then(if (additionalFocusRequester != null) Modifier.focusRequester(additionalFocusRequester) else Modifier)
+                        .testTag(UatTestTags.CARD_SHOW_PREFIX + show.show),
+                ) {
+                    ArtworkImage(
+                        label = show.show,
+                        placeholderType = "Show",
+                        primaryUrl = representative?.let(artworkUrl),
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
             }
         }
         if (artists.isNotEmpty()) {

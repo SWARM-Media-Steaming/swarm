@@ -9,8 +9,15 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -22,12 +29,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.zIndex
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
@@ -35,11 +45,14 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
 import androidx.media3.ui.PlayerView
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.tv.material3.Card
+import androidx.tv.material3.CardDefaults
 import app.swarm.tv.R
 import app.swarm.tv.app.PausePlayerWhenAppBackgrounded
 import app.swarm.tv.app.data.BrowsePreview
 import app.swarm.tv.app.ui.UatTestTags
 import app.swarm.tv.app.ui.theme.SwarmAccentHot
+import app.swarm.tv.app.ui.theme.SwarmSurface
 import app.swarm.tv.core.catalog.MergedEntry
 import kotlinx.coroutines.delay
 
@@ -190,6 +203,68 @@ internal fun BoxScope.BrowsePreviewGridOverlay(
             modifier = Modifier.matchParentSize(),
             hasVideo = hasVideo,
         )
+    }
+}
+
+/**
+ * A full-grid poster card that expands to a 16:9 hover preview: the poster
+ * slot (`aspectRatio(2/3)`, sized by the grid cell) keeps its resting size
+ * while the focused card widens over its neighbours via
+ * [rememberBrowsePreviewWidth] / [browsePreviewAlignment] and draws above them.
+ * The Browse All grids and the genre-filtered catalog grid share this shape so
+ * a preview is the same 16:9 everywhere it plays.
+ *
+ * @param columnIndex the card's index within its own grid section (not the
+ *   whole grid), which decides the expand direction at the grid edges.
+ * @param previewEntry the entry to preview, or null when the card has no
+ *   previewable video (it then stays a plain poster card).
+ * @param cardModifier focus requesters and test tags for the [Card].
+ * @param artwork the poster content; the preview overlay is layered on top.
+ */
+@Composable
+internal fun BrowsePreviewGridCard(
+    columnIndex: Int,
+    previewEntry: MergedEntry?,
+    coordinator: BrowsePreviewCoordinator,
+    preview: BrowsePreview?,
+    onClick: () -> Unit,
+    cardModifier: Modifier = Modifier,
+    artwork: @Composable BoxScope.() -> Unit,
+) {
+    val previewKey = previewEntry?.entry?.entryKey
+    var isFocused by remember(previewKey) { mutableStateOf(false) }
+    val isPreviewExpanded = isFocused && previewKey != null && coordinator.expandedPreviewEntryKey == previewKey
+    BoxWithConstraints(
+        modifier = Modifier.fillMaxWidth().aspectRatio(BROWSE_PREVIEW_POSTER_ASPECT_RATIO)
+            .zIndex(if (isFocused) 1f else 0f),
+    ) {
+        val previewWidth = rememberBrowsePreviewWidth(maxWidth, isPreviewExpanded)
+        Card(
+            onClick = onClick,
+            colors = CardDefaults.colors(containerColor = SwarmSurface),
+            modifier = cardModifier.fillMaxHeight()
+                .wrapContentWidth(align = browsePreviewAlignment(columnIndex), unbounded = true)
+                .requiredWidth(previewWidth)
+                .onFocusChanged { focusState ->
+                    if (isFocused != focusState.isFocused) {
+                        isFocused = focusState.isFocused
+                        previewEntry?.let { coordinator.onPreviewFocusChanged(it, focusState.isFocused) }
+                    }
+                },
+        ) {
+            Box(modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(4.dp))) {
+                artwork()
+                if (previewKey != null) {
+                    BrowsePreviewGridOverlay(
+                        entryKey = previewKey,
+                        isFocused = isFocused,
+                        isExpanded = isPreviewExpanded,
+                        preview = preview,
+                        onFinished = coordinator.onPreviewFinished,
+                    )
+                }
+            }
+        }
     }
 }
 

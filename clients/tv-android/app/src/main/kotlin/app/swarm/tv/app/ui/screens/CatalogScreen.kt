@@ -434,7 +434,6 @@ internal fun CatalogScreen(
                 onClearSearch = clearSearch,
                 onOpenSwarm = onOpenSwarm,
                 onOpenBuzz = onOpenBuzz,
-                unreachable = unreachable,
                 playbackError = playbackError,
                 focusRequester = topBarFocusRequester,
                 onFocusChanged = { topBarHasFocus = it },
@@ -961,7 +960,6 @@ private fun CatalogTopBar(
     onClearSearch: () -> Unit,
     onOpenSwarm: () -> Unit,
     onOpenBuzz: () -> Unit,
-    unreachable: List<SwarmDevice>,
     playbackError: String?,
     focusRequester: FocusRequester,
     onFocusChanged: (Boolean) -> Unit,
@@ -1043,14 +1041,6 @@ private fun CatalogTopBar(
                     modifier = Modifier.size(22.dp),
                 )
             }
-        }
-        if (unreachable.isNotEmpty()) {
-            Spacer(Modifier.height(10.dp))
-            Text(
-                "${unreachable.size} server(s) not reachable yet: ${unreachable.joinToString { it.name }}",
-                color = SwarmMuted,
-                fontSize = 12.sp,
-            )
         }
         if (playbackError != null) {
             Spacer(Modifier.height(10.dp))

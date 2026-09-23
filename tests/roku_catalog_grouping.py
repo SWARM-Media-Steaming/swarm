@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Roku CatalogGrouping.Shows must drop extras-only / 0-season show groups.
+"""Roku CatalogGrouping.Shows / FirstEpisode contracts.
 
 Issue #360: Fire TV search/browse hides groups with empty previewSeasons
 (season 0, null season, episode <= 0). Roku grouping lives in
-clients/tv-roku/src/source/CatalogGrouping.bs and is the path a Roku
-search would use. This script source-checks that filter and exercises
-an equivalent grouping (no BrightScript runtime in this environment).
+clients/tv-roku/src/source/CatalogGrouping.bs.
+
+Issue #363: FirstEpisode must not pick a season-0 special over the real
+S1E1 premiere when selecting a show row (v1 plays first episode directly).
 """
 
 from __future__ import annotations
@@ -55,9 +56,17 @@ def assert_source_contract() -> None:
 
     extract_function(text, "PreviewSeasons")
 
+    first_ep = extract_function(text, "FirstEpisode")
+    if "IsPreviewEpisode(e)" not in first_ep:
+        fail("FirstEpisode must prefer IsPreviewEpisode (season > 0, episode > 0) over season 0")
+    if "isExtra" not in first_ep:
+        fail("FirstEpisode must still skip extra_type bonus files")
+
     catalog = CATALOG_SCREEN.read_text()
     if "Swarm.CatalogGrouping.Shows(entries)" not in catalog:
         fail("CatalogScreen no longer builds the shows shelf from CatalogGrouping.Shows")
+    if "Swarm.CatalogGrouping.FirstEpisode" not in catalog:
+        fail("CatalogScreen no longer plays a show via CatalogGrouping.FirstEpisode")
 
 
 def is_preview_episode(e: dict) -> bool:
@@ -121,6 +130,31 @@ def matches_search(entry: dict, query: str) -> bool:
 
 def search_show_titles(entries: list[dict], query: str) -> list[str]:
     return [g["title"] for g in shows([e for e in entries if matches_search(e, query)])]
+
+
+def first_episode(episodes: list[dict]) -> dict | None:
+    """Mirror CatalogGrouping.FirstEpisode: extras never win; preview
+    episodes (season > 0 and episode > 0) beat season-0 specials; then
+    lowest (season, episode) with unnumbered last.
+    """
+    def season_key(e: dict) -> int:
+        s = e.get("season")
+        return 999999 if s is None else s
+
+    def episode_key(e: dict) -> int:
+        n = e.get("episode")
+        return 999999 if n is None else n
+
+    def is_extra(e: dict) -> bool:
+        extra = e.get("extra_type")
+        return extra is not None and extra != ""
+
+    eligible = [e for e in episodes if not is_extra(e)]
+    preview = [e for e in eligible if is_preview_episode(e)]
+    pool = preview if preview else eligible
+    if not pool:
+        return None
+    return min(pool, key=lambda e: (season_key(e), episode_key(e)))
 
 
 def episode(fp: str, show: str | None, season: int | None, ep: int | None, title: str | None = None) -> dict:
@@ -232,10 +266,50 @@ def run_grouping_cases() -> None:
     print("ok dexter-label")
 
 
+def run_first_episode_cases() -> None:
+    special = episode("s0e1", "Show", 0, 1, "Christmas Special")
+    premiere = episode("s1e1", "Show", 1, 1, "Pilot")
+    s1e2 = episode("s1e2", "Show", 1, 2, "Second")
+    extra = dict(episode("feat", "Show", 0, 1, "Making Of"), extra_type="featurette")
+
+    check(
+        "first-episode-skips-season-0-special",
+        first_episode([special, premiere])["fingerprint"],
+        "s1e1",
+    )
+    check(
+        "first-episode-issue-363-repro",
+        first_episode([
+            {"season": 0, "episode": 1, "extra_type": None, "fingerprint": "special"},
+            {"season": 1, "episode": 1, "extra_type": None, "fingerprint": "premiere"},
+        ])["fingerprint"],
+        "premiere",
+    )
+    check(
+        "first-episode-lowest-numbered-season",
+        first_episode([s1e2, premiere, special])["fingerprint"],
+        "s1e1",
+    )
+    check(
+        "first-episode-skips-extra-type",
+        first_episode([extra, premiere])["fingerprint"],
+        "s1e1",
+    )
+    check(
+        "first-episode-specials-only-fallback",
+        first_episode([special])["fingerprint"],
+        "s0e1",
+    )
+    if first_episode([extra]) is not None:
+        fail("first-episode-extras-only must return None")
+    print("ok first-episode-extras-only")
+
+
 def main() -> None:
     assert_source_contract()
     run_grouping_cases()
-    print("PASS: Roku Shows() hides 0-season show groups")
+    run_first_episode_cases()
+    print("PASS: Roku Shows() hides 0-season show groups; FirstEpisode skips season 0")
 
 
 if __name__ == "__main__":

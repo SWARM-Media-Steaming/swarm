@@ -144,12 +144,14 @@ namespace Swarm.CatalogGrouping
         return result
     end function
 
-    ' Lowest (season, episode) pair, unnumbered treated as last -- used for
-    ' v1's "select a show plays its first episode" simplification (full
+    ' Lowest numbered (season > 0, episode > 0) pair -- used for v1's
+    ' "select a show plays its first episode" simplification (full
     ' season/episode navigation is deferred, see feature-inventory.md).
-    ' Bonus content (extra_type set -- a featurette/deleted scene/etc. living
-    ' in a season-0 extras folder) is never eligible: it must stay nested
-    ' under the show, never hijacking the "play the show" default action.
+    ' Season 0 is the Specials bucket (Plex/Kodi/TheTVDB); a Christmas
+    ' special at 0x1 must not beat the real premiere at 1x1. Bonus content
+    ' (extra_type set) is never eligible. If the group has no preview
+    ' episode, fall back to the lowest remaining non-extra (specials /
+    ' unnumbered) so a playable row still has a default.
     function FirstEpisode(episodes as object) as dynamic
         best = invalid
         for each e in episodes
@@ -157,7 +159,9 @@ namespace Swarm.CatalogGrouping
             if not isExtra
                 if best = invalid
                     best = e
-                else
+                else if IsPreviewEpisode(e) and not IsPreviewEpisode(best)
+                    best = e
+                else if IsPreviewEpisode(e) = IsPreviewEpisode(best)
                     eSeason = 999999
                     if e.season <> invalid
                         eSeason = e.season

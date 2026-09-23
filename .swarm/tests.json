@@ -1077,6 +1077,70 @@
         "servers": []
       },
       "timeoutSeconds": 120
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "tests/adversarial/music_artwork_404/Cargo.toml",
+        "--target-dir",
+        "target/adversarial-issue-376",
+        "--test",
+        "issue_376_music_artwork",
+        "--",
+        "--nocapture"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-376-music-artwork",
+      "name": "Adversarial: issue #376 music artwork NFC/NFD 404",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "cargo"
+        ],
+        "files": [
+          "tests/adversarial/music_artwork_404/Cargo.toml",
+          "tests/adversarial/music_artwork_404/tests/issue_376_music_artwork.rs",
+          "crates/swarm-media/src/serve.rs",
+          "crates/swarm-media/src/roots.rs"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
+    },
+    {
+      "command": [
+        "python3",
+        "tests/adversarial/test_issue_376_music_artwork_contract.py"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-376-music-artwork-contract",
+      "name": "Adversarial: issue #376 music artwork 404 contract",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "python3"
+        ],
+        "files": [
+          "tests/adversarial/test_issue_376_music_artwork_contract.py",
+          "crates/swarm-media/src/serve.rs",
+          "crates/swarm-media/src/roots.rs",
+          "apps/server/src/http_media.rs",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/data/SwarmViewModel.kt",
+          "clients/tv-roku/src/source/Artwork.bs"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 120
     }
   ],
   "version": 1

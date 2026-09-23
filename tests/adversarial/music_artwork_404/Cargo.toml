@@ -1,0 +1,16 @@
+[workspace]
+
+[package]
+name = "adversarial-issue-376-music-artwork"
+description = "Adversarial UAT for issue #376: music artwork must not 404 when the catalogued cover still exists under a different Unicode normalization."
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+futures-util = "0.3"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+swarm-core = { path = "../../../crates/swarm-core" }
+swarm-media = { path = "../../../crates/swarm-media" }
+tokio = { version = "1", features = ["full", "test-util"] }

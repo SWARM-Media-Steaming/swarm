@@ -64,6 +64,10 @@ text or font weight, not by breaking this three-color sequence with a fourth ad-
   server rows) **do** grow on focus. Reproduce this split rather than picking one style for
   everything; it was a deliberate, live-tuned decision (see `CatalogCard` vs.
   `MovieShelfScreen`'s grid cards in the Fire TV source for the concrete before/after).
+  A Browse-All full grid also shows the originating shelf or genre name at the top of the
+  page (same muted, black-weight heading as the Movies/Shows/Music catalog shelves) so the
+  selected category remains visible after leaving the row that opened it (#353). The title
+  is a label only — physical Back still dismisses the screen.
 - **Any "scroll a list then focus an item in it" sequence needs two real steps**, not one:
   scroll/programmatically position the list to the target index, wait for that layout pass
   to actually complete, *then* request focus. Requesting focus on an item that hasn't been

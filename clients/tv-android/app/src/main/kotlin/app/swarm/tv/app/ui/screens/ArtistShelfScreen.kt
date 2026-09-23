@@ -1,9 +1,9 @@
 /**
- * Full grid of every artist in the catalog — reached from [CatalogScreen]'s
- * Music row header ("Browse all"), a fuller alternative to that row's
- * horizontal preview. Selecting an artist opens [AlbumScreen].
+ * Full grid of artists — reached from [CatalogScreen]'s Music row or a
+ * genre sub-shelf's "Browse All" tile. Selecting an artist opens [AlbumScreen].
  *
- * No title/Back header — see [MovieShelfScreen]'s identical doc comment.
+ * The originating category name is shown at the top (#353) — see
+ * [MovieShelfScreen]'s identical doc comment.
  */
 package app.swarm.tv.app.ui.screens
 
@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Card
 import androidx.tv.material3.CardDefaults
+import app.swarm.tv.app.data.BROWSE_ALL_MUSIC_TITLE
 import app.swarm.tv.app.ui.theme.SwarmMuted
 import app.swarm.tv.app.ui.theme.SwarmSurface
 import app.swarm.tv.app.ui.UatTestTags
@@ -50,6 +51,7 @@ fun ArtistShelfScreen(
     artistPhotoUrl: (MergedEntry) -> String?,
     onOpenArtist: (ArtistGroup) -> Unit,
     onBack: () -> Unit,
+    title: String = BROWSE_ALL_MUSIC_TITLE,
     initialFocusKey: String? = null,
 ) {
     BackHandler(onBack = onBack)
@@ -79,16 +81,18 @@ fun ArtistShelfScreen(
     }
 
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 40.dp)) {
+        BrowseAllScreenTitle(title)
         if (sortedArtists.isEmpty()) {
-            Text("No music in the catalog yet.", color = SwarmMuted, fontSize = 14.sp, modifier = Modifier.padding(top = 40.dp))
+            Text("No music in the catalog yet.", color = SwarmMuted, fontSize = 14.sp)
         } else {
-            // top = 32.dp — see MovieShelfScreen's identical comment on why.
+            // Title above the grid now supplies the top-edge headroom — see
+            // MovieShelfScreen's identical comment.
             LazyVerticalGrid(
                 state = gridState,
                 columns = GridCells.Fixed(5),
                 verticalArrangement = Arrangement.spacedBy(20.dp),
                 horizontalArrangement = Arrangement.spacedBy(20.dp),
-                contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 32.dp, bottom = 12.dp),
+                contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 12.dp),
             ) {
                 itemsIndexed(sortedArtists) { index, artist ->
                     val focusModifier = if (index == focusIndex) Modifier.focusRequester(firstCardFocusRequester) else Modifier

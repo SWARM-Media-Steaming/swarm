@@ -1,8 +1,9 @@
 /**
- * Full grid of every show in the catalog — reached from [CatalogScreen]'s
- * Shows row header ("Browse all"). Selecting a show opens [SeasonScreen].
+ * Full grid of shows — reached from [CatalogScreen]'s Shows row or a
+ * genre sub-shelf's "Browse All" tile. Selecting a show opens [SeasonScreen].
  *
- * No title/Back header — see [MovieShelfScreen]'s identical doc comment.
+ * The originating category name is shown at the top (#353) — see
+ * [MovieShelfScreen]'s identical doc comment.
  */
 package app.swarm.tv.app.ui.screens
 
@@ -43,6 +44,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Card
 import androidx.tv.material3.CardDefaults
+import app.swarm.tv.app.data.BROWSE_ALL_SHOWS_TITLE
 import app.swarm.tv.app.data.BrowsePreview
 import app.swarm.tv.app.ui.theme.SwarmMuted
 import app.swarm.tv.app.ui.theme.SwarmSurface
@@ -62,6 +64,7 @@ fun ShowShelfScreen(
     artworkUrl: (MergedEntry) -> String?,
     onOpenShow: (ShowGroup) -> Unit,
     onBack: () -> Unit,
+    title: String = BROWSE_ALL_SHOWS_TITLE,
     initialFocusKey: String? = null,
     preview: BrowsePreview? = null,
     onStartPreview: (MergedEntry) -> Unit = {},
@@ -108,16 +111,18 @@ fun ShowShelfScreen(
     }
 
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 40.dp)) {
+        BrowseAllScreenTitle(title)
         if (sortedShows.isEmpty()) {
-            Text("No shows in the catalog yet.", color = SwarmMuted, fontSize = 14.sp, modifier = Modifier.padding(top = 40.dp))
+            Text("No shows in the catalog yet.", color = SwarmMuted, fontSize = 14.sp)
         } else {
-            // top = 32.dp — see MovieShelfScreen's identical comment on why.
+            // Title above the grid now supplies the top-edge headroom — see
+            // MovieShelfScreen's identical comment.
             LazyVerticalGrid(
                 state = gridState,
                 columns = GridCells.Fixed(BROWSE_ALL_GRID_COLUMNS),
                 verticalArrangement = Arrangement.spacedBy(20.dp),
                 horizontalArrangement = Arrangement.spacedBy(20.dp),
-                contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 32.dp, bottom = 12.dp),
+                contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 12.dp),
             ) {
                 itemsIndexed(
                     items = sortedShows,

@@ -48,7 +48,7 @@ instructions and the same gap list in narrative form.
 | Watchlist row | Complete | Not implemented | Watchlist *toggle* exists (`MovieDetailScreen`) and persists; there's no row surfacing it yet |
 | Netflix-style top bar (search icon, Movies default, Shows, Music) + category-tile first row (genres ranked by asset count, no artwork, no "liked", no "Categories" section label — #352); replaced the filter sidebar in #324 | Complete | Not implemented | |
 | Search (submit-only, not live-filter; opened from the top-bar search icon as a popup, spans all kinds) | Complete | Not implemented | Roku has no search UI yet. When it lands, it must group the filtered catalog through `CatalogGrouping.Shows` (already drops extras-only / 0-season groups; Fire TV does the equivalent with `previewSeasons` after search). Do not introduce a second grouping path that skips that filter. |
-| "Browse All" grids (alphabetical) | Complete | Not implemented | Shelves are capped at 10 items with no overflow grid |
+| "Browse All" grids (alphabetical) | Complete | Not implemented | Fire TV grids show the originating shelf/category title at the top (#353), matching Movies/Shows/Music page headers. Roku shelves are capped at 10 items with no overflow grid |
 | Genre-filtered full grid | Complete | Not implemented | |
 | Live catalog change-feed (long-poll delta) | Complete | Not implemented | `CatalogTask` does one full `/catalog/manifest` fetch per screen visit, no `.gz`, no `/catalog/changes` delta polling — documented v1 simplification, real bandwidth cost on a large library |
 | Catalog cache (offline/warm-start paint) | Complete (files) | Not implemented | Every catalog visit is a fresh network fetch |

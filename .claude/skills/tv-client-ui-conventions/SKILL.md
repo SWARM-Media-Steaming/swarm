@@ -176,6 +176,13 @@ legible regardless of the backdrop art's own brightness — see
 `MovieDetailScreen`'s `Brush.horizontalGradient` scrim for the exact
 alpha stops to reuse.
 
+## Catalog category tiles: no section label
+
+`CatalogScreen`'s first-row category strip (`CategoryRow`) is only the
+tiles themselves — do not put a "Categories" (or similar) `ShelfHeader`
+above them. The outlined genre tiles already read as filters; the label
+was removed in #352 as redundant chrome on Movies/Shows/Music.
+
 ## Centered wrapping picker: `FlowRow`, not a fixed-column grid
 
 For a "pick one of many short options" overlay (e.g. filter-by-genre),

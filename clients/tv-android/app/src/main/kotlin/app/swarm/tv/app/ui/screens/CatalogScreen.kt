@@ -1148,8 +1148,10 @@ private val CATEGORY_TILE_SHAPE = RoundedCornerShape(10.dp)
  * assets first ([rankCategories]). Tiles are the same width as an asset card
  * but a third of the height, and deliberately look nothing like one — no
  * artwork, an outlined accent frame on a transparent fill, centered text —
- * so the row reads as "pick a category" rather than "more titles". Picking
- * a tile filters the page to it; picking it again clears it.
+ * so the row reads as "pick a category" rather than "more titles". There is
+ * no "Categories" section label above the tiles (#352) — the tile strip is
+ * self-explanatory. Picking a tile filters the page to it; picking it again
+ * clears it.
  */
 @Composable
 private fun CategoryRow(
@@ -1187,8 +1189,6 @@ private fun CategoryRow(
                 }
             },
     ) {
-        ShelfHeader("Categories", GENRE_TITLE_SIZE)
-        Spacer(Modifier.height(GENRE_TITLE_SPACING))
         LazyRow(
             state = listState,
             horizontalArrangement = Arrangement.spacedBy(12.dp),

@@ -517,6 +517,31 @@
         "servers": []
       },
       "timeoutSeconds": 1800
+    },
+    {
+      "command": [
+        "python3",
+        "tests/adversarial/test_roku_zero_season_shows.py"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-roku-zero-season-shows",
+      "name": "Adversarial: Roku Shows() 0-season filter boundaries",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "python3"
+        ],
+        "files": [
+          "tests/adversarial/test_roku_zero_season_shows.py",
+          "clients/tv-roku/src/source/CatalogGrouping.bs"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 120
     }
   ],
   "version": 1

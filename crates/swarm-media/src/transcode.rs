@@ -1270,13 +1270,11 @@ impl TranscodeManager {
     /// retrying the very episode that crashed can fail admission with
     /// "capacity full" even though nothing is actually still playing.
     ///
-    /// A fresh, non-preview, non-track request from the *same* owner is safe
-    /// grounds to reap that owner's other claimed sessions immediately: the
-    /// episode/movie flow always releases its previous session via `/stop`
-    /// before negotiating the next one (see `playEntry`/`preloadNextEpisode`
-    /// in the TV client), so any such session still claimed at this point
-    /// belongs to an abandoned attempt, not a second stream this owner is
-    /// legitimately still watching. Track sessions are excluded because
+    /// A fresh, non-preview, non-track request from the *same* owner can reap
+    /// only an inactive claimed session immediately. `in_use` remains nonzero
+    /// while the response body is being streamed, which distinguishes a live
+    /// playback retry from a stream that was dropped by a crashed client.
+    /// Track sessions are excluded because
     /// `preloadNextTrack` intentionally keeps the currently-playing track's
     /// session claimed while it negotiates the next one ahead of a gapless
     /// transition — that pair of claimed sessions for one owner is expected,
@@ -1293,7 +1291,7 @@ impl TranscodeManager {
                         && state
                             .sessions
                             .get(*id)
-                            .is_some_and(|session| !session.track)
+                            .is_some_and(|session| !session.track && session.in_use == 0)
                 })
                 .map(|(id, _)| id.clone())
                 .collect::<Vec<_>>()
@@ -2693,9 +2691,9 @@ mod tests {
     /// consuming a `max_sessions` slot for the full idle timeout, so
     /// retrying the very episode that crashed kept failing with "capacity
     /// full". `cancel_stale_claimed_for_owner` should reap that owner's
-    /// other claimed, non-track sessions — but never a claimed track session
-    /// (the deliberate ahead-of-time preload from `preloadNextTrack`) and
-    /// never another owner's claimed session.
+    /// inactive claimed, non-track sessions — but never an active stream, a
+    /// claimed track session (the deliberate ahead-of-time preload from
+    /// `preloadNextTrack`), or another owner's claimed session.
     #[test]
     fn stale_claimed_non_track_sessions_are_reaped_for_the_same_owner() {
         let manager = TranscodeManager::new(TranscodeConfig::disabled(std::env::temp_dir().join(
@@ -2717,6 +2715,9 @@ mod tests {
         {
             let mut state = manager.state.lock().unwrap();
             state.sessions.insert("crashed-episode".into(), session(false));
+            let mut active = session(false);
+            active.in_use = 1;
+            state.sessions.insert("actively-playing".into(), active);
             state.sessions.insert("preloaded-track".into(), session(true));
             state.sessions.insert("other-tv-episode".into(), session(false));
             state
@@ -2724,11 +2725,15 @@ mod tests {
                 .insert("crashed-episode".into(), "living-room".into());
             state
                 .owners
+                .insert("actively-playing".into(), "living-room".into());
+            state
+                .owners
                 .insert("preloaded-track".into(), "living-room".into());
             state
                 .owners
                 .insert("other-tv-episode".into(), "bedroom".into());
             state.claimed.insert("crashed-episode".into());
+            state.claimed.insert("actively-playing".into());
             state.claimed.insert("preloaded-track".into());
             state.claimed.insert("other-tv-episode".into());
         }
@@ -2737,6 +2742,7 @@ mod tests {
 
         let state = manager.state.lock().unwrap();
         assert!(!state.sessions.contains_key("crashed-episode"));
+        assert!(state.sessions.contains_key("actively-playing"));
         assert!(state.sessions.contains_key("preloaded-track"));
         assert!(state.sessions.contains_key("other-tv-episode"));
         assert!(!state.owners.contains_key("crashed-episode"));

@@ -90,6 +90,17 @@ export ANDROID_HOME=~/Library/Android/sdk        # only needed for :app tasks
    `IncompatibleClassChangeError` in stock lint detectors, unrelated to
    your code). `compileDebugKotlin`/`assembleDebug` are the real signal.
 
+## Roku changes (`clients/tv-roku`)
+
+1. `npm run build` in `clients/tv-roku` — BrighterScript compile + type-check
+   (`bsc --project bsconfig.json`). This is the fast local check; run it after
+   any `.bs`/`.xml` edit.
+2. If you changed `src/source/CatalogGrouping.bs` (show grouping, 0-season
+   filter, first-episode/track): `python3 tests/roku_catalog_grouping.py` from
+   the repo root. There is no on-device BrightScript runner in this environment;
+   that script source-checks the filter against Fire TV's `previewSeasons`
+   contract and exercises an equivalent grouping.
+
 ## Before every commit, regardless of language
 
 - `git status` and `git diff --stat` — confirm the file list matches what

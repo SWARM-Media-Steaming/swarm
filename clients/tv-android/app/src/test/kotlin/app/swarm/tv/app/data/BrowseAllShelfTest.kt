@@ -87,6 +87,19 @@ class BrowseAllShelfTest {
     }
 
     @Test
+    fun `genre shows omit groups without preview seasons`() {
+        val valid = episode("e1", "Wire", "Crime")
+        val specialsOnly = episode("e2", "Behind the Scenes", "Crime").copy(
+            entry = episode("e2", "Behind the Scenes", "Crime").entry.copy(season = 0, episode = null),
+        )
+        val unnumberedOnly = episode("e3", "Interview", "Crime").copy(
+            entry = episode("e3", "Interview", "Crime").entry.copy(season = null, episode = null),
+        )
+
+        assertEquals(listOf("Wire"), showsForBrowseAll(listOf(valid, specialsOnly, unnumberedOnly), "Crime").map { it.show })
+    }
+
+    @Test
     fun `genre named Music still filters to that genre`() {
         val entries = listOf(track("t1", "A", "Music"), track("t2", "B", "Jazz"))
         assertEquals(listOf("A"), artistsForBrowseAll(entries, BROWSE_ALL_MUSIC_TITLE).map { it.artist })

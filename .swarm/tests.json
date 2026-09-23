@@ -922,6 +922,43 @@
         "servers": []
       },
       "timeoutSeconds": 1800
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "tests/adversarial/active_playback_retry/Cargo.toml",
+        "--target-dir",
+        "target/adversarial-issue-389",
+        "--test",
+        "issue_389_active_playback_retry",
+        "--",
+        "--nocapture"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-389-active-playback-retry",
+      "name": "Adversarial: issue #389 opened playback plan survives same-device retry",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "cargo",
+          "ffmpeg"
+        ],
+        "files": [
+          "tests/adversarial/active_playback_retry/Cargo.toml",
+          "tests/adversarial/active_playback_retry/tests/issue_389_active_playback_retry.rs",
+          "crates/swarm-media/src/transcode.rs",
+          "crates/swarm-media/src/serve.rs",
+          "crates/swarm-media/tests/playback.rs"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
     }
   ],
   "version": 1

@@ -641,6 +641,64 @@
         "servers": []
       },
       "timeoutSeconds": 1800
+    },
+    {
+      "command": [
+        "python3",
+        "tests/adversarial/test_problem_report_categories.py"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-problem-report-categories",
+      "name": "Adversarial: issue #354 report-a-problem categories",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "python3",
+          "java"
+        ],
+        "files": [
+          "tests/adversarial/test_problem_report_categories.py",
+          "tests/adversarial/ProblemReportCategoryDriver.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/data/ProblemReportCategory.kt"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
+    },
+    {
+      "command": [
+        "python3",
+        "tests/adversarial/test_problem_report_surfaces.py"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-problem-report-surfaces",
+      "name": "Adversarial: issue #354 report-a-problem picker and pause screen",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "python3"
+        ],
+        "files": [
+          "tests/adversarial/test_problem_report_surfaces.py",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/data/SwarmViewModel.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/MainActivity.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/UatTestTags.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/components/ProblemReportPicker.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/MovieDetailScreen.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/PlayerScreen.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/SeasonScreen.kt"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 180
     }
   ],
   "version": 1

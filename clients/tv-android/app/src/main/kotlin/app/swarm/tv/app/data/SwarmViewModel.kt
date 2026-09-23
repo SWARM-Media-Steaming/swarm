@@ -237,7 +237,9 @@ sealed class UiState {
     ) : UiState()
     /** Music: Music row or a genre sub-shelf -> here (grouped) -> [ArtistAlbums]. [title] is the originating shelf name shown at the top of the grid (#353). [scopedToGenre] keeps a live catalog delta on that genre even when the name collides with "Music". */
     data class ArtistShelf(val catalog: Catalog, val artists: List<ArtistGroup>, val title: String, val scopedToGenre: Boolean = false) : UiState()
-    /** One artist's albums; [AlbumScreen] handles the album-grid<->track-list sub-navigation locally. */
+    /** One artist's albums; [AlbumScreen] handles the album-grid<->track-list sub-navigation locally.
+     * [genreScope] is inherited from a genre Browse All shelf so catalog
+     * deltas do not introduce albums outside that genre. */
     data class ArtistAlbums(
         val previous: UiState,
         val catalog: Catalog,
@@ -247,6 +249,7 @@ sealed class UiState {
          * the music player returns here while a track from [artist] is
          * playing (#160). Null on a plain open, which shows the album grid. */
         val initialAlbum: String? = null,
+        val genreScope: String? = null,
     ) : UiState()
     /** Movies: Movies row or a genre sub-shelf -> here ("Browse all") -> [MovieDetail]. [title] is the originating shelf name shown at the top of the grid (#353). [scopedToGenre] keeps a live catalog delta on that genre even when the name collides with "Movies". */
     data class MovieShelf(val catalog: Catalog, val movies: List<MergedEntry>, val title: String, val scopedToGenre: Boolean = false) : UiState()
@@ -258,13 +261,16 @@ sealed class UiState {
     ) : UiState()
     /** Shows: Shows row or a genre sub-shelf -> here (grouped) -> [ShowSeasons]. [title] is the originating shelf name shown at the top of the grid (#353). [scopedToGenre] keeps a live catalog delta on that genre even when the name collides with "Shows". */
     data class ShowShelf(val catalog: Catalog, val shows: List<ShowGroup>, val title: String, val scopedToGenre: Boolean = false) : UiState()
-    /** One show's seasons; [SeasonScreen] handles the season-list<->episode-grid sub-navigation locally. */
+    /** One show's seasons; [SeasonScreen] handles the season-list<->episode-grid sub-navigation locally.
+     * [genreScope] is inherited from a genre Browse All shelf so catalog
+     * deltas do not introduce episodes outside that genre. */
     data class ShowSeasons(
         val previous: UiState,
         val catalog: Catalog,
         val shows: List<ShowGroup>,
         val show: ShowGroup,
         val selectedSeason: SeasonGroup? = null,
+        val genreScope: String? = null,
     ) : UiState()
     data class Player(
         val url: String,
@@ -1891,7 +1897,8 @@ class SwarmViewModel(
             else CatalogGrouping.groupEpisodesByShowSeason(catalog.entries),
         )
         is UiState.ArtistAlbums -> {
-            val artists = CatalogGrouping.groupTracksByArtistAlbum(catalog.entries)
+            val artists = state.genreScope?.let { artistsForBrowseAll(catalog.entries, it) }
+                ?: CatalogGrouping.groupTracksByArtistAlbum(catalog.entries)
             state.copy(
                 previous = replaceEmbeddedCatalog(state.previous, catalog),
                 catalog = catalog,
@@ -1900,7 +1907,8 @@ class SwarmViewModel(
             )
         }
         is UiState.ShowSeasons -> {
-            val shows = CatalogGrouping.groupEpisodesByShowSeason(catalog.entries)
+            val shows = state.genreScope?.let { showsForBrowseAll(catalog.entries, it) }
+                ?: CatalogGrouping.groupEpisodesByShowSeason(catalog.entries)
             val show = shows.find { it.show == state.show.show } ?: state.show
             state.copy(
                 previous = replaceEmbeddedCatalog(state.previous, catalog),
@@ -3282,7 +3290,15 @@ class SwarmViewModel(
             is UiState.ArtistShelf -> previous.catalog to previous.artists
             else -> return
         }
-        _state.value = UiState.ArtistAlbums(previous, catalog, artists, artist)
+        _state.value = UiState.ArtistAlbums(
+            previous = previous,
+            catalog = catalog,
+            artists = artists,
+            artist = artist,
+            genreScope = (previous as? UiState.ArtistShelf)
+                ?.takeIf { it.scopedToGenre }
+                ?.title,
+        )
     }
 
     fun backFromArtistShelf() {
@@ -3361,7 +3377,15 @@ class SwarmViewModel(
             is UiState.ShowShelf -> previous.catalog to previous.shows
             else -> return
         }
-        _state.value = UiState.ShowSeasons(previous, catalog, shows, show)
+        _state.value = UiState.ShowSeasons(
+            previous = previous,
+            catalog = catalog,
+            shows = shows,
+            show = show,
+            genreScope = (previous as? UiState.ShowShelf)
+                ?.takeIf { it.scopedToGenre }
+                ?.title,
+        )
     }
 
     fun backFromShowShelf() {

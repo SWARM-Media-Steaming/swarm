@@ -704,7 +704,13 @@ fun PlayerScreen(
             startPaused = startPaused,
         )
     }
-    PausePlayerWhenAppBackgrounded(player)
+    PausePlayerWhenAppBackgrounded(player) {
+        val positionSecs = positionOffsetSecs + player.currentPosition.coerceAtLeast(0L) / 1000.0
+        val durationSecs = player.duration.takeIf { it != C.TIME_UNSET }
+            ?.let { positionOffsetSecs + it / 1000.0 }
+            ?: 0.0
+        onPositionUpdate(positionSecs, durationSecs)
+    }
     var isLoading by remember(sessionId) { mutableStateOf(player.playbackState != Player.STATE_READY) }
     var hasStartedPlayback by remember(sessionId) {
         // A preloaded next episode can already be READY when it is promoted,

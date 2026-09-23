@@ -17,7 +17,7 @@ duplicate.
 | Async I/O | Kotlin coroutines (`viewModelScope.launch`) |
 | Screen focus/D-pad | Compose `FocusRequester` + `Modifier.focusProperties` + `tv-material3` |
 | Durable relational storage | Room (SQLite), 4 migrated schema versions |
-| Durable flat KV storage | `SharedPreferences` (watch state, likes, watchlist — deliberately not Room) |
+| Durable flat KV storage | `SharedPreferences` (watch state, likes, watchlist — deliberately not Room); episode watch state includes show/season/episode fallback identity and timestamp-ordered writes |
 | Secrets | `EncryptedSharedPreferences` (AES256-GCM, Keystore-backed master key) |
 | Device identity | `AndroidKeyStore` EC keypair, non-exportable private key, 20-year self-signed cert |
 | Catalog/artwork cache | Plain files under `filesDir`, `AtomicFile` writes |

@@ -45,9 +45,12 @@ modal, a testing-mode banner (debug builds).
 
 ## Identity rules — get these wrong and cross-server merge breaks
 
-- **Content fingerprint** (not entry key) is the identity for watch state, likes, and the
-  movie watchlist. It's stable across servers/rescans; the entry key is server-local and
-  changes on rescan. Always persist/compare by fingerprint for these three concerns.
+- **Content fingerprint** (not entry key) is the primary identity for watch state, likes,
+  and the movie watchlist. It's stable across servers/rescans; the entry key is server-local
+  and changes on rescan. Episode watch records additionally snapshot normalized show title,
+  season, and episode number: if a replacement encode changes the content fingerprint, a
+  client may recover the same logical episode from that tuple, but an exact fingerprint
+  match always wins. Likes and movie watchlists remain fingerprint-only.
 - **Shows and artists** (client-side groupings, not server entities) use a normalized
   canonical title as identity: `trim().lowercase()`. Two servers' same show must merge into
   one shelf card; two different shows must never collide.
@@ -71,9 +74,10 @@ modal, a testing-mode banner (debug builds).
 - **A watched item always resumes from 0**, never from its old position — resume position
   lookup must explicitly exclude anything already flagged watched.
 - Progress is written **locally only** — there is no server-side "playback progress"
-  endpoint. Report cadence: every 15s while actively playing, plus one final write on
-  screen teardown/dispose (must fire even if the app is being killed by the OS, not only on
-  a clean unmount).
+  endpoint. Report cadence: every 15s while actively playing, plus a foreground-loss
+  snapshot while the player/episode are still live and a final write on screen teardown.
+  Saves carry monotonically increasing timestamps, and storage must reject an older async
+  write that finishes after a newer one; otherwise backgrounding can roll progress backward.
 - Continue-Watching row: cap at **6** items, one card per show (most-recently-touched
   episode represents the whole show), exclude anything already watched, sort by
   last-touched descending.

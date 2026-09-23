@@ -798,6 +798,64 @@
         "servers": []
       },
       "timeoutSeconds": 1800
+    },
+    {
+      "command": [
+        "python3",
+        "tests/adversarial/test_issue_357_buffering_suppression.py"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-357-buffering-suppression",
+      "name": "Adversarial: issue #357 suppress buffering on initial asset load",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "python3",
+          "java"
+        ],
+        "files": [
+          "tests/adversarial/test_issue_357_buffering_suppression.py",
+          "tests/adversarial/BufferingSuppressionDriver.kt",
+          "clients/tv-android/gradlew",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/data/SwarmViewModel.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/MainActivity.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/PlayerScreen.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/MusicPlayerScreen.kt"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
+    },
+    {
+      "command": [
+        "python3",
+        "tests/adversarial/test_issue_357_early_resume_race.py"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-357-early-resume-race",
+      "name": "Adversarial: issue #357 early-Resume race does not leak a stale suppression clock",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "python3",
+          "java"
+        ],
+        "files": [
+          "tests/adversarial/test_issue_357_early_resume_race.py",
+          "tests/adversarial/EarlyResumeRaceDriver.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/data/SwarmViewModel.kt"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
     }
   ],
   "version": 1

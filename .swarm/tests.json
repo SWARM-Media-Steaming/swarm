@@ -569,6 +569,78 @@
         "servers": []
       },
       "timeoutSeconds": 120
+    },
+    {
+      "command": [
+        "python3",
+        "tests/adversarial/test_browse_all_category_title.py"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-browse-all-category-title",
+      "name": "Adversarial: issue #353 Browse All category title",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "python3",
+          "java"
+        ],
+        "files": [
+          "tests/adversarial/test_browse_all_category_title.py",
+          "tests/adversarial/BrowseAllCategoryTitleDriver.kt",
+          "clients/tv-android/gradlew",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/MainActivity.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/data/BrowseAllShelf.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/data/SwarmViewModel.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/BrowseAllHeader.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/CatalogScreen.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/MovieShelfScreen.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/ShowShelfScreen.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/ArtistShelfScreen.kt",
+          "clients/tv-android/core/src/main/kotlin/app/swarm/tv/core/catalog/CatalogGrouping.kt"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
+    },
+    {
+      "command": [
+        "python3",
+        "tests/adversarial/test_browse_all_category_title_boundaries.py"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-browse-all-category-title-boundaries",
+      "name": "Adversarial: issue #353 Browse All category title boundaries",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "python3",
+          "java"
+        ],
+        "files": [
+          "tests/adversarial/test_browse_all_category_title_boundaries.py",
+          "tests/adversarial/BrowseAllCategoryTitleBoundariesDriver.kt",
+          "clients/tv-android/gradlew",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/MainActivity.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/data/BrowseAllShelf.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/data/SwarmViewModel.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/BrowseAllHeader.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/CatalogScreen.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/MovieShelfScreen.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/ShowShelfScreen.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/ArtistShelfScreen.kt",
+          "clients/tv-android/core/src/main/kotlin/app/swarm/tv/core/catalog/CatalogGrouping.kt"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
     }
   ],
   "version": 1

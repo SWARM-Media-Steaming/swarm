@@ -183,6 +183,18 @@ tiles themselves — do not put a "Categories" (or similar) `ShelfHeader`
 above them. The outlined genre tiles already read as filters; the label
 was removed in #352 as redundant chrome on Movies/Shows/Music.
 
+## Browse All grids show the originating category name
+
+`MovieShelfScreen` / `ShowShelfScreen` / `ArtistShelfScreen` are opened
+from a shelf row's in-row "Browse All" tile (top-level Movies/Shows/Music
+or a genre sub-shelf). Show that row's title at the top of the full grid
+with the same muted, black-weight shelf-header treatment the catalog
+pages use (#353) — `BrowseAllScreenTitle`. This is a label only: do not
+add an on-screen Back button; physical Back still dismisses the screen.
+Pass the title through `UiState.*Shelf` so a live catalog delta can
+rebuild the same subset instead of widening a genre grid back to the
+whole kind.
+
 ## Centered wrapping picker: `FlowRow`, not a fixed-column grid
 
 For a "pick one of many short options" overlay (e.g. filter-by-genre),

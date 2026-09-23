@@ -41,6 +41,7 @@ object UatTestTags {
     const val BROWSE_ALL_MOVIES = "uat_browse_all_movies"
     const val BROWSE_ALL_SHOWS = "uat_browse_all_shows"
     const val BROWSE_ALL_MUSIC = "uat_browse_all_music"
+    const val BROWSE_ALL_TITLE = "uat_browse_all_title"
     const val GRID_MOVIE_PREFIX = "uat_grid_movie_"
     const val GRID_SHOW_PREFIX = "uat_grid_show_"
     const val GRID_ARTIST_PREFIX = "uat_grid_artist_"

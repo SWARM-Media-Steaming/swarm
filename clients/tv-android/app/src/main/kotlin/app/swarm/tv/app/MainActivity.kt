@@ -378,13 +378,19 @@ class MainActivity : ComponentActivity() {
                         onBackFromSettings = viewModel::backFromSettings,
                         onOpenMovie = viewModel::openMovieDetail,
                         onBackFromMovie = viewModel::backFromMovieDetail,
-                        onOpenMovieShelf = { movies -> viewModel.openMovieShelf(movies) },
+                        onOpenMovieShelf = { title, movies, scopedToGenre ->
+                            viewModel.openMovieShelf(movies, title, scopedToGenre)
+                        },
                         onBackFromMovieShelf = viewModel::backFromMovieShelf,
-                        onOpenArtistShelf = { artists -> viewModel.openArtistShelf(artists) },
+                        onOpenArtistShelf = { title, artists, scopedToGenre ->
+                            viewModel.openArtistShelf(artists, title, scopedToGenre)
+                        },
                         onOpenArtist = viewModel::openArtistAlbums,
                         onBackFromArtistShelf = viewModel::backFromArtistShelf,
                         onBackFromArtistAlbums = viewModel::backFromArtistAlbums,
-                        onOpenShowShelf = { shows -> viewModel.openShowShelf(shows) },
+                        onOpenShowShelf = { title, shows, scopedToGenre ->
+                            viewModel.openShowShelf(shows, title, scopedToGenre)
+                        },
                         onOpenShow = viewModel::openShowSeasons,
                         onSelectShowSeason = viewModel::selectShowSeason,
                         onBackFromShowShelf = viewModel::backFromShowShelf,
@@ -531,13 +537,13 @@ private fun SwarmApp(
     onBackFromSettings: () -> Unit,
     onOpenMovie: (MergedEntry) -> Unit,
     onBackFromMovie: () -> Unit,
-    onOpenMovieShelf: (List<MergedEntry>) -> Unit,
+    onOpenMovieShelf: (String, List<MergedEntry>, Boolean) -> Unit,
     onBackFromMovieShelf: () -> Unit,
-    onOpenArtistShelf: (List<ArtistGroup>) -> Unit,
+    onOpenArtistShelf: (String, List<ArtistGroup>, Boolean) -> Unit,
     onOpenArtist: (ArtistGroup) -> Unit,
     onBackFromArtistShelf: () -> Unit,
     onBackFromArtistAlbums: () -> Unit,
-    onOpenShowShelf: (List<ShowGroup>) -> Unit,
+    onOpenShowShelf: (String, List<ShowGroup>, Boolean) -> Unit,
     onOpenShow: (ShowGroup) -> Unit,
     onSelectShowSeason: (SeasonGroup?) -> Unit,
     onBackFromShowShelf: () -> Unit,
@@ -965,17 +971,17 @@ private fun SwarmApp(
                     // A Browse All tile press remembers a per-kind sentinel so
                     // pressing Back out of the full grid lands focus back on
                     // that tile rather than the top of the page (#159).
-                    onOpenMovieShelf = { movies ->
+                    onOpenMovieShelf = { title, movies, scopedToGenre ->
                         lastFocusedMovieKey = BROWSE_ALL_TILE_FOCUS_KEY
                         lastFocusedShowKey = null
                         lastFocusedArtistKey = null
-                        onOpenMovieShelf(movies)
+                        onOpenMovieShelf(title, movies, scopedToGenre)
                     },
-                    onOpenArtistShelf = { artists ->
+                    onOpenArtistShelf = { title, artists, scopedToGenre ->
                         lastFocusedMovieKey = null
                         lastFocusedShowKey = null
                         lastFocusedArtistKey = BROWSE_ALL_TILE_FOCUS_KEY
-                        onOpenArtistShelf(artists)
+                        onOpenArtistShelf(title, artists, scopedToGenre)
                     },
                     onOpenArtist = { artist ->
                         lastFocusedMovieKey = null
@@ -983,11 +989,11 @@ private fun SwarmApp(
                         lastFocusedArtistKey = artist.artist
                         onOpenArtist(artist)
                     },
-                    onOpenShowShelf = { shows ->
+                    onOpenShowShelf = { title, shows, scopedToGenre ->
                         lastFocusedMovieKey = null
                         lastFocusedShowKey = BROWSE_ALL_TILE_FOCUS_KEY
                         lastFocusedArtistKey = null
-                        onOpenShowShelf(shows)
+                        onOpenShowShelf(title, shows, scopedToGenre)
                     },
                     onOpenShow = { show ->
                         lastFocusedMovieKey = null
@@ -1042,6 +1048,7 @@ private fun SwarmApp(
                     state.artists,
                     artworkUrl = artworkUrl,
                     artistPhotoUrl = artistPhotoThumbnailUrl,
+                    title = state.title,
                     onOpenArtist = { artist ->
                         lastFocusedMovieKey = null
                         lastFocusedShowKey = null
@@ -1064,6 +1071,7 @@ private fun SwarmApp(
                 MovieShelfScreen(
                     state.movies,
                     artworkUrl,
+                    title = state.title,
                     onOpenMovie = { entry ->
                         lastFocusedMovieKey = entry.entry.entryKey
                         lastFocusedShowKey = null
@@ -1095,6 +1103,7 @@ private fun SwarmApp(
                 ShowShelfScreen(
                     state.shows,
                     artworkUrl,
+                    title = state.title,
                     onOpenShow = { show ->
                         lastFocusedMovieKey = null
                         lastFocusedShowKey = show.show

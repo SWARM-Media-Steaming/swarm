@@ -34,7 +34,10 @@ last video frame or a plain black backdrop, never a spinner overlay), `Preparing
 (fresh play request; shows title+artwork+a Resume-when-ready affordance), `RequestingActivation`,
 `Activating` (shows the pairing code), `Dashboard`, `Settings`, `Catalog`, `ArtistShelf`,
 `ArtistAlbums`, `MovieShelf`, `MovieDetail`, `ShowShelf`, `ShowSeasons`, `Player` (branches
-internally to a video vs. music treatment based on `MediaKind`).
+internally to a video vs. music treatment based on `MediaKind`). `MovieShelf` /
+`ShowShelf` / `ArtistShelf` carry the originating catalog-shelf title (Movies/Shows/Music
+or a genre name) so the full grid can show it at the top (#353); a catalog delta rebuilds
+that same subset rather than widening a genre grid back to the whole kind.
 
 Global overlays render as siblings on top of whatever the current state is, not as their
 own state variant: a toast/notification host, a minimized-player mini-bar, an exit-confirm

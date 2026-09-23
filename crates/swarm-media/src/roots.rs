@@ -15,6 +15,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
+use unicode_normalization::UnicodeNormalization;
 
 /// Declared contents of a media root. `Mixed` exists only for settings
 /// written before roots required a type; every newly-added root should use
@@ -79,6 +80,58 @@ impl RootResolver {
     pub fn resolve(&self, relative_path: &str) -> PathBuf {
         let (root, rest) = self.split(relative_path);
         root.join(rest)
+    }
+
+    /// Resolve a catalog path to an existing file when a network filesystem
+    /// reports a directory entry with a different Unicode normalization than
+    /// the path stored by an earlier scan. SMB mounts on macOS can expose
+    /// this exact mismatch: a track remains in the catalog, but a normal
+    /// `root.join(relative_path).is_file()` says it does not exist and turns
+    /// playback negotiation into a misleading 404.
+    ///
+    /// Exact filesystem spelling always wins. The normalization-aware walk is
+    /// only a fallback and requires one unambiguous match for every missing
+    /// component, so it cannot silently choose between two distinct files on
+    /// a filesystem where NFC and NFD names are genuinely different.
+    pub fn resolve_existing(&self, relative_path: &str) -> PathBuf {
+        let (root, rest) = self.split(relative_path);
+        let exact = root.join(&rest);
+        if exact.is_file() {
+            return exact;
+        }
+
+        let mut current = root;
+        for component in Path::new(&rest).components() {
+            let std::path::Component::Normal(name) = component else {
+                return exact;
+            };
+            let candidate = current.join(name);
+            if candidate.exists() {
+                current = candidate;
+                continue;
+            }
+
+            let wanted = name.to_string_lossy().nfc().collect::<String>();
+            let Ok(entries) = std::fs::read_dir(&current) else {
+                return exact;
+            };
+            let mut matches = entries
+                .flatten()
+                .filter(|entry| entry.file_name().to_string_lossy().nfc().eq(wanted.chars()));
+            let Some(found) = matches.next() else {
+                return exact;
+            };
+            if matches.next().is_some() {
+                return exact;
+            }
+            current = found.path();
+        }
+
+        if current.is_file() {
+            current
+        } else {
+            exact
+        }
     }
 
     /// (absolute root directory, path under that root) for a stored
@@ -177,6 +230,10 @@ impl SharedRootResolver {
 
     pub fn resolve(&self, relative_path: &str) -> PathBuf {
         self.inner.read().unwrap().resolve(relative_path)
+    }
+
+    pub fn resolve_existing(&self, relative_path: &str) -> PathBuf {
+        self.inner.read().unwrap().resolve_existing(relative_path)
     }
 
     pub fn split(&self, relative_path: &str) -> (PathBuf, String) {
@@ -313,6 +370,24 @@ mod tests {
             PathBuf::from("/media/movies/Foo.mkv")
         );
         assert_eq!(r.label_for("nas/movies/Foo.mkv"), "nas");
+    }
+
+    #[test]
+    fn resolve_existing_recovers_an_unambiguous_unicode_normalization_mismatch() {
+        let root = std::env::temp_dir().join(format!("swarm-root-unicode-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let actual = root.join("music/Cafe\u{301}/track.m4a");
+        std::fs::create_dir_all(actual.parent().unwrap()).unwrap();
+        std::fs::write(&actual, b"audio").unwrap();
+
+        let resolver = RootResolver::single(root.clone());
+        let resolved = resolver.resolve_existing("music/Café/track.m4a");
+        assert!(
+            resolved.is_file(),
+            "an NFC catalog path must find the NFD name returned by an SMB directory listing"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

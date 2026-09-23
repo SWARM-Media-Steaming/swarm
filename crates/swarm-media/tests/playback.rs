@@ -22,6 +22,99 @@ fn request(path: String) -> PeerRequest {
 }
 
 #[tokio::test]
+async fn music_playback_preparation_handles_unicode_normalized_smb_paths() {
+    let root = std::env::temp_dir().join(format!("swarm-playback-unicode-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let media_root = root.join("media");
+    let actual_relative_path = "music/Cafe\u{301}/track.m4a";
+    let catalog_relative_path = "music/Café/track.m4a";
+    let media_path = media_root.join(actual_relative_path);
+    std::fs::create_dir_all(media_path.parent().unwrap()).unwrap();
+    std::fs::write(&media_path, vec![7u8; 10_000]).unwrap();
+
+    let library = Arc::new(
+        Library::open(root.join("library.sqlite").to_str().unwrap())
+            .await
+            .unwrap(),
+    );
+    let entry = EntryRecord {
+        entry_key: "0123456789abcdef01234567".into(),
+        relative_path: catalog_relative_path.into(),
+        kind: MediaKind::Track,
+        title: "Track".into(),
+        size: 10_000,
+        modified_time: 0,
+        fingerprint: "fingerprint".into(),
+        artist: None,
+        album: None,
+        track_number: None,
+        show_title: None,
+        season: None,
+        episode: None,
+        year: None,
+        duration_secs: Some(180.0),
+        video: None,
+        audio: Some(AudioStreamInfo {
+            codec: "aac".into(),
+            channels: 2,
+            bitrate: Some(128_000),
+        }),
+        scraped_title: None,
+        episode_title: None,
+        genres: vec![],
+        artwork_version: 0,
+        cast: vec![],
+        overview: None,
+        rating: None,
+        community_rating: None,
+        community_rating_votes: None,
+        parent_entry_key: None,
+        extra_type: None,
+        extra_title: None,
+        extra_relative_path: None,
+        extra_category_path: None,
+    };
+    library.upsert(&entry).await.unwrap();
+    let service = MediaService::with_transcoding(
+        library,
+        media_root,
+        TranscodeConfig {
+            enabled: false,
+            ffmpeg_path: "ffmpeg".into(),
+            session_dir: root.join("sessions"),
+            max_upload_bps: 10_000_000,
+            reserve_percent: 30,
+            max_sessions: 1,
+            idle_timeout: Duration::from_secs(300),
+            segment_duration_secs: 4,
+            ..Default::default()
+        },
+    );
+    let negotiation = PeerRequest {
+        path: format!("/play/{}", entry.entry_key),
+        range: None,
+        if_none_match: None,
+        playback: Some(PlaybackPreferences {
+            capabilities: CapabilityProfile::fire_tv_baseline(),
+            start_position_secs: 0,
+            prefer_direct: true,
+            preview: false,
+        }),
+        error_report: None,
+        like: None,
+    };
+
+    let resolved = service.resolve(&negotiation).await;
+    assert_eq!(
+        resolved.header.status, 200,
+        "a music catalog path whose Unicode spelling differs from the SMB path must still negotiate playback"
+    );
+
+    drop(service);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
 async fn playback_negotiation_returns_a_budgeted_direct_session_with_range_support() {
     let root = std::env::temp_dir().join(format!("swarm-playback-route-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);

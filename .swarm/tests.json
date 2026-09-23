@@ -699,6 +699,70 @@
         "servers": []
       },
       "timeoutSeconds": 180
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "tests/adversarial/music_playback_404/Cargo.toml",
+        "--target-dir",
+        "target/adversarial-issue-355",
+        "--test",
+        "issue_355_music_playback",
+        "--",
+        "--nocapture"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-355-music-playback",
+      "name": "Adversarial: issue #355 music playback 404",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "cargo"
+        ],
+        "files": [
+          "tests/adversarial/music_playback_404/Cargo.toml",
+          "tests/adversarial/music_playback_404/tests/issue_355_music_playback.rs",
+          "crates/swarm-media/src/serve.rs",
+          "crates/swarm-media/src/roots.rs",
+          "clients/tv-android/core/src/main/kotlin/app/swarm/tv/core/catalog/CatalogSession.kt"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
+    },
+    {
+      "command": [
+        "python3",
+        "tests/adversarial/test_issue_355_music_playback_contract.py"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-355-music-playback-contract",
+      "name": "Adversarial: issue #355 music playback 404 contract",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "python3"
+        ],
+        "files": [
+          "tests/adversarial/test_issue_355_music_playback_contract.py",
+          "crates/swarm-media/src/serve.rs",
+          "crates/swarm-media/src/roots.rs",
+          "clients/tv-android/core/src/main/kotlin/app/swarm/tv/core/catalog/CatalogSession.kt",
+          "apps/server/src/http_media.rs"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 120
     }
   ],
   "version": 1

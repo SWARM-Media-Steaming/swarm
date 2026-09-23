@@ -24,6 +24,7 @@ image = { workspace = true }
 flate2 = { workspace = true }
 futures-util = { workspace = true }
 bytes = { workspace = true }
+unicode-normalization = { workspace = true }
 
 [dev-dependencies]
 axum = "0.8"

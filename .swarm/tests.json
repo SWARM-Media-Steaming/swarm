@@ -959,6 +959,37 @@
         "servers": []
       },
       "timeoutSeconds": 1800
+    },
+    {
+      "command": [
+        "python3",
+        "tests/adversarial/test_genre_show_browse_all_preview_seasons.py"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-368-genre-show-browse-all-preview-seasons",
+      "name": "Adversarial: issue #368 genre Show Browse All previewSeasons refresh",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "python3",
+          "java"
+        ],
+        "files": [
+          "tests/adversarial/test_genre_show_browse_all_preview_seasons.py",
+          "tests/adversarial/GenreShowBrowseAllPreviewSeasonsDriver.kt",
+          "clients/tv-android/gradlew",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/data/BrowseAllShelf.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/data/SwarmViewModel.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/CatalogScreen.kt",
+          "clients/tv-android/core/src/main/kotlin/app/swarm/tv/core/catalog/CatalogGrouping.kt"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
     }
   ],
   "version": 1

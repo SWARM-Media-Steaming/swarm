@@ -59,6 +59,7 @@ import app.swarm.tv.app.data.AndroidKidModeStore
 import app.swarm.tv.app.data.AndroidLanConnectionStore
 import app.swarm.tv.app.data.AndroidLikedEntriesStore
 import app.swarm.tv.app.data.AndroidProblemReportDiagnostics
+import app.swarm.tv.app.data.ProblemReportCategory
 import app.swarm.tv.app.data.AndroidTokenStore
 import app.swarm.tv.app.data.KidModeSettings
 import app.swarm.tv.app.data.ResolvedProblemNotification
@@ -524,7 +525,7 @@ private fun SwarmApp(
     seasonArtworkUrl: (MergedEntry) -> String?,
     episodeArtworkUrl: (MergedEntry) -> String?,
     backdropUrl: (MergedEntry) -> String?,
-    onReportProblem: (MergedEntry) -> Unit,
+    onReportProblem: (MergedEntry, ProblemReportCategory) -> Unit,
     onSavePlaybackPosition: (entry: MergedEntry, positionSecs: Double, durationSecs: Double) -> Unit,
     onRecoverExpiredPlaybackSession: (sessionId: String, positionSecs: Double, context: String?) -> Unit,
     onServerOffline: (sessionId: String, context: String?) -> Unit,
@@ -1212,6 +1213,7 @@ private fun SwarmApp(
                         onPlaybackRuntimeError = onPlaybackRuntimeError,
                         onPlaybackBuffering = onPlaybackBuffering,
                         onPlaybackQualityReduced = onPlaybackQualityReduced,
+                        onReportProblem = onReportProblem,
                     )
                 }
         }

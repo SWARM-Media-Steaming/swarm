@@ -3045,8 +3045,8 @@ class SwarmViewModel(
     }
 
     /**
-     * User-initiated, from a "Report a problem" button on an asset's detail
-     * page — distinct from [reportPlaybackRuntimeError] (an automatic report
+     * User-initiated, from a "Report a problem" picker on an asset detail or
+     * pause screen — distinct from [reportPlaybackRuntimeError] (an automatic report
      * ExoPlayer's own error callback fires) in that this fires whether or
      * not anything actually broke visibly: a user might notice wrong
      * artwork, a mislabeled title, or audio out of sync, none of which
@@ -3054,17 +3054,17 @@ class SwarmViewModel(
      * same place either way — the server's swarm page "Client errors"
      * panel — since triage doesn't care which path found the problem.
      */
-    fun reportAssetProblem(entry: MergedEntry) {
+    fun reportAssetProblem(entry: MergedEntry, category: ProblemReportCategory) {
         val current = _state.value
         val catalog = current.embeddedCatalog() ?: return
         val device = catalog.devices.find { it.deviceId == entry.sources.first() } ?: return
-        Log.i(logTag, "user reported asset problem for ${entry.entry.entryKey}")
+        Log.i(logTag, "user reported ${category.label} problem for ${entry.entry.entryKey}")
         reportClientError(
             device = device,
-            message = "User reported a problem with this asset from its detail page.",
+            message = category.reportMessage("Fire TV"),
             entry = entry,
         )
-        notify("Problem report sent.", ClientNotificationKind.SUCCESS)
+        notify("${category.label} problem report sent.", ClientNotificationKind.SUCCESS)
     }
 
     /**

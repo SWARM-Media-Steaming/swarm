@@ -51,6 +51,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Button
 import app.swarm.tv.app.ui.UatTestTags
+import app.swarm.tv.app.data.ProblemReportCategory
+import app.swarm.tv.app.ui.components.ProblemReportPicker
 import app.swarm.tv.app.ui.components.swarmActionButtonColors
 import app.swarm.tv.app.ui.theme.SwarmBackground
 import app.swarm.tv.app.ui.theme.SwarmMuted
@@ -67,7 +69,7 @@ fun MovieDetailScreen(
     backdropUrl: (MergedEntry) -> String?,
     onPlay: (MergedEntry) -> Unit,
     onBack: () -> Unit,
-    onReportProblem: (MergedEntry) -> Unit,
+    onReportProblem: (MergedEntry, ProblemReportCategory) -> Unit,
     isLiked: Boolean,
     onToggleLike: () -> Unit,
     isWatchlisted: Boolean,
@@ -76,11 +78,7 @@ fun MovieDetailScreen(
     BackHandler(onBack = onBack)
     val playFocusRequester = remember { FocusRequester() }
     LaunchedEffect(entry) { playFocusRequester.requestFocus() }
-    // Local-only, resets naturally on the next entry (a fresh screen
-    // instance) rather than needing to be cleared explicitly — this is
-    // purely "did *this viewing* of this button get pressed", not part of
-    // the app's real state.
-    var problemReported by remember(entry) { mutableStateOf(false) }
+    var showProblemPicker by remember(entry) { mutableStateOf(false) }
 
     Box(modifier = Modifier.fillMaxSize().background(SwarmBackground)) {
         backdropUrl(entry)?.let { url ->
@@ -171,21 +169,12 @@ fun MovieDetailScreen(
                         ) {
                             Text(if (isWatchlisted) "✓ Watchlisted" else "+ Watchlist", fontSize = 13.sp)
                         }
-                        // Feeds the same client-error pipeline
-                        // reportPlaybackRuntimeError does (SwarmViewModel.
-                        // reportAssetProblem), landing on the media server's
-                        // own swarm page "Client errors" panel — but
-                        // user-initiated, for the things that don't throw an
-                        // ExoPlayer exception (wrong artwork, a mislabeled
-                        // title, audio out of sync) yet are still worth
-                        // triaging.
                         Button(
-                            onClick = { onReportProblem(entry); problemReported = true },
-                            enabled = !problemReported,
+                            onClick = { showProblemPicker = true },
                             colors = swarmActionButtonColors(),
                             modifier = Modifier.testTag(UatTestTags.MOVIE_DETAIL_REPORT_PROBLEM_BUTTON),
                         ) {
-                            Text(if (problemReported) "Reported ✓" else "Report a problem", fontSize = 13.sp)
+                            Text("Report a problem", fontSize = 13.sp)
                         }
                     }
                     if (entry.entry.cast.isNotEmpty()) {
@@ -240,6 +229,15 @@ fun MovieDetailScreen(
                     }
                 }
             }
+        }
+        if (showProblemPicker) {
+            ProblemReportPicker(
+                onReport = { category ->
+                    onReportProblem(entry, category)
+                    showProblemPicker = false
+                },
+                onDismiss = { showProblemPicker = false },
+            )
         }
     }
 }

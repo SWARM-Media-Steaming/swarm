@@ -73,6 +73,8 @@ object UatTestTags {
     const val MOVIE_DETAIL_LIKE_BUTTON = "uat_movie_detail_like_button"
     const val MOVIE_DETAIL_WATCHLIST_BUTTON = "uat_movie_detail_watchlist_button"
     const val MOVIE_DETAIL_REPORT_PROBLEM_BUTTON = "uat_movie_detail_report_problem_button"
+    const val PROBLEM_REPORT_PICKER = "uat_problem_report_picker"
+    const val PROBLEM_REPORT_OPTION_PREFIX = "uat_problem_report_option_"
 
     // SeasonScreen.
     const val SEASON_SCREEN_SHOW_TITLE = "uat_season_screen_show_title"
@@ -105,6 +107,7 @@ object UatTestTags {
     const val PAUSE_SUBTITLE_TRACK_PICKER = "uat_pause_subtitle_track_picker"
     const val PAUSE_RESUME_BUTTON = "uat_pause_resume_button"
     const val PAUSE_NEXT_EPISODE_BUTTON = "uat_pause_next_episode_button"
+    const val PAUSE_REPORT_PROBLEM_BUTTON = "uat_pause_report_problem_button"
     const val PAUSE_AUDIO_OPTION_PREFIX = "uat_pause_audio_option_"
     const val PAUSE_SUBTITLE_OPTION_PREFIX = "uat_pause_subtitle_option_"
     const val CONTINUE_OVERLAY = "uat_continue_overlay"

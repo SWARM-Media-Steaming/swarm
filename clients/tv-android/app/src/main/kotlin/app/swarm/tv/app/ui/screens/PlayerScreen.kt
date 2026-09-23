@@ -118,8 +118,10 @@ import app.swarm.tv.app.data.AndroidAudioLanguagePreferenceStore
 import app.swarm.tv.app.data.episodeNumberLabel
 import app.swarm.tv.app.data.pauseRecommendationTitle
 import app.swarm.tv.app.data.PreparedEpisodePlayback
+import app.swarm.tv.app.data.ProblemReportCategory
 import app.swarm.tv.app.ui.UatTestTags
 import app.swarm.tv.app.ui.components.SelectableChip
+import app.swarm.tv.app.ui.components.ProblemReportPicker
 import app.swarm.tv.app.ui.components.swarmActionButtonColors
 import app.swarm.tv.app.ui.theme.SwarmAccent
 import app.swarm.tv.app.ui.theme.SwarmAccentHot
@@ -669,6 +671,7 @@ fun PlayerScreen(
     onPlaybackRuntimeError: (message: String, context: String?) -> Unit,
     onPlaybackBuffering: () -> Unit,
     onPlaybackQualityReduced: () -> Unit,
+    onReportProblem: (MergedEntry, ProblemReportCategory) -> Unit,
 ) {
     val context = LocalContext.current
     val audioLanguagePreferences = remember(context) {
@@ -1300,6 +1303,7 @@ fun PlayerScreen(
                     selectAudioTrack(player, choice)
                 },
                 onSelectSubtitleTrack = { choice -> selectSubtitleTrack(player, choice) },
+                onReportProblem = onReportProblem,
             )
         }
 
@@ -1535,7 +1539,9 @@ private fun PauseOverlay(
     onPlayRecommendation: (MergedEntry) -> Unit,
     onSelectAudioTrack: (TrackChoice) -> Unit,
     onSelectSubtitleTrack: (TrackChoice) -> Unit,
+    onReportProblem: (MergedEntry, ProblemReportCategory) -> Unit,
 ) {
+    var showProblemPicker by remember(entry.fingerprint) { mutableStateOf(false) }
     val resumeFocusRequester = remember { FocusRequester() }
     LaunchedEffect(entry.fingerprint) { resumeFocusRequester.requestFocus() }
     val media = entry.entry
@@ -1645,6 +1651,13 @@ private fun PauseOverlay(
                                 Text("Next Episode  ⏭", color = Color(0xFF04263A), fontWeight = FontWeight.Bold)
                             }
                         }
+                        Button(
+                            onClick = { showProblemPicker = true },
+                            colors = swarmActionButtonColors(),
+                            modifier = Modifier.testTag(UatTestTags.PAUSE_REPORT_PROBLEM_BUTTON),
+                        ) {
+                            Text("Report a problem", fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
                 Column(modifier = Modifier.width(285.dp)) {
@@ -1685,6 +1698,15 @@ private fun PauseOverlay(
                     }
                 }
             }
+        }
+        if (showProblemPicker) {
+            ProblemReportPicker(
+                onReport = { category ->
+                    onReportProblem(entry, category)
+                    showProblemPicker = false
+                },
+                onDismiss = { showProblemPicker = false },
+            )
         }
     }
 }

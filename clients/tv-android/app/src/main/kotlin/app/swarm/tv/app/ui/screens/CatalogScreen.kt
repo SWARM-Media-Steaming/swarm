@@ -203,13 +203,14 @@ internal fun CatalogScreen(
     artistPhotoUrl: (MergedEntry) -> String?,
     onOpenMovie: (MergedEntry) -> Unit,
     // Take the row's own (root or genre-filtered) list so a genre sub-shelf's
-    // "Browse All" tile can reuse the same un-titled full-grid screen the
-    // top-level row's tile does, just pre-filtered — see
+    // "Browse All" tile can reuse the same full-grid screen the top-level
+    // row's tile does, just pre-filtered, and pass the row title so that
+    // screen can show which category was selected (#353) — see
     // [app.swarm.tv.app.data.SwarmViewModel.openMovieShelf]'s doc comment.
-    onOpenMovieShelf: (List<MergedEntry>) -> Unit,
-    onOpenArtistShelf: (List<ArtistGroup>) -> Unit,
+    onOpenMovieShelf: (String, List<MergedEntry>) -> Unit,
+    onOpenArtistShelf: (String, List<ArtistGroup>) -> Unit,
     onOpenArtist: (ArtistGroup) -> Unit,
-    onOpenShowShelf: (List<ShowGroup>) -> Unit,
+    onOpenShowShelf: (String, List<ShowGroup>) -> Unit,
     onOpenShow: (ShowGroup) -> Unit,
     onOpenSwarm: () -> Unit,
     onOpenBuzz: () -> Unit,
@@ -1698,7 +1699,7 @@ private fun MovieRow(
     movies: List<MergedEntry>,
     artworkUrl: (MergedEntry) -> String?,
     onOpenMovie: (MergedEntry) -> Unit,
-    onOpenShelf: (List<MergedEntry>) -> Unit,
+    onOpenShelf: (String, List<MergedEntry>) -> Unit,
     isTopLevel: Boolean,
     restoreFocusIndex: Int?,
     isDefaultFocusRow: Boolean,
@@ -1757,7 +1758,7 @@ private fun MovieRow(
             if (showBrowseAllTile) {
                 item(key = "browse-all", contentType = "browse-all") {
                     BrowseAllTile(
-                        onClick = { onOpenShelf(movies) },
+                        onClick = { onOpenShelf(title, movies) },
                         testTag = UatTestTags.BROWSE_ALL_MOVIES,
                         focusRequester = focusRequester.takeIf { targetIndex == visibleMovies.size },
                     )
@@ -1772,7 +1773,7 @@ private fun ShowShelfRow(
     title: String,
     shows: List<ShowGroup>,
     artworkUrl: (MergedEntry) -> String?,
-    onOpenShowShelf: (List<ShowGroup>) -> Unit,
+    onOpenShowShelf: (String, List<ShowGroup>) -> Unit,
     onOpenShow: (ShowGroup) -> Unit,
     isTopLevel: Boolean,
     restoreFocusIndex: Int?,
@@ -1835,7 +1836,7 @@ private fun ShowShelfRow(
             if (showBrowseAllTile) {
                 item(key = "browse-all", contentType = "browse-all") {
                     BrowseAllTile(
-                        onClick = { onOpenShowShelf(shows) },
+                        onClick = { onOpenShowShelf(title, shows) },
                         testTag = UatTestTags.BROWSE_ALL_SHOWS,
                         focusRequester = focusRequester.takeIf { targetIndex == visibleShows.size },
                     )
@@ -1851,7 +1852,7 @@ private fun ArtistShelfRow(
     artists: List<ArtistGroup>,
     artworkUrl: (MergedEntry) -> String?,
     artistPhotoUrl: (MergedEntry) -> String?,
-    onOpenArtistShelf: (List<ArtistGroup>) -> Unit,
+    onOpenArtistShelf: (String, List<ArtistGroup>) -> Unit,
     onOpenArtist: (ArtistGroup) -> Unit,
     isTopLevel: Boolean,
     restoreFocusIndex: Int?,
@@ -1917,7 +1918,7 @@ private fun ArtistShelfRow(
             if (showBrowseAllTile) {
                 item(key = "browse-all", contentType = "browse-all") {
                     BrowseAllTile(
-                        onClick = { onOpenArtistShelf(artists) },
+                        onClick = { onOpenArtistShelf(title, artists) },
                         testTag = UatTestTags.BROWSE_ALL_MUSIC,
                         focusRequester = focusRequester.takeIf { targetIndex == visibleArtists.size },
                     )

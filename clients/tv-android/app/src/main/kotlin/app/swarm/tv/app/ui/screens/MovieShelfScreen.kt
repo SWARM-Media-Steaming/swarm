@@ -1,11 +1,11 @@
 /**
- * Full grid of every movie in the catalog — reached from [CatalogScreen]'s
- * Movies row header ("Browse all"). Selecting a movie opens
+ * Full grid of movies — reached from [CatalogScreen]'s Movies row or a
+ * genre sub-shelf's "Browse All" tile. Selecting a movie opens
  * [MovieDetailScreen].
  *
- * No title/Back header — the remote's own physical Back button (wired via
- * [BackHandler]) already does what an on-screen one would, same reasoning
- * [CatalogScreen] dropped its own header for.
+ * The originating category name is shown at the top (#353), matching the
+ * shelf headers on the Movies/Shows/Music pages. Physical Back (wired via
+ * [BackHandler]) still dismisses the screen; there is no on-screen Back.
  */
 package app.swarm.tv.app.ui.screens
 
@@ -46,6 +46,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Card
 import androidx.tv.material3.CardDefaults
+import app.swarm.tv.app.data.BROWSE_ALL_MOVIES_TITLE
 import app.swarm.tv.app.data.BrowsePreview
 import app.swarm.tv.app.ui.theme.SwarmMuted
 import app.swarm.tv.app.ui.theme.SwarmSurface
@@ -64,6 +65,7 @@ fun MovieShelfScreen(
     artworkUrl: (MergedEntry) -> String?,
     onOpenMovie: (MergedEntry) -> Unit,
     onBack: () -> Unit,
+    title: String = BROWSE_ALL_MOVIES_TITLE,
     initialFocusKey: String? = null,
     preview: BrowsePreview? = null,
     onStartPreview: (MergedEntry) -> Unit = {},
@@ -110,22 +112,20 @@ fun MovieShelfScreen(
     }
 
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 40.dp)) {
+        BrowseAllScreenTitle(title)
         if (sortedMovies.isEmpty()) {
-            Text("No movies in the catalog yet.", color = SwarmMuted, fontSize = 14.sp, modifier = Modifier.padding(top = 40.dp))
+            Text("No movies in the catalog yet.", color = SwarmMuted, fontSize = 14.sp)
         } else {
-            // top = 32.dp (not the flat 12.dp every other edge gets): without
-            // it, the removed header's own real estate stops being the thing
-            // that incidentally kept a focused top-row card's tv-material3
-            // scale-up animation clear of the screen's top edge — real bug,
-            // found live, same root cause and same fix already proven for
-            // MovieRow's LazyRow in CatalogScreen.kt ("contentPadding, not
-            // just the Column's own outer padding").
+            // Title above the grid now supplies the top-edge headroom a
+            // focused first-row card's tv-material3 scale-up used to get
+            // from contentPadding top = 32.dp. Bottom padding on the title
+            // keeps that scale-up from covering the category name.
             LazyVerticalGrid(
                 state = gridState,
                 columns = GridCells.Fixed(BROWSE_ALL_GRID_COLUMNS),
                 verticalArrangement = Arrangement.spacedBy(20.dp),
                 horizontalArrangement = Arrangement.spacedBy(20.dp),
-                contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 32.dp, bottom = 12.dp),
+                contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 12.dp),
             ) {
                 itemsIndexed(
                     items = sortedMovies,

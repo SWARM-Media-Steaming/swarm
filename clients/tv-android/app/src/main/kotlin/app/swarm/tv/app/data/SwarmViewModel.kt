@@ -225,8 +225,8 @@ sealed class UiState {
         val loading: Boolean = true,
         val error: String? = null,
     ) : UiState()
-    /** Music: Music row -> here (grouped, replacing the old flat-track shelf) -> [ArtistAlbums]. */
-    data class ArtistShelf(val catalog: Catalog, val artists: List<ArtistGroup>) : UiState()
+    /** Music: Music row or a genre sub-shelf -> here (grouped) -> [ArtistAlbums]. [title] is the originating shelf name shown at the top of the grid (#353). */
+    data class ArtistShelf(val catalog: Catalog, val artists: List<ArtistGroup>, val title: String) : UiState()
     /** One artist's albums; [AlbumScreen] handles the album-grid<->track-list sub-navigation locally. */
     data class ArtistAlbums(
         val previous: UiState,
@@ -238,16 +238,16 @@ sealed class UiState {
          * playing (#160). Null on a plain open, which shows the album grid. */
         val initialAlbum: String? = null,
     ) : UiState()
-    /** Movies: Movies row -> here (all movies, "Browse all") -> [MovieDetail]. */
-    data class MovieShelf(val catalog: Catalog, val movies: List<MergedEntry>) : UiState()
+    /** Movies: Movies row or a genre sub-shelf -> here ("Browse all") -> [MovieDetail]. [title] is the originating shelf name shown at the top of the grid (#353). */
+    data class MovieShelf(val catalog: Catalog, val movies: List<MergedEntry>, val title: String) : UiState()
     /** Movies: Movies row or [MovieShelf] -> here (detail before play) -> [Player]. [previous] is whichever of those it was opened from, so Back returns to the right one — same reasoning as [Player.previous]. */
     data class MovieDetail(
         val previous: UiState,
         val entry: MergedEntry,
         val extras: List<MergedEntry> = emptyList(),
     ) : UiState()
-    /** Shows: Shows row -> here (grouped, replacing the old flat-episode shelf) -> [ShowSeasons]. */
-    data class ShowShelf(val catalog: Catalog, val shows: List<ShowGroup>) : UiState()
+    /** Shows: Shows row or a genre sub-shelf -> here (grouped) -> [ShowSeasons]. [title] is the originating shelf name shown at the top of the grid (#353). */
+    data class ShowShelf(val catalog: Catalog, val shows: List<ShowGroup>, val title: String) : UiState()
     /** One show's seasons; [SeasonScreen] handles the season-list<->episode-grid sub-navigation locally. */
     data class ShowSeasons(
         val previous: UiState,
@@ -1842,15 +1842,15 @@ class SwarmViewModel(
         is UiState.Catalog -> catalog
         is UiState.ArtistShelf -> state.copy(
             catalog = catalog,
-            artists = CatalogGrouping.groupTracksByArtistAlbum(catalog.entries),
+            artists = artistsForBrowseAll(catalog.entries, state.title),
         )
         is UiState.MovieShelf -> state.copy(
             catalog = catalog,
-            movies = CatalogGrouping.movies(catalog.entries),
+            movies = moviesForBrowseAll(catalog.entries, state.title),
         )
         is UiState.ShowShelf -> state.copy(
             catalog = catalog,
-            shows = CatalogGrouping.groupEpisodesByShowSeason(catalog.entries),
+            shows = showsForBrowseAll(catalog.entries, state.title),
         )
         is UiState.ArtistAlbums -> {
             val artists = CatalogGrouping.groupTracksByArtistAlbum(catalog.entries)
@@ -3200,14 +3200,17 @@ class SwarmViewModel(
 
     /** [artists] lets a genre sub-shelf's own "Browse All" tile open this
      * same full grid pre-filtered to just that genre, reusing the one
-     * [ArtistShelfScreen] rather than needing a genre-aware variant — the
-     * screen itself has no title/header to reflect either way, see
-     * [MovieShelfScreen]'s doc comment. Null (the top-level Music row's own
-     * tile) falls back to the full catalog, same as before. */
-    fun openArtistShelf(artists: List<ArtistGroup>? = null) {
+     * [ArtistShelfScreen]. [title] is the originating shelf name shown at
+     * the top of that grid (#353). Null [artists] (the top-level Music
+     * row's own tile) falls back to the full catalog. */
+    fun openArtistShelf(artists: List<ArtistGroup>? = null, title: String = BROWSE_ALL_MUSIC_TITLE) {
         val current = _state.value
         if (current !is UiState.Catalog) return
-        _state.value = UiState.ArtistShelf(current, artists ?: CatalogGrouping.groupTracksByArtistAlbum(current.entries))
+        _state.value = UiState.ArtistShelf(
+            current,
+            artists ?: artistsForBrowseAll(current.entries, title),
+            title,
+        )
     }
 
     fun openArtistAlbums(artist: ArtistGroup) {
@@ -3245,12 +3248,16 @@ class SwarmViewModel(
     }
 
     /** [movies] lets a genre sub-shelf's own "Browse All" tile reuse this
-     * same full grid pre-filtered to just that genre — see [openArtistShelf]'s
-     * doc comment for why a single un-titled screen can serve both cases. */
-    fun openMovieShelf(movies: List<MergedEntry>? = null) {
+     * same full grid pre-filtered to just that genre. [title] is the
+     * originating shelf name shown at the top of that grid (#353). */
+    fun openMovieShelf(movies: List<MergedEntry>? = null, title: String = BROWSE_ALL_MOVIES_TITLE) {
         val current = _state.value
         if (current !is UiState.Catalog) return
-        _state.value = UiState.MovieShelf(current, movies ?: CatalogGrouping.movies(current.entries))
+        _state.value = UiState.MovieShelf(
+            current,
+            movies ?: moviesForBrowseAll(current.entries, title),
+            title,
+        )
     }
 
     fun backFromMovieShelf() {
@@ -3261,12 +3268,16 @@ class SwarmViewModel(
     // --- Hierarchical browsing: Shows (Show -> Season -> Episode) ---
 
     /** [shows] lets a genre sub-shelf's own "Browse All" tile reuse this
-     * same full grid pre-filtered to just that genre — see [openArtistShelf]'s
-     * doc comment for why a single un-titled screen can serve both cases. */
-    fun openShowShelf(shows: List<ShowGroup>? = null) {
+     * same full grid pre-filtered to just that genre. [title] is the
+     * originating shelf name shown at the top of that grid (#353). */
+    fun openShowShelf(shows: List<ShowGroup>? = null, title: String = BROWSE_ALL_SHOWS_TITLE) {
         val current = _state.value
         if (current !is UiState.Catalog) return
-        _state.value = UiState.ShowShelf(current, shows ?: CatalogGrouping.groupEpisodesByShowSeason(current.entries))
+        _state.value = UiState.ShowShelf(
+            current,
+            shows ?: showsForBrowseAll(current.entries, title),
+            title,
+        )
     }
 
     fun openShowSeasons(show: ShowGroup) {

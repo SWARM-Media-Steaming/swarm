@@ -71,6 +71,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
@@ -1581,7 +1582,14 @@ private fun PauseOverlay(
             ),
         ),
     ) {
-        Column(modifier = Modifier.fillMaxSize().padding(horizontal = 44.dp, vertical = 28.dp)) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 44.dp, vertical = 28.dp)
+                // The report picker is modal, so its dimmed pause controls must
+                // not be reachable after the last picker option.
+                .focusProperties { canFocus = !showProblemPicker },
+        ) {
             Row(modifier = Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(36.dp)) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(

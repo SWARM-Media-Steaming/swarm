@@ -76,6 +76,13 @@ const val CONNECTION_SETUP_SWARM_ID = "connection-setup"
 const val TESTING_PAIRING_CODE = "00000000"
 private const val TESTING_MODE_DURATION_MS = 10 * 60 * 1000L
 
+/** Buffering while a session's stream first fills is normal and expected, so
+ * the shared toast surface stays silent for this long after a session starts
+ * (fresh play, episode/track advance, or session recovery all count as a
+ * fresh start) before [SwarmViewModel.reportPlaybackBuffering] resumes
+ * reporting genuine mid-playback rebuffers (#357). */
+private const val INITIAL_BUFFERING_NOTIFICATION_SUPPRESSION_MS = 10_000L
+
 data class ClientNotification(
     val message: String,
     val kind: ClientNotificationKind,
@@ -520,6 +527,11 @@ class SwarmViewModel(
     /** Invalidates a negotiation without cancelling its server response, allowing a
      * late-created reservation to be explicitly released instead of timing out. */
     private var playbackRequestGeneration = 0L
+    /** Set to [SystemClock.elapsedRealtime] whenever a playback session starts
+     * (fresh play, episode/track advance, or recovery) so
+     * [reportPlaybackBuffering] can hold its toast back while the session's
+     * initial buffer is still normally filling. */
+    private var activePlaybackSessionStartedAtMs = 0L
     /** Set when the viewer presses Resume on the [UiState.PreparingPlayback]
      * cover before negotiation has finished: the still-buffering session then
      * starts playing the instant it is ready instead of opening paused. */
@@ -2330,6 +2342,7 @@ class SwarmViewModel(
                 releasePlaybackSession(catalog, current.serverId, current.sessionId)
             }
             val promoted = preloaded.toPlayerState(current.previous, musicQueueId = current.musicQueueId)
+            activePlaybackSessionStartedAtMs = SystemClock.elapsedRealtime()
             if (wasMinimized) _minimizedPlayer.value = promoted else _state.value = promoted
             return
         }
@@ -2920,6 +2933,7 @@ class SwarmViewModel(
             } else {
                 cleanedPrevious
             }
+            activePlaybackSessionStartedAtMs = SystemClock.elapsedRealtime()
             val playerState = UiState.Player(
                 url = selection.url,
                 title = entry.entry.displayTitle(),
@@ -3018,9 +3032,13 @@ class SwarmViewModel(
     }
 
     /** Keeps transient playback waits on the shared toast surface instead of
-     * covering the video with a separate loading screen. */
+     * covering the video with a separate loading screen. Silent for the first
+     * [INITIAL_BUFFERING_NOTIFICATION_SUPPRESSION_MS] of a session — buffering
+     * while the initial stream fills is normal and not worth surfacing (#357). */
     fun reportPlaybackBuffering() {
         if (_state.value !is UiState.Player && _state.value != UiState.PlaybackLoading) return
+        val sinceSessionStart = SystemClock.elapsedRealtime() - activePlaybackSessionStartedAtMs
+        if (sinceSessionStart < INITIAL_BUFFERING_NOTIFICATION_SUPPRESSION_MS) return
         notify("Buffering", ClientNotificationKind.WARNING)
     }
 

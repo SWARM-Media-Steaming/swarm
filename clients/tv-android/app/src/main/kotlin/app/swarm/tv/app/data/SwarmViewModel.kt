@@ -77,10 +77,11 @@ const val TESTING_PAIRING_CODE = "00000000"
 private const val TESTING_MODE_DURATION_MS = 10 * 60 * 1000L
 
 /** Buffering while a session's stream first fills is normal and expected, so
- * the shared toast surface stays silent for this long after a session starts
- * (fresh play, episode/track advance, or session recovery all count as a
- * fresh start) before [SwarmViewModel.reportPlaybackBuffering] resumes
- * reporting genuine mid-playback rebuffers (#357). */
+ * the shared toast surface stays silent for this long after a session is
+ * actually shown (Resume on a Continue Watching cover, the player appearing,
+ * or a replacement load entering [UiState.PlaybackLoading]) before
+ * [SwarmViewModel.reportPlaybackBuffering] resumes reporting genuine
+ * mid-playback rebuffers (#357). */
 private const val INITIAL_BUFFERING_NOTIFICATION_SUPPRESSION_MS = 10_000L
 
 data class ClientNotification(
@@ -527,9 +528,10 @@ class SwarmViewModel(
     /** Invalidates a negotiation without cancelling its server response, allowing a
      * late-created reservation to be explicitly released instead of timing out. */
     private var playbackRequestGeneration = 0L
-    /** Set to [SystemClock.elapsedRealtime] whenever a playback session starts
-     * (fresh play, episode/track advance, or recovery) so
-     * [reportPlaybackBuffering] can hold its toast back while the session's
+    /** Set to [SystemClock.elapsedRealtime] when the viewer actually starts
+     * playback (player shown, Resume on a parked Continue Watching cover, or
+     * a replacement entering [UiState.PlaybackLoading]) so
+     * [reportPlaybackBuffering] can hold its toast back while that session's
      * initial buffer is still normally filling. */
     private var activePlaybackSessionStartedAtMs = 0L
     /** Set when the viewer presses Resume on the [UiState.PreparingPlayback]
@@ -2814,6 +2816,11 @@ class SwarmViewModel(
             // No old song continues while `/stop` reconnects or the next
             // `/play` is negotiated.
             if ((_state.value as? UiState.Player)?.sessionId == replaceSession.sessionId) {
+                // MainActivity reports buffering the instant this black
+                // surface appears. Stamp now so a previous title that has
+                // already played past the 10s window cannot toast this
+                // asset's first fill (#357).
+                activePlaybackSessionStartedAtMs = SystemClock.elapsedRealtime()
                 _state.value = UiState.PlaybackLoading
             }
             if (_minimizedPlayer.value?.sessionId == replaceSession.sessionId) {
@@ -2933,7 +2940,6 @@ class SwarmViewModel(
             } else {
                 cleanedPrevious
             }
-            activePlaybackSessionStartedAtMs = SystemClock.elapsedRealtime()
             val playerState = UiState.Player(
                 url = selection.url,
                 title = entry.entry.displayTitle(),
@@ -2966,14 +2972,22 @@ class SwarmViewModel(
             // because the track changed underneath it — see [playNext].
             val preparingCover = _state.value as? UiState.PreparingPlayback
             when {
-                keepMinimized -> _minimizedPlayer.value = playerState
+                keepMinimized -> {
+                    activePlaybackSessionStartedAtMs = SystemClock.elapsedRealtime()
+                    _minimizedPlayer.value = playerState
+                }
                 // "Continue Watching": the session is ready, but the viewer
                 // hasn't pressed Resume yet. Park it behind the cover they are
                 // already looking at instead of swapping in a second,
-                // identical pause screen on a timer (#211).
+                // identical pause screen on a timer (#211). Do not start the
+                // buffering-toast clock here — the asset has not been
+                // initially played until Resume (#357).
                 playerState.startPaused && preparingCover != null ->
                     _state.value = preparingCover.copy(prepared = playerState)
-                else -> _state.value = playerState
+                else -> {
+                    activePlaybackSessionStartedAtMs = SystemClock.elapsedRealtime()
+                    _state.value = playerState
+                }
             }
             if (pendingPlaybackReplacement?.requestGeneration == requestGeneration) pendingPlaybackReplacement = null
         }
@@ -3471,7 +3485,13 @@ class SwarmViewModel(
         if (!current.startPaused || current.resumeRequested) return
         preparingResumeRequested = true
         val prepared = current.prepared
-        _state.value = prepared?.copy(startPaused = false) ?: current.copy(resumeRequested = true)
+        if (prepared != null) {
+            // Resume is when this Continue Watching asset is initially played.
+            activePlaybackSessionStartedAtMs = SystemClock.elapsedRealtime()
+            _state.value = prepared.copy(startPaused = false)
+        } else {
+            _state.value = current.copy(resumeRequested = true)
+        }
     }
 
     fun stopPlayback() {

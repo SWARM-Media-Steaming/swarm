@@ -1021,6 +1021,34 @@
         "servers": []
       },
       "timeoutSeconds": 1800
+    },
+    {
+      "command": [
+        "python3",
+        "tests/adversarial/test_issue_372_frozen_uat_problem_report_sent.py"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-372-frozen-uat-problem-report-sent",
+      "name": "Adversarial: issue #372 frozen UAT Problem Report Sent toast",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "python3"
+        ],
+        "files": [
+          "tests/adversarial/test_issue_372_frozen_uat_problem_report_sent.py",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/data/SwarmViewModel.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/data/ProblemReportCategory.kt",
+          "clients/tv-android/app/src/androidTest/kotlin/app/swarm/tv/app/uat/MovieProblemReportUatTest.kt",
+          "clients/tv-android/app/src/androidTest/kotlin/app/swarm/tv/app/uat/UatTestBase.kt"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 120
     }
   ],
   "version": 1

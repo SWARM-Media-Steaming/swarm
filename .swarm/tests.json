@@ -542,6 +542,33 @@
         "servers": []
       },
       "timeoutSeconds": 120
+    },
+    {
+      "command": [
+        "python3",
+        "tests/adversarial/test_category_row_label_removal.py"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-category-row-label-removal",
+      "name": "Adversarial: issue #352 - Remove Categories label",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "python3"
+        ],
+        "files": [
+          "tests/adversarial/test_category_row_label_removal.py",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/CatalogScreen.kt",
+          ".claude/skills/tv-client-ui-conventions/SKILL.md",
+          ".claude/skills/swarm-client-platform-knowledge/references/feature-inventory.md"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 120
     }
   ],
   "version": 1

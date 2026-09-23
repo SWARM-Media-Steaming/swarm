@@ -3125,7 +3125,7 @@ class SwarmViewModel(
             message = category.reportMessage("Fire TV"),
             entry = entry,
         )
-        notify("${category.label} problem report sent.", ClientNotificationKind.SUCCESS)
+        notify("Problem Report Sent: ${category.label} problem report sent.", ClientNotificationKind.SUCCESS)
     }
 
     /**

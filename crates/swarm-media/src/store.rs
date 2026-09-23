@@ -11,6 +11,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
+use std::sync::Mutex;
 use swarm_core::peer::{
     AudioStreamInfo, CatalogEntry, MediaKind, SkipSegment, TrackLyrics, VideoStreamInfo,
 };
@@ -311,6 +312,13 @@ fn unix_time_ms() -> i64 {
 
 pub struct Library {
     pool: SqlitePool,
+    /// `(data_version, thumbprint, entries)` from the last `catalog_snapshot`
+    /// build. `PRAGMA data_version` is SQLite's own free-standing counter —
+    /// it bumps the instant any commit lands on this database file, from any
+    /// connection, so keying the cache on it can never serve stale data
+    /// after a real write, only skip rebuilding when nothing has changed.
+    /// See `catalog_snapshot`'s doc comment for why this exists.
+    catalog_cache: Mutex<Option<(i64, String, Vec<CatalogEntry>)>>,
 }
 
 impl Library {
@@ -554,7 +562,10 @@ impl Library {
         )
         .execute(&pool)
         .await?;
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            catalog_cache: Mutex::new(None),
+        })
     }
 
     pub async fn create_buzz_session(
@@ -2191,7 +2202,35 @@ impl Library {
     /// old `(path, fingerprint, size)`-only token stayed unchanged while a
     /// scraper populated artwork/titles, which made a fingerprint-aware TV
     /// cache retain stale presentation data indefinitely.
+    /// `/catalog/changes` (`serve.rs`) long-polls this once a second for as
+    /// long as any TV/peer keeps a watch connection open, purely to check
+    /// whether anything changed. At this library's current size (~13k
+    /// entries) a full rebuild — `list()` plus two more queries, then
+    /// JSON-serializing and SHA-256-hashing every entry — routinely takes
+    /// well over that 1s cadence, so with no cache a single watching client
+    /// (let alone several) pins the server in a back-to-back rebuild loop
+    /// with no idle time; observed pegging 200-300% CPU for days with the
+    /// library never actually changing underneath it.
+    ///
+    /// `PRAGMA data_version` is SQLite's own change counter for the database
+    /// file: it bumps on every commit from any connection, so it's a cheap,
+    /// always-correct guard for "did anything change since the last build" —
+    /// unlike a time-based cache, it can never serve stale data past a real
+    /// write (at worst it over-invalidates on a write to an unrelated
+    /// table), so a repeat call while nothing has changed reuses the cached
+    /// build instead of redoing all of that work.
     pub async fn catalog_snapshot(&self) -> sqlx::Result<(String, Vec<CatalogEntry>)> {
+        let version: i64 = sqlx::query_scalar("PRAGMA data_version")
+            .fetch_one(&self.pool)
+            .await?;
+        if let Some((cached_version, thumbprint, entries)) =
+            self.catalog_cache.lock().unwrap().as_ref()
+        {
+            if *cached_version == version {
+                return Ok((thumbprint.clone(), entries.clone()));
+            }
+        }
+
         let entries = self.list().await?;
         let like_counts = self.like_counts().await?;
         let introdb_segments = self.introdb_segments().await?;
@@ -2215,7 +2254,10 @@ impl Library {
             digest.update(serde_json::to_vec(entry).unwrap_or_default());
             digest.update(b"\n");
         }
-        Ok((hex::encode(digest.finalize()), catalog_entries))
+        let thumbprint = hex::encode(digest.finalize());
+        *self.catalog_cache.lock().unwrap() =
+            Some((version, thumbprint.clone(), catalog_entries.clone()));
+        Ok((thumbprint, catalog_entries))
     }
 
     pub async fn thumbprint(&self) -> sqlx::Result<String> {

@@ -132,6 +132,13 @@ handlers can extract the real peer address for this — don't switch to
 plain `into_make_service()` (that's `mcp.rs`'s precedent, which never
 needs peer IP).
 
+`MediaService` resolves catalog paths through `SharedRootResolver::resolve_existing`,
+not a hand-built `root.join(...)`. It preserves exact paths first, then has a narrowly
+scoped Unicode-normalization fallback for SMB mounts that report directory names with a
+different normalization from an older catalog row. This applies equally to `/play` and
+the byte-serving routes; bypassing it can make an existing music file fail playback
+preparation with a 404.
+
 ## `/health` is a third, deliberately tiny route group
 
 `GET /health` answers "is this server up, and is it visible through the SWARM

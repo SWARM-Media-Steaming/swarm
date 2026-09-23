@@ -958,7 +958,7 @@ impl MediaService {
         session_id: Option<String>,
         rate_limiters: Vec<Arc<SessionRateLimiter>>,
     ) -> Resolved {
-        let path = self.roots.resolve(&entry.relative_path);
+        let path = self.roots.resolve_existing(&entry.relative_path);
         let Ok(metadata) = std::fs::metadata(&path) else {
             self.mark_entry_missing(&entry.relative_path).await;
             return status(404); // deleted since last scan
@@ -1020,7 +1020,7 @@ impl MediaService {
         let Ok(Some(entry)) = self.library.get(entry_key).await else {
             return status(404);
         };
-        let media_path = self.roots.resolve(&entry.relative_path);
+        let media_path = self.roots.resolve_existing(&entry.relative_path);
         if !media_path.is_file() {
             self.mark_entry_missing(&entry.relative_path).await;
             return status(404);

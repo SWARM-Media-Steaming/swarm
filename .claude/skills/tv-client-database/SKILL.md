@@ -99,12 +99,15 @@ bare comparison whenever the comparison value can be null.
   compromise well beyond that. This isn't a soft preference — don't add
   a `token`/`password`/`secret` column to any table in this schema.
 - **Flat per-item resume/watched state** (`AndroidWatchStateStore`,
-  keyed by cross-server content fingerprint) — deliberately *not* Room
-  even though Room is now set up and would work fine for it. It's a
+  keyed by cross-server content fingerprint, with show/season/episode
+  snapshotted for logical-episode recovery after a replacement encode) —
+  deliberately *not* Room even though Room is now set up and would work fine for it. It's a
   genuinely flat key→value shape with no relations to model (no entity
   it needs a foreign key toward), so a plain SharedPreferences-backed
-  store stays simpler with nothing lost. Don't migrate it to Room "for
-  consistency" without a real reason — see that store's own doc comment.
+  store stays simpler with nothing lost. Writes are timestamp-ordered:
+  heartbeat, lifecycle, and disposal callbacks can overlap, so the store
+  must not let an older callback overwrite a newer position. Don't migrate
+  it to Room "for consistency" without a real reason — see that store's own doc comment.
 
 ## WAL journal mode
 

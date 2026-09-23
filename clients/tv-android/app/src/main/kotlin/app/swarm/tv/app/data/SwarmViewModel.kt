@@ -35,6 +35,8 @@ import app.swarm.tv.core.rest.SwarmSummary
 import app.swarm.tv.core.token.TokenStore
 import app.swarm.tv.core.watch.WatchState
 import app.swarm.tv.core.watch.WatchStateStore
+import app.swarm.tv.core.watch.getForEntry
+import app.swarm.tv.core.watch.stateFor
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.util.UUID
@@ -453,6 +455,12 @@ class SwarmViewModel(
     /** Playback history is loaded as a map so the home shelves never perform per-card disk reads. */
     private val _watchStates = MutableStateFlow<Map<String, WatchState>>(emptyMap())
     val watchStates: StateFlow<Map<String, WatchState>> = _watchStates.asStateFlow()
+    /**
+     * Save callbacks can share a wall-clock millisecond (especially during
+     * episode handoff/background teardown). Give each callback a strictly
+     * increasing timestamp so asynchronous persistence retains their order.
+     */
+    private var lastWatchStateUpdatedAt = 0L
 
     /** Movie/show watchlist membership, persisted locally and updated optimistically. */
     private val _watchlistKeys = MutableStateFlow<Set<String>>(emptySet())
@@ -592,7 +600,20 @@ class SwarmViewModel(
             refreshDashboardLanRoutes()
         }
         viewModelScope.launch { _likedFingerprints.value = likedEntriesStore.loadAll() }
-        viewModelScope.launch { _watchStates.value = watchStateStore.all() }
+        viewModelScope.launch {
+            val loaded = watchStateStore.all()
+            lastWatchStateUpdatedAt = maxOf(
+                lastWatchStateUpdatedAt,
+                loaded.values.maxOfOrNull { it.updatedAt } ?: 0L,
+            )
+            // A very fast restored session can report progress while the IO
+            // snapshot is loading. Merge newest-per-fingerprint instead of
+            // letting that older snapshot overwrite the live save.
+            _watchStates.value = (loaded.keys + _watchStates.value.keys).associateWith { fingerprint ->
+                listOfNotNull(loaded[fingerprint], _watchStates.value[fingerprint])
+                    .maxBy { it.updatedAt }
+            }
+        }
         viewModelScope.launch { _watchlistKeys.value = watchlistStore.loadAll() }
         viewModelScope.launch {
             clientNotificationStore.observe().collect { _resolvedProblemNotifications.value = it }
@@ -2122,7 +2143,7 @@ class SwarmViewModel(
             val serverId = next.sources.firstOrNull() ?: return@launch
             val device = catalog.devices.find { it.deviceId == serverId }?.let(::withPreferredLanRoute)
                 ?: return@launch
-            val resumePositionSecs = watchStateStore.get(next.entry.fingerprint)
+            val resumePositionSecs = watchStateStore.getForEntry(next.entry)
                 ?.takeUnless { it.watched }
                 ?.positionSecs
                 ?: 0.0
@@ -2831,7 +2852,7 @@ class SwarmViewModel(
             }
             if (requestGeneration != playbackRequestGeneration) return@launch
             val resumePositionSecs = startPositionSecsOverride
-                ?: watchStateStore.get(fingerprint)?.takeUnless { it.watched }?.positionSecs
+                ?: watchStateStore.getForEntry(entry.entry)?.takeUnless { it.watched }?.positionSecs
                 ?: 0.0
             val selection = runCatching {
                 requireNotNull(device) { "server no longer in the swarm roster" }
@@ -3103,7 +3124,7 @@ class SwarmViewModel(
     fun toggleMovieWatchlist(entry: MergedEntry) {
         val key = WatchlistKeys.movie(entry)
         val listed = key !in _watchlistKeys.value
-        if (listed && _watchStates.value[entry.entry.fingerprint]?.watched == true) {
+        if (listed && _watchStates.value.stateFor(entry.entry)?.watched == true) {
             notify("This movie is already marked watched.", ClientNotificationKind.WARNING)
             return
         }
@@ -3129,7 +3150,7 @@ class SwarmViewModel(
     /** Specials/featurettes do not keep an otherwise-completed show on the Watchlist. */
     private fun showIsWatched(show: ShowGroup, states: Map<String, WatchState>): Boolean {
         val realEpisodes = CatalogGrouping.previewSeasons(show).flatMap { it.episodes }
-        return realEpisodes.isNotEmpty() && realEpisodes.all { states[it.entry.fingerprint]?.watched == true }
+        return realEpisodes.isNotEmpty() && realEpisodes.all { states.stateFor(it.entry)?.watched == true }
     }
 
     // --- Kid Mode ---
@@ -3329,12 +3350,29 @@ class SwarmViewModel(
     /** Called when [PlayerScreen] is disposed; 95% counts as complete so credits do not leave an item in Continue Watching. */
     fun savePlaybackPosition(entry: MergedEntry, positionSecs: Double, durationSecs: Double) {
         val buzz = activePlayerSession()?.takeIf { it.entry.entry.entryKey == entry.entry.entryKey }?.previous as? UiState.Buzz
+        val updatedAt = maxOf(System.currentTimeMillis(), lastWatchStateUpdatedAt + 1)
+        lastWatchStateUpdatedAt = updatedAt
+        val fingerprint = entry.entry.fingerprint
+        val saved = WatchState.fromPlayback(
+            positionSecs = positionSecs,
+            durationSecs = durationSecs,
+            updatedAt = updatedAt,
+            showTitle = entry.entry.showTitle.takeIf { entry.entry.kind == MediaKind.EPISODE },
+            season = entry.entry.season.takeIf { entry.entry.kind == MediaKind.EPISODE },
+            episode = entry.entry.episode.takeIf { entry.entry.kind == MediaKind.EPISODE },
+        )
+        val current = _watchStates.value[fingerprint]
+        if (current == null || current.updatedAt <= saved.updatedAt) {
+            _watchStates.value = _watchStates.value + (fingerprint to saved)
+        }
         viewModelScope.launch {
-            val fingerprint = entry.entry.fingerprint
-            val saved = WatchState.fromPlayback(positionSecs, durationSecs, System.currentTimeMillis())
             watchStateStore.set(fingerprint, saved)
-            val states = _watchStates.value + (fingerprint to saved)
-            _watchStates.value = states
+            val persisted = watchStateStore.get(fingerprint) ?: saved
+            val latest = _watchStates.value[fingerprint]
+            if (latest == null || latest.updatedAt <= persisted.updatedAt) {
+                _watchStates.value = _watchStates.value + (fingerprint to persisted)
+            }
+            val states = _watchStates.value
 
             if (buzz != null) {
                 val response = buzz.response

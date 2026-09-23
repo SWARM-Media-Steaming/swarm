@@ -17,6 +17,8 @@
  */
 package app.swarm.tv.core.watch
 
+import app.swarm.tv.core.peer.CatalogEntry
+import app.swarm.tv.core.peer.MediaKind
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -25,21 +27,71 @@ data class WatchState(
     val durationSecs: Double,
     val watched: Boolean,
     val updatedAt: Long,
+    /**
+     * Episode identity is snapshotted alongside the fingerprint so a media
+     * replacement/rescan that changes the file fingerprint does not send a
+     * show back to an older episode. Movies and tracks leave these null.
+     */
+    val showTitle: String? = null,
+    val season: Int? = null,
+    val episode: Int? = null,
 ) {
     companion object {
         /** Credits commonly start before the media timeline reaches 100%. */
         const val WATCHED_FRACTION = 0.95
 
-        fun fromPlayback(positionSecs: Double, durationSecs: Double, updatedAt: Long): WatchState {
+        fun fromPlayback(
+            positionSecs: Double,
+            durationSecs: Double,
+            updatedAt: Long,
+            showTitle: String? = null,
+            season: Int? = null,
+            episode: Int? = null,
+        ): WatchState {
             val watched = durationSecs > 0 && positionSecs / durationSecs >= WATCHED_FRACTION
-            return WatchState(positionSecs, durationSecs, watched, updatedAt)
+            return WatchState(positionSecs, durationSecs, watched, updatedAt, showTitle, season, episode)
         }
     }
 }
 
+private data class EpisodeIdentity(val show: String, val season: Int, val episode: Int)
+
+private fun CatalogEntry.episodeIdentity(): EpisodeIdentity? {
+    if (kind != MediaKind.EPISODE) return null
+    val show = showTitle?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: return null
+    return EpisodeIdentity(show, season ?: return null, episode ?: return null)
+}
+
+private fun WatchState.episodeIdentity(): EpisodeIdentity? {
+    val show = showTitle?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: return null
+    return EpisodeIdentity(show, season ?: return null, episode ?: return null)
+}
+
+/**
+ * Resolves state by fingerprint first, then by a captured show/season/episode
+ * identity. The fallback preserves resume state when the same logical episode
+ * is replaced by a differently encoded file with a new content fingerprint.
+ */
+fun Map<String, WatchState>.stateFor(entry: CatalogEntry): WatchState? {
+    this[entry.fingerprint]?.let { return it }
+    val identity = entry.episodeIdentity() ?: return null
+    return values.asSequence()
+        .filter { it.episodeIdentity() == identity }
+        .maxByOrNull { it.updatedAt }
+}
+
+/** Store-backed counterpart to [stateFor], keeping fingerprint lookup hot. */
+suspend fun WatchStateStore.getForEntry(entry: CatalogEntry): WatchState? =
+    get(entry.fingerprint) ?: entry.episodeIdentity()?.let { identity ->
+        all().values.asSequence()
+            .filter { it.episodeIdentity() == identity }
+            .maxByOrNull { it.updatedAt }
+    }
+
 interface WatchStateStore {
     suspend fun get(fingerprint: String): WatchState?
     suspend fun all(): Map<String, WatchState>
+    /** An older [WatchState.updatedAt] must not replace a newer record. */
     suspend fun set(fingerprint: String, state: WatchState)
     suspend fun clear(fingerprint: String)
 }
@@ -53,6 +105,7 @@ class InMemoryWatchStateStore : WatchStateStore {
     override suspend fun all(): Map<String, WatchState> = states.toMap()
 
     override suspend fun set(fingerprint: String, state: WatchState) {
+        if ((states[fingerprint]?.updatedAt ?: Long.MIN_VALUE) > state.updatedAt) return
         states[fingerprint] = state
     }
 

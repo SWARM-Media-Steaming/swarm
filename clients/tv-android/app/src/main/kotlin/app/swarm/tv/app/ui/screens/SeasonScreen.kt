@@ -51,6 +51,7 @@ import app.swarm.tv.core.catalog.MergedEntry
 import app.swarm.tv.core.catalog.SeasonGroup
 import app.swarm.tv.core.catalog.ShowGroup
 import app.swarm.tv.core.watch.WatchState
+import app.swarm.tv.core.watch.stateFor
 
 @Composable
 fun SeasonScreen(
@@ -290,7 +291,7 @@ internal fun resumeEpisode(show: ShowGroup, watchStates: Map<String, WatchState>
     show.seasons.asSequence()
         .flatMap { it.episodes.asSequence() }
         .mapNotNull { episode ->
-            val saved = watchStates[episode.entry.fingerprint]
+            val saved = watchStates.stateFor(episode.entry)
             if (saved == null || saved.watched || saved.positionSecs <= 0.0) null else episode to saved
         }
         .maxByOrNull { it.second.updatedAt }

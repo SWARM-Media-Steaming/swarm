@@ -763,6 +763,41 @@
         "servers": []
       },
       "timeoutSeconds": 120
+    },
+    {
+      "command": [
+        "python3",
+        "tests/adversarial/test_issue_356_show_resume.py"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-356-show-resume",
+      "name": "Adversarial: issue #356 show resume season/episode/progress",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "python3",
+          "java"
+        ],
+        "files": [
+          "tests/adversarial/test_issue_356_show_resume.py",
+          "tests/adversarial/ShowResumeDriver.kt",
+          "clients/tv-android/gradlew",
+          "clients/tv-android/core/src/main/kotlin/app/swarm/tv/core/watch/WatchState.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/data/AndroidWatchStateStore.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/data/SwarmViewModel.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/PlaybackLifecycle.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/PlayerScreen.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/CatalogScreen.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/SeasonScreen.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/MainActivity.kt"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
     }
   ],
   "version": 1

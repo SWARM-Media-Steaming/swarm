@@ -207,10 +207,10 @@ internal fun CatalogScreen(
     // row's tile does, just pre-filtered, and pass the row title so that
     // screen can show which category was selected (#353) — see
     // [app.swarm.tv.app.data.SwarmViewModel.openMovieShelf]'s doc comment.
-    onOpenMovieShelf: (String, List<MergedEntry>) -> Unit,
-    onOpenArtistShelf: (String, List<ArtistGroup>) -> Unit,
+    onOpenMovieShelf: (String, List<MergedEntry>, Boolean) -> Unit,
+    onOpenArtistShelf: (String, List<ArtistGroup>, Boolean) -> Unit,
     onOpenArtist: (ArtistGroup) -> Unit,
-    onOpenShowShelf: (String, List<ShowGroup>) -> Unit,
+    onOpenShowShelf: (String, List<ShowGroup>, Boolean) -> Unit,
     onOpenShow: (ShowGroup) -> Unit,
     onOpenSwarm: () -> Unit,
     onOpenBuzz: () -> Unit,
@@ -816,7 +816,10 @@ internal fun CatalogScreen(
                                     if (movies.isNotEmpty()) {
                                         item {
                                             MovieRow(
-                                                "Movies", movies, artworkUrl, onOpenMovie, onOpenMovieShelf, isTopLevel = true, movieRestoreIndex,
+                                                "Movies", movies, artworkUrl, onOpenMovie,
+                                                onOpenShelf = { title, rowMovies -> onOpenMovieShelf(title, rowMovies, false) },
+                                                isTopLevel = true,
+                                                restoreFocusIndex = movieRestoreIndex,
                                                 isDefaultFocusRow = firstSection == "movies",
                                                 isLiked = isLiked,
                                                 defaultFocusRequester = initialCatalogFocusRequester.takeIf {
@@ -837,7 +840,7 @@ internal fun CatalogScreen(
                                             genreMovies,
                                             artworkUrl,
                                             onOpenMovie,
-                                            onOpenShelf = onOpenMovieShelf,
+                                            onOpenShelf = { title, rowMovies -> onOpenMovieShelf(title, rowMovies, true) },
                                             isTopLevel = false,
                                             restoreFocusIndex = null,
                                             isDefaultFocusRow = false,
@@ -851,7 +854,11 @@ internal fun CatalogScreen(
                                     if (shows.isNotEmpty()) {
                                         item {
                                             ShowShelfRow(
-                                                "Shows", shows, artworkUrl, onOpenShowShelf, onOpenShow, isTopLevel = true, showRestoreIndex,
+                                                "Shows", shows, artworkUrl,
+                                                onOpenShowShelf = { title, rowShows -> onOpenShowShelf(title, rowShows, false) },
+                                                onOpenShow = onOpenShow,
+                                                isTopLevel = true,
+                                                restoreFocusIndex = showRestoreIndex,
                                                 isDefaultFocusRow = firstSection == "shows",
                                                 defaultFocusRequester = initialCatalogFocusRequester.takeIf {
                                                     showRestoreIndex != null || (!restoringSelection && firstSection == "shows")
@@ -870,7 +877,7 @@ internal fun CatalogScreen(
                                             genre,
                                             genreShows,
                                             artworkUrl,
-                                            onOpenShowShelf = onOpenShowShelf,
+                                            onOpenShowShelf = { title, rowShows -> onOpenShowShelf(title, rowShows, true) },
                                             onOpenShow = onOpenShow,
                                             isTopLevel = false,
                                             restoreFocusIndex = null,
@@ -884,7 +891,11 @@ internal fun CatalogScreen(
                                     if (artists.isNotEmpty()) {
                                         item {
                                             ArtistShelfRow(
-                                                "Music", artists, artworkUrl, artistPhotoUrl, onOpenArtistShelf, onOpenArtist, isTopLevel = true, artistRestoreIndex,
+                                                "Music", artists, artworkUrl, artistPhotoUrl,
+                                                onOpenArtistShelf = { title, rowArtists -> onOpenArtistShelf(title, rowArtists, false) },
+                                                onOpenArtist = onOpenArtist,
+                                                isTopLevel = true,
+                                                restoreFocusIndex = artistRestoreIndex,
                                                 isDefaultFocusRow = firstSection == "music",
                                                 defaultFocusRequester = initialCatalogFocusRequester.takeIf {
                                                     artistRestoreIndex != null || (!restoringSelection && firstSection == "music")
@@ -904,7 +915,7 @@ internal fun CatalogScreen(
                                             genreArtists,
                                             artworkUrl,
                                             artistPhotoUrl,
-                                            onOpenArtistShelf = onOpenArtistShelf,
+                                            onOpenArtistShelf = { title, rowArtists -> onOpenArtistShelf(title, rowArtists, true) },
                                             onOpenArtist = onOpenArtist,
                                             isTopLevel = false,
                                             restoreFocusIndex = null,

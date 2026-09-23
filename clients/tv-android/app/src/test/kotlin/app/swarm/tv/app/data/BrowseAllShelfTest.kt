@@ -57,9 +57,9 @@ class BrowseAllShelfTest {
     )
 
     @Test
-    fun `top-level movies title keeps every movie`() {
-        val entries = listOf(movie("a", "Action"), movie("b", "Comedy"))
-        assertEquals(listOf("a", "b"), moviesForBrowseAll(entries, BROWSE_ALL_MOVIES_TITLE).map { it.fingerprint })
+    fun `genre named Movies still filters to that genre`() {
+        val entries = listOf(movie("a", "Movies"), movie("b", "Comedy"))
+        assertEquals(listOf("a"), moviesForBrowseAll(entries, BROWSE_ALL_MOVIES_TITLE).map { it.fingerprint })
     }
 
     @Test
@@ -69,9 +69,9 @@ class BrowseAllShelfTest {
     }
 
     @Test
-    fun `top-level shows title keeps every show`() {
-        val entries = listOf(episode("e1", "Wire", "Crime"), episode("e2", "Friends", "Comedy"))
-        assertEquals(listOf("Friends", "Wire"), showsForBrowseAll(entries, BROWSE_ALL_SHOWS_TITLE).map { it.show })
+    fun `genre named Shows still filters to that genre`() {
+        val entries = listOf(episode("e1", "Wire", "Shows"), episode("e2", "Friends", "Comedy"))
+        assertEquals(listOf("Wire"), showsForBrowseAll(entries, BROWSE_ALL_SHOWS_TITLE).map { it.show })
     }
 
     @Test
@@ -87,9 +87,9 @@ class BrowseAllShelfTest {
     }
 
     @Test
-    fun `top-level music title keeps every artist`() {
-        val entries = listOf(track("t1", "A", "Rock"), track("t2", "B", "Jazz"))
-        assertEquals(listOf("A", "B"), artistsForBrowseAll(entries, BROWSE_ALL_MUSIC_TITLE).map { it.artist })
+    fun `genre named Music still filters to that genre`() {
+        val entries = listOf(track("t1", "A", "Music"), track("t2", "B", "Jazz"))
+        assertEquals(listOf("A"), artistsForBrowseAll(entries, BROWSE_ALL_MUSIC_TITLE).map { it.artist })
     }
 
     @Test

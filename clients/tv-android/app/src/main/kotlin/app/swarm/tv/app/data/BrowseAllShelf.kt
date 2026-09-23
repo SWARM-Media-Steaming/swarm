@@ -15,20 +15,17 @@ internal const val BROWSE_ALL_MOVIES_TITLE = "Movies"
 internal const val BROWSE_ALL_SHOWS_TITLE = "Shows"
 internal const val BROWSE_ALL_MUSIC_TITLE = "Music"
 
-internal fun moviesForBrowseAll(entries: List<MergedEntry>, title: String): List<MergedEntry> {
-    val movies = CatalogGrouping.movies(entries)
-    return if (title == BROWSE_ALL_MOVIES_TITLE) movies
-    else movies.filter { it.entry.genres.contains(title) }
-}
+/**
+ * Rebuild a genre-scoped Browse All grid. [title] is the clicked shelf's
+ * genre name, which may spell the same as the top-level Movies/Shows/Music
+ * headings — those strings are not reserved, so membership is always the
+ * genre match, never "the whole kind."
+ */
+internal fun moviesForBrowseAll(entries: List<MergedEntry>, title: String): List<MergedEntry> =
+    CatalogGrouping.movies(entries).filter { it.entry.genres.contains(title) }
 
-internal fun showsForBrowseAll(entries: List<MergedEntry>, title: String): List<ShowGroup> {
-    val scoped = if (title == BROWSE_ALL_SHOWS_TITLE) entries
-    else entries.filter { it.entry.genres.contains(title) }
-    return CatalogGrouping.groupEpisodesByShowSeason(scoped)
-}
+internal fun showsForBrowseAll(entries: List<MergedEntry>, title: String): List<ShowGroup> =
+    CatalogGrouping.groupEpisodesByShowSeason(entries.filter { it.entry.genres.contains(title) })
 
-internal fun artistsForBrowseAll(entries: List<MergedEntry>, title: String): List<ArtistGroup> {
-    val scoped = if (title == BROWSE_ALL_MUSIC_TITLE) entries
-    else entries.filter { it.entry.genres.contains(title) }
-    return CatalogGrouping.groupTracksByArtistAlbum(scoped)
-}
+internal fun artistsForBrowseAll(entries: List<MergedEntry>, title: String): List<ArtistGroup> =
+    CatalogGrouping.groupTracksByArtistAlbum(entries.filter { it.entry.genres.contains(title) })

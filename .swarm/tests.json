@@ -1,0 +1,498 @@
+{
+  "adversarialBootstrap": {
+    "framework": "existing",
+    "instructions": "Use the existing test frameworks and repository conventions.",
+    "suites": [
+      {
+        "command": [
+          "cargo",
+          "test",
+          "--workspace"
+        ],
+        "disruptive": false,
+        "enabled": true,
+        "id": "rust-workspace",
+        "name": "Rust workspace tests",
+        "requirements": {
+          "credentials": [],
+          "devices": [],
+          "executables": [
+            "cargo"
+          ],
+          "files": [
+            "Cargo.toml"
+          ],
+          "mounts": [],
+          "servers": []
+        },
+        "timeoutSeconds": 1800
+      },
+      {
+        "command": [
+          "./clients/tv-android/gradlew",
+          "-p",
+          "clients/tv-android",
+          "test"
+        ],
+        "disruptive": false,
+        "enabled": true,
+        "id": "android",
+        "name": "Android tests",
+        "requirements": {
+          "credentials": [],
+          "devices": [],
+          "executables": [
+            "java"
+          ],
+          "files": [
+            "clients/tv-android/gradlew"
+          ],
+          "mounts": [],
+          "servers": []
+        },
+        "timeoutSeconds": 3600
+      },
+      {
+        "command": [
+          "bash",
+          "scripts/tests/media_server_uat_tests.sh"
+        ],
+        "disruptive": false,
+        "enabled": true,
+        "id": "media-server-uat-tests",
+        "name": "Media Server Uat Tests",
+        "requirements": {
+          "credentials": [],
+          "devices": [],
+          "executables": [
+            "bash"
+          ],
+          "files": [
+            "scripts/tests/media_server_uat_tests.sh"
+          ],
+          "mounts": [],
+          "servers": []
+        },
+        "timeoutSeconds": 1800
+      },
+      {
+        "command": [
+          "bash",
+          "scripts/tests/test_deploy_fire_tv_discovery.sh"
+        ],
+        "disruptive": false,
+        "enabled": true,
+        "id": "test-deploy-fire-tv-discovery",
+        "name": "Test Deploy Fire Tv Discovery",
+        "requirements": {
+          "credentials": [],
+          "devices": [],
+          "executables": [
+            "bash"
+          ],
+          "files": [
+            "scripts/tests/test_deploy_fire_tv_discovery.sh"
+          ],
+          "mounts": [],
+          "servers": []
+        },
+        "timeoutSeconds": 1800
+      },
+      {
+        "command": [
+          "bash",
+          "scripts/tests/test_issue_worker_cleanup.sh"
+        ],
+        "disruptive": false,
+        "enabled": true,
+        "id": "test-issue-worker-cleanup",
+        "name": "Test Issue Worker Cleanup",
+        "requirements": {
+          "credentials": [],
+          "devices": [],
+          "executables": [
+            "bash"
+          ],
+          "files": [
+            "scripts/tests/test_issue_worker_cleanup.sh"
+          ],
+          "mounts": [],
+          "servers": []
+        },
+        "timeoutSeconds": 1800
+      },
+      {
+        "command": [
+          "bash",
+          "scripts/tests/test_tv_uat_reporting_options.sh"
+        ],
+        "disruptive": false,
+        "enabled": true,
+        "id": "test-tv-uat-reporting-options",
+        "name": "Test Tv Uat Reporting Options",
+        "requirements": {
+          "credentials": [],
+          "devices": [],
+          "executables": [
+            "bash"
+          ],
+          "files": [
+            "scripts/tests/test_tv_uat_reporting_options.sh"
+          ],
+          "mounts": [],
+          "servers": []
+        },
+        "timeoutSeconds": 1800
+      },
+      {
+        "command": [
+          "bash",
+          "scripts/tests/tv_e2e_suite.sh"
+        ],
+        "disruptive": false,
+        "enabled": true,
+        "id": "tv-e2e-suite",
+        "name": "Tv E2e Suite",
+        "requirements": {
+          "credentials": [],
+          "devices": [
+            {
+              "input": "fireTvSerial",
+              "type": "fireTv"
+            }
+          ],
+          "executables": [
+            "bash",
+            "adb"
+          ],
+          "files": [
+            "scripts/tests/tv_e2e_suite.sh"
+          ],
+          "mounts": [],
+          "servers": []
+        },
+        "timeoutSeconds": 7200
+      },
+      {
+        "command": [
+          "bash",
+          "scripts/tests/tv_uat_resilience_suite.sh"
+        ],
+        "disruptive": true,
+        "enabled": true,
+        "id": "tv-uat-resilience-suite",
+        "name": "Tv Uat Resilience Suite",
+        "requirements": {
+          "credentials": [],
+          "devices": [
+            {
+              "input": "fireTvSerial",
+              "type": "fireTv"
+            }
+          ],
+          "executables": [
+            "bash",
+            "adb"
+          ],
+          "files": [
+            "scripts/tests/tv_uat_resilience_suite.sh"
+          ],
+          "mounts": [],
+          "servers": []
+        },
+        "timeoutSeconds": 7200
+      },
+      {
+        "command": [
+          "bash",
+          "scripts/tests/tv_uat_suite.sh"
+        ],
+        "disruptive": false,
+        "enabled": true,
+        "id": "tv-uat-suite",
+        "name": "Tv Uat Suite",
+        "requirements": {
+          "credentials": [],
+          "devices": [
+            {
+              "input": "fireTvSerial",
+              "type": "fireTv"
+            }
+          ],
+          "executables": [
+            "bash",
+            "adb"
+          ],
+          "files": [
+            "scripts/tests/tv_uat_suite.sh"
+          ],
+          "mounts": [],
+          "servers": []
+        },
+        "timeoutSeconds": 7200
+      }
+    ]
+  },
+  "failureTriage": null,
+  "reporting": null,
+  "suites": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--workspace"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "rust-workspace",
+      "name": "Rust workspace tests",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "cargo"
+        ],
+        "files": [
+          "Cargo.toml"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
+    },
+    {
+      "command": [
+        "./clients/tv-android/gradlew",
+        "-p",
+        "clients/tv-android",
+        "test"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "android",
+      "name": "Android tests",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "java"
+        ],
+        "files": [
+          "clients/tv-android/gradlew"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 3600
+    },
+    {
+      "command": [
+        "bash",
+        "scripts/tests/media_server_uat_tests.sh"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "media-server-uat-tests",
+      "name": "Media Server Uat Tests",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "bash"
+        ],
+        "files": [
+          "scripts/tests/media_server_uat_tests.sh"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
+    },
+    {
+      "command": [
+        "bash",
+        "scripts/tests/test_deploy_fire_tv_discovery.sh"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "test-deploy-fire-tv-discovery",
+      "name": "Test Deploy Fire Tv Discovery",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "bash"
+        ],
+        "files": [
+          "scripts/tests/test_deploy_fire_tv_discovery.sh"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
+    },
+    {
+      "command": [
+        "bash",
+        "scripts/tests/test_issue_worker_cleanup.sh"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "test-issue-worker-cleanup",
+      "name": "Test Issue Worker Cleanup",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "bash"
+        ],
+        "files": [
+          "scripts/tests/test_issue_worker_cleanup.sh"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
+    },
+    {
+      "command": [
+        "bash",
+        "scripts/tests/test_tv_uat_reporting_options.sh"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "test-tv-uat-reporting-options",
+      "name": "Test Tv Uat Reporting Options",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "bash"
+        ],
+        "files": [
+          "scripts/tests/test_tv_uat_reporting_options.sh"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
+    },
+    {
+      "command": [
+        "bash",
+        "scripts/tests/tv_e2e_suite.sh"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "tv-e2e-suite",
+      "name": "Tv E2e Suite",
+      "requirements": {
+        "credentials": [],
+        "devices": [
+          {
+            "input": "fireTvSerial",
+            "type": "fireTv"
+          }
+        ],
+        "executables": [
+          "bash",
+          "adb"
+        ],
+        "files": [
+          "scripts/tests/tv_e2e_suite.sh"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 7200
+    },
+    {
+      "command": [
+        "bash",
+        "scripts/tests/tv_uat_resilience_suite.sh"
+      ],
+      "disruptive": true,
+      "enabled": true,
+      "id": "tv-uat-resilience-suite",
+      "name": "Tv Uat Resilience Suite",
+      "requirements": {
+        "credentials": [],
+        "devices": [
+          {
+            "input": "fireTvSerial",
+            "type": "fireTv"
+          }
+        ],
+        "executables": [
+          "bash",
+          "adb"
+        ],
+        "files": [
+          "scripts/tests/tv_uat_resilience_suite.sh"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 7200
+    },
+    {
+      "command": [
+        "bash",
+        "scripts/tests/tv_uat_suite.sh"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "tv-uat-suite",
+      "name": "Tv Uat Suite",
+      "requirements": {
+        "credentials": [],
+        "devices": [
+          {
+            "input": "fireTvSerial",
+            "type": "fireTv"
+          }
+        ],
+        "executables": [
+          "bash",
+          "adb"
+        ],
+        "files": [
+          "scripts/tests/tv_uat_suite.sh"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 7200
+    },
+    {
+      "command": [
+        "python3",
+        "tests/adversarial/test_search_zero_season_shows.py"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-search-zero-season-shows",
+      "name": "Adversarial: search hides 0-season shows",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "python3",
+          "java"
+        ],
+        "files": [
+          "tests/adversarial/test_search_zero_season_shows.py",
+          "tests/adversarial/SearchZeroSeasonDriver.kt",
+          "clients/tv-android/gradlew",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/CatalogScreen.kt",
+          "clients/tv-android/core/src/main/kotlin/app/swarm/tv/core/catalog/CatalogGrouping.kt"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
+    }
+  ],
+  "version": 1
+}

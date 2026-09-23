@@ -8,7 +8,7 @@ use crate::recommend::{
 };
 use sha2::{Digest, Sha256};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use sqlx::SqlitePool;
+use sqlx::{Connection, SqlitePool};
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Mutex;
@@ -319,6 +319,14 @@ pub struct Library {
     /// after a real write, only skip rebuilding when nothing has changed.
     /// See `catalog_snapshot`'s doc comment for why this exists.
     catalog_cache: Mutex<Option<(i64, String, Vec<CatalogEntry>)>>,
+    /// One dedicated, never-pooled connection for reading `data_version`.
+    /// Each physical connection in `pool` (up to 4) keeps its own
+    /// independent, lazily-refreshed view of that counter, so two calls
+    /// through the pool can observe it go e.g. 4 then 3 then 4 for the exact
+    /// same on-disk state — not the monotonic, cross-connection-consistent
+    /// signal the doc comment above assumes. Always reading it from this one
+    /// connection instead gives a single coherent, genuinely monotonic view.
+    version_conn: tokio::sync::Mutex<sqlx::SqliteConnection>,
 }
 
 impl Library {
@@ -328,6 +336,7 @@ impl Library {
             .foreign_keys(true)
             .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
             .busy_timeout(std::time::Duration::from_secs(5));
+        let version_conn = sqlx::SqliteConnection::connect_with(&options).await?;
         let pool = SqlitePoolOptions::new()
             .max_connections(4)
             .connect_with(options)
@@ -565,6 +574,7 @@ impl Library {
         Ok(Self {
             pool,
             catalog_cache: Mutex::new(None),
+            version_conn: tokio::sync::Mutex::new(version_conn),
         })
     }
 
@@ -2220,9 +2230,12 @@ impl Library {
     /// table), so a repeat call while nothing has changed reuses the cached
     /// build instead of redoing all of that work.
     pub async fn catalog_snapshot(&self) -> sqlx::Result<(String, Vec<CatalogEntry>)> {
-        let version: i64 = sqlx::query_scalar("PRAGMA data_version")
-            .fetch_one(&self.pool)
-            .await?;
+        let version: i64 = {
+            let mut conn = self.version_conn.lock().await;
+            sqlx::query_scalar("PRAGMA data_version")
+                .fetch_one(&mut *conn)
+                .await?
+        };
         if let Some((cached_version, thumbprint, entries)) =
             self.catalog_cache.lock().unwrap().as_ref()
         {

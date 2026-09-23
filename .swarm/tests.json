@@ -1049,6 +1049,34 @@
         "servers": []
       },
       "timeoutSeconds": 120
+    },
+    {
+      "command": [
+        "python3",
+        "tests/adversarial/test_issue_373_problem_picker_focus_trap.py"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-373-problem-picker-focus-trap",
+      "name": "Adversarial: issue #373 report-a-problem picker D-pad focus trap",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "python3"
+        ],
+        "files": [
+          "tests/adversarial/test_issue_373_problem_picker_focus_trap.py",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/components/ProblemReportPicker.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/MovieDetailScreen.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/PlayerScreen.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/CatalogScreen.kt"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 120
     }
   ],
   "version": 1

@@ -40,6 +40,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -100,7 +101,14 @@ fun MovieDetailScreen(
             )
         }
 
-        Column(modifier = Modifier.fillMaxSize().padding(horizontal = 48.dp, vertical = 28.dp)) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 48.dp, vertical = 28.dp)
+                // The report picker is modal, so its dimmed detail controls must
+                // not be reachable after the last picker option.
+                .focusProperties { canFocus = !showProblemPicker },
+        ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 ArtworkImage(
                     label = entry.entry.scrapedTitle ?: entry.entry.title,

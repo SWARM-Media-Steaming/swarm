@@ -7,7 +7,7 @@ use swarm_core::peer::{
     PlaybackPreferences, VideoStreamInfo,
 };
 use swarm_media::serve::{stream_body, Body, MediaService};
-use swarm_media::store::{EntryRecord, Library, SubtitleRecord};
+use swarm_media::store::{ArtworkKind, EntryRecord, Library, SubtitleRecord};
 use swarm_media::transcode::TranscodeConfig;
 
 fn request(path: String) -> PeerRequest {
@@ -31,6 +31,12 @@ async fn music_playback_preparation_handles_unicode_normalized_smb_paths() {
     let media_path = media_root.join(actual_relative_path);
     std::fs::create_dir_all(media_path.parent().unwrap()).unwrap();
     std::fs::write(&media_path, vec![7u8; 10_000]).unwrap();
+    let artwork_bytes = b"cover artwork";
+    std::fs::write(
+        media_root.join("music/Cafe\u{301}/cover.jpg"),
+        artwork_bytes,
+    )
+    .unwrap();
 
     let library = Arc::new(
         Library::open(root.join("library.sqlite").to_str().unwrap())
@@ -75,8 +81,12 @@ async fn music_playback_preparation_handles_unicode_normalized_smb_paths() {
         extra_category_path: None,
     };
     library.upsert(&entry).await.unwrap();
+    library
+        .set_artwork(&entry.entry_key, ArtworkKind::Cover, "music/Café/cover.jpg")
+        .await
+        .unwrap();
     let service = MediaService::with_transcoding(
-        library,
+        Arc::clone(&library),
         media_root,
         TranscodeConfig {
             enabled: false,
@@ -109,6 +119,18 @@ async fn music_playback_preparation_handles_unicode_normalized_smb_paths() {
         resolved.header.status, 200,
         "a music catalog path whose Unicode spelling differs from the SMB path must still negotiate playback"
     );
+
+    let artwork = service
+        .resolve(&request(format!("/art/{}/cover", entry.entry_key)))
+        .await;
+    assert_eq!(
+        artwork.header.status, 200,
+        "a music artwork path whose Unicode spelling differs from the SMB path must still be served"
+    );
+    let Body::File { path, .. } = artwork.body else {
+        panic!("artwork must resolve to a file")
+    };
+    assert_eq!(std::fs::read(path).unwrap(), artwork_bytes);
 
     drop(service);
     let _ = std::fs::remove_dir_all(root);

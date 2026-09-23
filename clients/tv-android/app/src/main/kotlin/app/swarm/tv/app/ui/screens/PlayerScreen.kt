@@ -497,7 +497,16 @@ private class VideoPlayerPool(context: Context) {
     private var preloadedPlayer: ExoPlayer? = null
 
     fun activate(config: PlaybackPlayerConfig, startPaused: Boolean = false): ExoPlayer {
-        if (activeSessionId == config.sessionId) return checkNotNull(activePlayer)
+        // activeSessionId/activePlayer are always set together (see release()
+        // below), so this null check should never trip — but this runs
+        // synchronously inside a Compose `remember` block with no coroutine
+        // or try/catch around it (#358: an unguarded checkNotNull here would
+        // hard-crash the whole app on the very next episode transition
+        // instead of just losing the buffered player). Recreate rather than
+        // throw if the invariant is ever violated.
+        if (activeSessionId == config.sessionId) {
+            activePlayer?.let { return it }
+        }
 
         var player = if (preloadedSessionId == config.sessionId) {
             preloadedSessionId = null

@@ -468,6 +468,12 @@ struct Session {
     rate_limiter: Arc<SessionRateLimiter>,
     last_access: Instant,
     in_use: usize,
+    /// Whether this reservation is for a music track rather than an
+    /// episode/movie. Used only by [`TranscodeManager::cancel_stale_claimed_for_owner`]
+    /// to tell a deliberate ahead-of-time track preload (which legitimately
+    /// keeps two claimed sessions alive for one owner) apart from an
+    /// episode/movie session, which never does.
+    track: bool,
 }
 
 #[derive(Default)]
@@ -807,6 +813,9 @@ impl TranscodeManager {
             self.cancel_previews();
             if let Some(owner) = owner {
                 self.cancel_unclaimed_for_owner(owner);
+                if entry.kind != MediaKind::Track {
+                    self.cancel_stale_claimed_for_owner(owner);
+                }
             }
         }
         let enforce_budget = self.should_throttle(is_lan);
@@ -837,6 +846,7 @@ impl TranscodeManager {
                         enforce_budget,
                         is_lan,
                         owner,
+                        entry.kind == MediaKind::Track,
                     )?;
                     return Ok(PlaybackPlan {
                         mode: PlaybackMode::Direct,
@@ -1158,6 +1168,7 @@ impl TranscodeManager {
         enforce_budget: bool,
         budget_exempt: bool,
         owner: Option<&str>,
+        track: bool,
     ) -> Result<String, TranscodeError> {
         let mut state = self.state.lock().unwrap();
         let already_reserved: u64 = state
@@ -1183,6 +1194,7 @@ impl TranscodeManager {
                 rate_limiter: Arc::new(SessionRateLimiter::new(reserved_bps)),
                 last_access: Instant::now(),
                 in_use: 0,
+                track,
             },
         );
         if let Some(owner) = owner {
@@ -1243,6 +1255,52 @@ impl TranscodeManager {
             }
         };
         Self::cleanup_removed_session(removed);
+    }
+
+    /// Companion to [`Self::cancel_unclaimed_for_owner`] for the one gap it
+    /// deliberately leaves open: a session the peer *did* claim (its first
+    /// playlist/segment request landed) but then never released. That gap is
+    /// normally fine — a live client keeps re-requesting segments, so a
+    /// truly-in-use claimed session is never mistaken for garbage — but a
+    /// hard client crash right after the claim (#358: reported as the app
+    /// crashing on the season/episode boundary while advancing to the next
+    /// episode) leaves it claimed forever, with no `/stop` ever coming to
+    /// free it. Until `idle_timeout` (five minutes) finally reaps it, that
+    /// orphaned reservation keeps consuming a `max_sessions` slot, so
+    /// retrying the very episode that crashed can fail admission with
+    /// "capacity full" even though nothing is actually still playing.
+    ///
+    /// A fresh, non-preview, non-track request from the *same* owner is safe
+    /// grounds to reap that owner's other claimed sessions immediately: the
+    /// episode/movie flow always releases its previous session via `/stop`
+    /// before negotiating the next one (see `playEntry`/`preloadNextEpisode`
+    /// in the TV client), so any such session still claimed at this point
+    /// belongs to an abandoned attempt, not a second stream this owner is
+    /// legitimately still watching. Track sessions are excluded because
+    /// `preloadNextTrack` intentionally keeps the currently-playing track's
+    /// session claimed while it negotiates the next one ahead of a gapless
+    /// transition — that pair of claimed sessions for one owner is expected,
+    /// not orphaned.
+    fn cancel_stale_claimed_for_owner(&self, owner: &str) {
+        let stale = {
+            let state = self.state.lock().unwrap();
+            state
+                .owners
+                .iter()
+                .filter(|(id, session_owner)| {
+                    session_owner.as_str() == owner
+                        && state.claimed.contains(*id)
+                        && state
+                            .sessions
+                            .get(*id)
+                            .is_some_and(|session| !session.track)
+                })
+                .map(|(id, _)| id.clone())
+                .collect::<Vec<_>>()
+        };
+        for id in stale {
+            self.remove_session(&id);
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1315,6 +1373,7 @@ impl TranscodeManager {
                     rate_limiter: Arc::new(SessionRateLimiter::new(reserved_bps)),
                     last_access: Instant::now(),
                     in_use: 0,
+                    track: entry.kind == MediaKind::Track,
                 },
             );
             if let Some(owner) = owner {
@@ -2496,6 +2555,7 @@ mod tests {
             rate_limiter: Arc::new(SessionRateLimiter::new(0)),
             last_access: Instant::now(),
             in_use: 0,
+            track: false,
         };
         let mut state = State::default();
         state.sessions.insert(
@@ -2550,6 +2610,7 @@ mod tests {
             rate_limiter: Arc::new(SessionRateLimiter::new(0)),
             last_access: Instant::now(),
             in_use: 0,
+            track: false,
         };
         {
             let mut state = manager.state.lock().unwrap();
@@ -2600,6 +2661,7 @@ mod tests {
             rate_limiter: Arc::new(SessionRateLimiter::new(0)),
             last_access: Instant::now(),
             in_use: 0,
+            track: false,
         };
         {
             let mut state = manager.state.lock().unwrap();
@@ -2625,6 +2687,61 @@ mod tests {
         assert!(!state.owners.contains_key("abandoned"));
     }
 
+    /// #358: a client that hard-crashes right after claiming its next-episode
+    /// session (its first playlist/segment request landed, then the process
+    /// died before ever calling `/stop`) used to leave that reservation
+    /// consuming a `max_sessions` slot for the full idle timeout, so
+    /// retrying the very episode that crashed kept failing with "capacity
+    /// full". `cancel_stale_claimed_for_owner` should reap that owner's
+    /// other claimed, non-track sessions — but never a claimed track session
+    /// (the deliberate ahead-of-time preload from `preloadNextTrack`) and
+    /// never another owner's claimed session.
+    #[test]
+    fn stale_claimed_non_track_sessions_are_reaped_for_the_same_owner() {
+        let manager = TranscodeManager::new(TranscodeConfig::disabled(std::env::temp_dir().join(
+            format!("swarm-stale-claimed-preemption-test-{}", session_id()),
+        )));
+        let session = |track| Session {
+            kind: SessionKind::Direct {
+                entry_key: "movie".into(),
+            },
+            preview: false,
+            cancelled: Arc::new(AtomicBool::new(false)),
+            reserved_bps: 128_000,
+            budget_exempt: true,
+            rate_limiter: Arc::new(SessionRateLimiter::new(0)),
+            last_access: Instant::now(),
+            in_use: 0,
+            track,
+        };
+        {
+            let mut state = manager.state.lock().unwrap();
+            state.sessions.insert("crashed-episode".into(), session(false));
+            state.sessions.insert("preloaded-track".into(), session(true));
+            state.sessions.insert("other-tv-episode".into(), session(false));
+            state
+                .owners
+                .insert("crashed-episode".into(), "living-room".into());
+            state
+                .owners
+                .insert("preloaded-track".into(), "living-room".into());
+            state
+                .owners
+                .insert("other-tv-episode".into(), "bedroom".into());
+            state.claimed.insert("crashed-episode".into());
+            state.claimed.insert("preloaded-track".into());
+            state.claimed.insert("other-tv-episode".into());
+        }
+
+        manager.cancel_stale_claimed_for_owner("living-room");
+
+        let state = manager.state.lock().unwrap();
+        assert!(!state.sessions.contains_key("crashed-episode"));
+        assert!(state.sessions.contains_key("preloaded-track"));
+        assert!(state.sessions.contains_key("other-tv-episode"));
+        assert!(!state.owners.contains_key("crashed-episode"));
+    }
+
     #[test]
     fn dropping_pending_hls_start_removes_its_capacity_reservation() {
         let root =
@@ -2648,6 +2765,7 @@ mod tests {
                     rate_limiter: Arc::new(SessionRateLimiter::new(0)),
                     last_access: Instant::now(),
                     in_use: 0,
+                    track: false,
                 },
             );
         }
@@ -2943,6 +3061,7 @@ mod tests {
                 true,
                 false,
                 None,
+                false,
             )
             .unwrap();
         let second = manager
@@ -2954,6 +3073,7 @@ mod tests {
                 true,
                 false,
                 None,
+                false,
             )
             .unwrap();
         assert_eq!(manager.reserved_bps(), 6_288_000);
@@ -2966,6 +3086,7 @@ mod tests {
                 true,
                 false,
                 None,
+                false,
             ),
             Err(TranscodeError::Bandwidth)
         ));
@@ -3005,6 +3126,7 @@ mod tests {
                 true,
                 false,
                 None,
+                false,
             )
             .unwrap();
         let activity = manager.activity();

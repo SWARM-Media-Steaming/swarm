@@ -1276,7 +1276,11 @@ impl MediaService {
                 session_id: None,
             };
         }
-        let source_path = self.roots.resolve(&relative_path);
+        // Artwork paths are catalog values too. On SMB mounts a later
+        // directory listing can expose an NFD spelling for a name the
+        // catalog retained as NFC, so use the same safe existing-path
+        // fallback as media playback.
+        let source_path = self.roots.resolve_existing(&relative_path);
         let source_path = self
             .cached_artwork_path(
                 &source_path,

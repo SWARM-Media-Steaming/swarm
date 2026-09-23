@@ -16,6 +16,10 @@ namespace Swarm.CatalogGrouping
 
     ' Returns [{ title, episodes: [entries...] }], insertion-ordered by
     ' first appearance, grouped case-insensitively by show_title.
+    ' Groups with no preview season (only season 0 / invalid / unnumbered
+    ' extras) are dropped — same rule as CatalogGrouping.previewSeasons on
+    ' Fire TV, so a search that matches only those files cannot emit a show
+    ' row that would read as "0 seasons".
     function Shows(entries as object) as object
         byTitle = {}
         order = []
@@ -31,7 +35,59 @@ namespace Swarm.CatalogGrouping
         end for
         result = []
         for each key in order
-            result.Push(byTitle[key])
+            group = byTitle[key]
+            if HasPreviewSeason(group.episodes)
+                result.Push(group)
+            end if
+        end for
+        return result
+    end function
+
+    ' Numbered season (> 0) with a numbered episode (> 0). Season 0 is the
+    ' specials/extras bucket; invalid season/episode are featurettes and
+    ' other bonus files. Mirrors CatalogGrouping.kt previewSeasons.
+    function IsPreviewEpisode(e as object) as boolean
+        if e = invalid
+            return false
+        end if
+        if e.season = invalid or e.season <= 0
+            return false
+        end if
+        if e.episode = invalid or e.episode <= 0
+            return false
+        end if
+        return true
+    end function
+
+    function HasPreviewSeason(episodes as object) as boolean
+        if episodes = invalid
+            return false
+        end if
+        for each e in episodes
+            if IsPreviewEpisode(e)
+                return true
+            end if
+        end for
+        return false
+    end function
+
+    ' Seasons that qualify for a show-card / season-count label. Extra
+    ' files stay on the group (Shows keeps them) but are not preview seasons.
+    function PreviewSeasons(episodes as object) as object
+        grouped = Seasons(episodes)
+        result = []
+        for each group in grouped
+            if group.season <> invalid and group.season > 0
+                numbered = []
+                for each e in group.episodes
+                    if e.episode <> invalid and e.episode > 0
+                        numbered.Push(e)
+                    end if
+                end for
+                if numbered.Count() > 0
+                    result.Push({ season: group.season, episodes: numbered })
+                end if
+            end if
         end for
         return result
     end function

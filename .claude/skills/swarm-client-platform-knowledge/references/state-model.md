@@ -48,6 +48,13 @@ modal, a testing-mode banner (debug builds).
 - **Shows and artists** (client-side groupings, not server entities) use a normalized
   canonical title as identity: `trim().lowercase()`. Two servers' same show must merge into
   one shelf card; two different shows must never collide.
+- **A show row/card is only emitted when the group has a preview season**: a numbered
+  season (`season > 0`) containing a numbered episode (`episode > 0`). Season 0 (specials),
+  null/unnumbered seasons, and episodes with null/zero/negative numbers are bonus/extras
+  and must not create a show row on their own — including when a search matches only those
+  files (they would otherwise label as "0 seasons"). Fire TV: `CatalogGrouping.previewSeasons`
+  after grouping. Roku: `CatalogGrouping.Shows` drops groups where `HasPreviewSeason` is
+  false. Extras stay on a group that *does* have a real season.
 - **Server/device trust anchor is the certificate fingerprint**, never host/port — a
   server's IP can change (DHCP) without re-pairing; a *different* certificate must never be
   silently accepted for a saved server identity, even at the same address. Fingerprint

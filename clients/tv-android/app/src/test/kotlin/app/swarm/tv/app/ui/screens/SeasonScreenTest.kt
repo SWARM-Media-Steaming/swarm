@@ -81,4 +81,17 @@ class SeasonScreenTest {
         )
         assertEquals("s1e2", resumeEpisode(show, states)?.entry?.fingerprint)
     }
+
+    @Test
+    fun `resume finds the same episode after its file fingerprint changes`() {
+        val states = mapOf(
+            "replaced-file" to inProgress(10L).copy(
+                showTitle = "the wire",
+                season = 1,
+                episode = 2,
+            ),
+        )
+
+        assertEquals("s1e2", resumeEpisode(show, states)?.entry?.fingerprint)
+    }
 }

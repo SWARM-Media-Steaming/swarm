@@ -117,6 +117,7 @@ import app.swarm.tv.core.catalog.displayTitle
 import app.swarm.tv.core.peer.MediaKind
 import app.swarm.tv.core.rest.SwarmDevice
 import app.swarm.tv.core.watch.WatchState
+import app.swarm.tv.core.watch.stateFor
 import kotlinx.coroutines.launch
 
 /** The top-bar destinations, in display order. Movies is the landing page. A search is the only thing that spans all three. */
@@ -521,7 +522,7 @@ internal fun CatalogScreen(
                             } else {
                                 val inProgress = entries.mapNotNull { entry ->
                                     if (entry.entry.kind == MediaKind.TRACK) return@mapNotNull null
-                                    val saved = watchStates[entry.entry.fingerprint] ?: return@mapNotNull null
+                                    val saved = watchStates.stateFor(entry.entry) ?: return@mapNotNull null
                                     if (saved.watched || saved.positionSecs <= 0.0) return@mapNotNull null
                                     entry to saved
                                 }
@@ -578,7 +579,7 @@ internal fun CatalogScreen(
                                         entry.entry.kind == MediaKind.MOVIE &&
                                             entry.entry.extraType == null &&
                                             WatchlistKeys.movie(entry) in watchlistKeys &&
-                                            watchStates[entry.entry.fingerprint]?.watched != true
+                                            watchStates.stateFor(entry.entry)?.watched != true
                                     }
                                     .map { entry ->
                                         QuickAccessItem(
@@ -1336,7 +1337,7 @@ private fun WatchState.percentComplete(): Int = (progressFraction() * 100).toInt
 
 private fun ShowGroup.isWatched(states: Map<String, WatchState>): Boolean {
     val episodes = CatalogGrouping.previewSeasons(this).flatMap { it.episodes }
-    return episodes.isNotEmpty() && episodes.all { states[it.entry.fingerprint]?.watched == true }
+    return episodes.isNotEmpty() && episodes.all { states.stateFor(it.entry)?.watched == true }
 }
 
 /**

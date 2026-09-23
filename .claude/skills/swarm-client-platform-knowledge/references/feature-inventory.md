@@ -84,7 +84,7 @@ instructions and the same gap list in narrative form.
 |---|---|---|---|
 | Settings: server URL, device name | Complete (editable) | Partial | `SettingsScreen` shows device name/server/address read-only; editing needs a Keyboard-overlay component not yet built |
 | Kid Mode (PIN, rules, single-chokepoint filter) | Complete | Not implemented | |
-| Watch state persistence (95% threshold) | Complete | Deviation | `Swarm.Registry.SetWatchState`/`GetWatchState`, same 95% threshold and restart-from-0 rule, but **LRU-capped at 500 entries** (registry size limit) vs. Fire TV's unbounded SharedPreferences store |
+| Watch state persistence (95% threshold) | Complete | Deviation | Fire TV snapshots show/season/episode and falls back to that identity after a replacement encode, with foreground-loss flushing and newest-write-wins ordering. Roku remains fingerprint-only (it has no season/episode navigation yet) and is **LRU-capped at 500 entries** (registry size limit) vs. Fire TV's unbounded SharedPreferences store |
 | Watchlist persistence | Complete | Deviation | `Swarm.Registry` watchlist functions implemented (movie-only key shape so far, `"movie:<fingerprint>"`), **LRU-capped at 300 entries** |
 | Likes persistence | Complete | Deviation | `Swarm.Registry.IsLiked`/`SetLiked` + best-effort server round-trip (`LikeTask`), **LRU-capped at 500 entries** |
 | Resolved-problem notifications inbox | Complete | Not implemented | `Swarm.Registry` has the LRU-capped storage functions (`LoadNotifications`/`MarkNotificationSeen`/`DismissNotification`) but no fetch/UI wiring yet |

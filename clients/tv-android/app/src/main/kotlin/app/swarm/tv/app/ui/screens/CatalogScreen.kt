@@ -486,6 +486,11 @@ internal fun CatalogScreen(
                         }
                         val shows = remember(filtered) {
                             CatalogGrouping.groupEpisodesByShowSeason(filtered)
+                                // A search can match specials, featurettes, or
+                                // unnumbered episodes without matching a real
+                                // season. Do not surface those groups as show
+                                // cards: they would render as "0 seasons".
+                                .filter { CatalogGrouping.previewSeasons(it).isNotEmpty() }
                                 .sortedWith(compareByDescending<ShowGroup> { it.ratingScore() }.thenBy { it.show.lowercase() })
                         }
                         val artists = remember(filtered) {
@@ -613,7 +618,10 @@ internal fun CatalogScreen(
                         }
                         val showGenreShelves = remember(filtered, genreFilter) {
                             if (genreFilter != null) emptyList() else {
-                                topGenreShelves(filtered.filter { it.entry.kind == MediaKind.EPISODE }) { CatalogGrouping.groupEpisodesByShowSeason(it) }
+                                topGenreShelves(filtered.filter { it.entry.kind == MediaKind.EPISODE }) {
+                                    CatalogGrouping.groupEpisodesByShowSeason(it)
+                                        .filter { CatalogGrouping.previewSeasons(it).isNotEmpty() }
+                                }
                             }
                         }
                         val musicGenreShelves = remember(filtered, genreFilter) {

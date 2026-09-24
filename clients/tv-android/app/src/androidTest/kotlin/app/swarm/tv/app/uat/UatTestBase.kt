@@ -339,7 +339,9 @@ abstract class UatTestBase {
 
     /** UIAutomator fallback for content that has left Compose's tree (e.g. after a navigation transition). */
     protected fun waitForText(text: String, timeoutMs: Long = 5_000) {
-        device.wait(Until.hasObject(By.textContains(text)), timeoutMs)
+        check(device.wait(Until.hasObject(By.textContains(text)), timeoutMs)) {
+            "Timed out waiting ${timeoutMs}ms for UI text containing: $text"
+        }
     }
 
     private companion object {

@@ -242,7 +242,7 @@ already-adb-connected Amazon device > full LAN scan fan-out.
 | `BrowseCatalogUatTest` | Browse auto-opens; movies/shows/music load with box art; Continue Watching capped at 6; filter bar (media type, Liked-only, genre) |
 | `MovieDetailLikeUatTest` | Movie detail screen fields; Like round-trips through the "Liked only" filter |
 | `MovieWatchlistUatTest` | Watchlist add/remove round-trip, toasts, Watchlist row |
-| `MovieProblemReportUatTest` | Report-a-problem → dismiss; and the server-resolve round-trip |
+| `MovieProblemReportUatTest` | Report-a-problem → choose a category → dismiss; and the server-resolve round-trip |
 | `MoviePlaybackPauseUatTest` | Movie playback, FF/RW, pause overlay fields, resume, no Next Episode button |
 | `ShowPlaybackPauseUatTest` | Episode playback, pause overlay, Next Episode button |
 | `ShowSeasonsEpisodesWatchlistUatTest` | Season/episode structure, show watchlist round-trip |

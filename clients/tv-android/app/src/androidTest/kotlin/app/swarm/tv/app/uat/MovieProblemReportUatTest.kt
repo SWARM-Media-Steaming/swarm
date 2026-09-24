@@ -29,6 +29,11 @@ class MovieProblemReportUatTest : UatTestBase() {
         waitForTag(UatTestTags.MOVIE_DETAIL_ARTWORK)
 
         selectTagWithDpad(UatTestTags.MOVIE_DETAIL_REPORT_PROBLEM_BUTTON)
+        waitForTag(UatTestTags.PROBLEM_REPORT_PICKER)
+        val categoryTag = requireNotNull(
+            composeTestRule.firstTagStartingWith(UatTestTags.PROBLEM_REPORT_OPTION_PREFIX),
+        )
+        selectTagWithDpad(categoryTag)
         waitForText("Problem Report Sent")
 
         // Host-side checkpoint: tv_uat_suite.sh greps logcat for this while

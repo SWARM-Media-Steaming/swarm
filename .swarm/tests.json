@@ -1312,6 +1312,31 @@
         "servers": []
       },
       "timeoutSeconds": 1800
+    },
+    {
+      "command": [
+        "python3",
+        "tests/adversarial/test_issue_391_stale_claimed_recheck.py"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-391-stale-claimed-recheck",
+      "name": "Adversarial: issue #391 stale claimed-session removal recheck",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "python3"
+        ],
+        "files": [
+          "tests/adversarial/test_issue_391_stale_claimed_recheck.py",
+          "crates/swarm-media/src/transcode.rs"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 120
     }
   ],
   "version": 1

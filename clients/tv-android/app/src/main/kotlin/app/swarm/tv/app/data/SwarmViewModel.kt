@@ -3286,21 +3286,26 @@ class SwarmViewModel(
         )
     }
 
-    fun openArtistAlbums(artist: ArtistGroup) {
+    /** [genreScope] carries the originating genre row's title when the
+     * artist card was opened straight off a Music genre row on Catalog,
+     * not via that genre's Browse All shelf (#397). Without it, a later
+     * catalog delta would rebuild this artist's albums from the whole
+     * Music catalog instead of just that genre. */
+    fun openArtistAlbums(artist: ArtistGroup, genreScope: String? = null) {
         val previous = _state.value
         val (catalog, artists) = when (previous) {
             is UiState.Catalog -> previous to CatalogGrouping.groupTracksByArtistAlbum(previous.entries)
             is UiState.ArtistShelf -> previous.catalog to previous.artists
             else -> return
         }
+        val scope = (previous as? UiState.ArtistShelf)?.takeIf { it.scopedToGenre }?.title
+            ?: genreScope.takeIf { previous is UiState.Catalog }
         _state.value = UiState.ArtistAlbums(
             previous = previous,
             catalog = catalog,
-            artists = artists,
+            artists = if (previous is UiState.Catalog && scope != null) artistsForBrowseAll(previous.entries, scope) else artists,
             artist = artist,
-            genreScope = (previous as? UiState.ArtistShelf)
-                ?.takeIf { it.scopedToGenre }
-                ?.title,
+            genreScope = scope,
         )
     }
 
@@ -3373,21 +3378,26 @@ class SwarmViewModel(
         )
     }
 
-    fun openShowSeasons(show: ShowGroup) {
+    /** [genreScope] carries the originating genre row's title when the show
+     * card was opened straight off a Shows genre row on Catalog, not via
+     * that genre's Browse All shelf (#397). Without it, a later catalog
+     * delta would rebuild this show's seasons from the whole Shows catalog
+     * instead of just that genre. */
+    fun openShowSeasons(show: ShowGroup, genreScope: String? = null) {
         val previous = _state.value
         val (catalog, shows) = when (previous) {
             is UiState.Catalog -> previous to CatalogGrouping.browsableShows(previous.entries)
             is UiState.ShowShelf -> previous.catalog to previous.shows
             else -> return
         }
+        val scope = (previous as? UiState.ShowShelf)?.takeIf { it.scopedToGenre }?.title
+            ?: genreScope.takeIf { previous is UiState.Catalog }
         _state.value = UiState.ShowSeasons(
             previous = previous,
             catalog = catalog,
-            shows = shows,
+            shows = if (previous is UiState.Catalog && scope != null) showsForBrowseAll(previous.entries, scope) else shows,
             show = show,
-            genreScope = (previous as? UiState.ShowShelf)
-                ?.takeIf { it.scopedToGenre }
-                ?.title,
+            genreScope = scope,
         )
     }
 

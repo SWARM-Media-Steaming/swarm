@@ -210,9 +210,15 @@ internal fun CatalogScreen(
     // [app.swarm.tv.app.data.SwarmViewModel.openMovieShelf]'s doc comment.
     onOpenMovieShelf: (String, List<MergedEntry>, Boolean) -> Unit,
     onOpenArtistShelf: (String, List<ArtistGroup>, Boolean) -> Unit,
-    onOpenArtist: (ArtistGroup) -> Unit,
+    // The trailing genre name is non-null only when the artist card was
+    // opened straight off a genre row, not the top-level row or a genre's
+    // own Browse All grid, so a later catalog delta re-derives this
+    // artist's albums scoped to that genre, not the whole Music catalog
+    // (#397) — see [app.swarm.tv.app.data.SwarmViewModel.openArtistAlbums].
+    onOpenArtist: (ArtistGroup, String?) -> Unit,
     onOpenShowShelf: (String, List<ShowGroup>, Boolean) -> Unit,
-    onOpenShow: (ShowGroup) -> Unit,
+    // Same genre-scoping rule as [onOpenArtist], for Shows genre rows (#397).
+    onOpenShow: (ShowGroup, String?) -> Unit,
     onOpenSwarm: () -> Unit,
     onOpenBuzz: () -> Unit,
     onBack: () -> Unit,
@@ -803,7 +809,7 @@ internal fun CatalogScreen(
                                                 items = watchlist,
                                                 artworkUrl = artworkUrl,
                                                 onClick = { item ->
-                                                    if (item.kind == QuickAccessKind.SHOW) item.show?.let(onOpenShow)
+                                                    if (item.kind == QuickAccessKind.SHOW) item.show?.let { onOpenShow(it, null) }
                                                     else onOpenMovie(item.representative)
                                                 },
                                                 isLiked = isLiked,
@@ -858,7 +864,7 @@ internal fun CatalogScreen(
                                             ShowShelfRow(
                                                 "Shows", shows, artworkUrl,
                                                 onOpenShowShelf = { title, rowShows -> onOpenShowShelf(title, rowShows, false) },
-                                                onOpenShow = onOpenShow,
+                                                onOpenShow = { onOpenShow(it, null) },
                                                 isTopLevel = true,
                                                 restoreFocusIndex = showRestoreIndex,
                                                 isDefaultFocusRow = firstSection == "shows",
@@ -880,7 +886,7 @@ internal fun CatalogScreen(
                                             genreShows,
                                             artworkUrl,
                                             onOpenShowShelf = { title, rowShows -> onOpenShowShelf(title, rowShows, true) },
-                                            onOpenShow = onOpenShow,
+                                            onOpenShow = { onOpenShow(it, genre) },
                                             isTopLevel = false,
                                             restoreFocusIndex = null,
                                             isDefaultFocusRow = false,
@@ -895,7 +901,7 @@ internal fun CatalogScreen(
                                             ArtistShelfRow(
                                                 "Music", artists, artworkUrl, artistPhotoUrl,
                                                 onOpenArtistShelf = { title, rowArtists -> onOpenArtistShelf(title, rowArtists, false) },
-                                                onOpenArtist = onOpenArtist,
+                                                onOpenArtist = { onOpenArtist(it, null) },
                                                 isTopLevel = true,
                                                 restoreFocusIndex = artistRestoreIndex,
                                                 isDefaultFocusRow = firstSection == "music",
@@ -918,7 +924,7 @@ internal fun CatalogScreen(
                                             artworkUrl,
                                             artistPhotoUrl,
                                             onOpenArtistShelf = { title, rowArtists -> onOpenArtistShelf(title, rowArtists, true) },
-                                            onOpenArtist = onOpenArtist,
+                                            onOpenArtist = { onOpenArtist(it, genre) },
                                             isTopLevel = false,
                                             restoreFocusIndex = null,
                                             isDefaultFocusRow = false,
@@ -1362,8 +1368,8 @@ private fun GenreFilteredGrid(
     artworkUrl: (MergedEntry) -> String?,
     artistPhotoUrl: (MergedEntry) -> String?,
     onOpenMovie: (MergedEntry) -> Unit,
-    onOpenShow: (ShowGroup) -> Unit,
-    onOpenArtist: (ArtistGroup) -> Unit,
+    onOpenShow: (ShowGroup, String?) -> Unit,
+    onOpenArtist: (ArtistGroup, String?) -> Unit,
     isLiked: (MergedEntry) -> Boolean,
     firstFocusRequester: FocusRequester,
     firstEntryFocusRequester: FocusRequester,
@@ -1511,7 +1517,7 @@ private fun GenreFilteredGrid(
                     previewEntry = showPreviewEntries.getOrNull(index),
                     coordinator = previewCoordinator,
                     preview = preview,
-                    onClick = { onOpenShow(show) },
+                    onClick = { onOpenShow(show, genre) },
                     cardModifier = Modifier
                         .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
                         .then(if (additionalFocusRequester != null) Modifier.focusRequester(additionalFocusRequester) else Modifier)
@@ -1542,7 +1548,7 @@ private fun GenreFilteredGrid(
                     fallbackArtworkUrl = artistArtwork.albumCoverFallback,
                     artworkAspectRatio = 1f,
                     placeholderType = "Artist",
-                    onClick = { onOpenArtist(artist) },
+                    onClick = { onOpenArtist(artist, genre) },
                     focusRequester = if (
                         artist.artist == initialFocusArtistKey ||
                         (restoreGridIndex == null && firstSection == "music" && index == 0)

@@ -1317,6 +1317,7 @@ private fun <T> topGenreShelves(entries: List<MergedEntry>, group: (List<MergedE
         .eachCount()
         .entries
         .sortedByDescending { it.value }
+        .filter { (genre, _) -> genre.isNotBlank() }
         .map { (genre, _) -> genre to group(entries.filter { it.entry.genres.contains(genre) }) }
         .filter { (_, grouped) -> grouped.size >= MIN_GENRE_SHELF_SIZE }
         .take(MAX_GENRE_SHELVES)

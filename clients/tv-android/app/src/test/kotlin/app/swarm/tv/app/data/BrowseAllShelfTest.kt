@@ -120,6 +120,22 @@ class BrowseAllShelfTest {
     }
 
     @Test
+    fun `blank genre title never creates a browse all result`() {
+        val entries = listOf(movie("blank", ""), movie("spaces", "   "), movie("action", "Action"))
+
+        assertEquals(emptyList<String>(), moviesForBrowseAll(entries, "").map { it.fingerprint })
+        assertEquals(emptyList<String>(), moviesForBrowseAll(entries, "   ").map { it.fingerprint })
+    }
+
+    @Test
+    fun `blank genre scope leaves queue unscoped`() {
+        val entries = listOf(movie("blank", ""), movie("action", "Action"))
+
+        assertEquals(entries, entriesForGenreScope(entries, ""))
+        assertEquals(entries, entriesForGenreScope(entries, "   "))
+    }
+
+    @Test
     fun `genre-scoped track queue cannot select another genre`() {
         val jazz1 = track("j1", "Artist", "Jazz")
         val jazz2Base = track("j2", "Artist", "Jazz")

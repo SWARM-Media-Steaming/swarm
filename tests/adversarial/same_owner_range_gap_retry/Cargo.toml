@@ -1,0 +1,17 @@
+[workspace]
+
+[package]
+name = "adversarial-issue-384-same-owner-range-gap-retry"
+description = "Adversarial UAT for issue #384: a same-owner /play retry must not reap a direct-play session that is merely between two HTTP range requests of the same ongoing (uncrashed) playback."
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+bytes = "1"
+futures-util = "0.3"
+serde_json = "1"
+swarm-core = { path = "../../../crates/swarm-core" }
+swarm-media = { path = "../../../crates/swarm-media" }
+tokio = { version = "1", features = ["full", "test-util"] }

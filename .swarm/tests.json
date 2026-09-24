@@ -962,6 +962,41 @@
     },
     {
       "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "tests/adversarial/same_entry_crash_retry/Cargo.toml",
+        "--target-dir",
+        "target/adversarial-issue-384",
+        "--test",
+        "issue_384_same_entry_crash_retry",
+        "--",
+        "--nocapture"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-384-same-entry-crash-retry",
+      "name": "Adversarial: issue #384 same-owner /play on an already-claimed stream",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "cargo"
+        ],
+        "files": [
+          "tests/adversarial/same_entry_crash_retry/Cargo.toml",
+          "tests/adversarial/same_entry_crash_retry/tests/issue_384_same_entry_crash_retry.rs",
+          "crates/swarm-media/src/transcode.rs",
+          "crates/swarm-media/src/serve.rs"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
+    },
+    {
+      "command": [
         "python3",
         "tests/adversarial/test_genre_show_browse_all_preview_seasons.py"
       ],

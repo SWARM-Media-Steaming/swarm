@@ -1648,6 +1648,41 @@
         "servers": []
       },
       "timeoutSeconds": 1800
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "tests/adversarial/unsatisfiable_range_session_leak/Cargo.toml",
+        "--target-dir",
+        "target/adversarial-issue-412",
+        "--test",
+        "issue_412_unsatisfiable_range_session_leak",
+        "--",
+        "--nocapture"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-412-unsatisfiable-range-session-leak",
+      "name": "Adversarial: issue #412 unsatisfiable Range request session leak",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "cargo"
+        ],
+        "files": [
+          "tests/adversarial/unsatisfiable_range_session_leak/Cargo.toml",
+          "tests/adversarial/unsatisfiable_range_session_leak/tests/issue_412_unsatisfiable_range_session_leak.rs",
+          "crates/swarm-media/src/serve.rs",
+          "crates/swarm-media/src/transcode.rs"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
     }
   ],
   "version": 1

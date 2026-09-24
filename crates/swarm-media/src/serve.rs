@@ -1000,7 +1000,12 @@ impl MediaService {
                     session_id,
                 }
             }
-            ResolvedRange::Unsatisfiable => status(416),
+            ResolvedRange::Unsatisfiable => {
+                if let Some(session_id) = session_id {
+                    self.transcodes.finish_use(&session_id);
+                }
+                status(416)
+            }
         }
     }
 

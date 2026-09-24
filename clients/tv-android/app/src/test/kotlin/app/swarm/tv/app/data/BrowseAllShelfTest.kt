@@ -1,6 +1,8 @@
 package app.swarm.tv.app.data
 
+import app.swarm.tv.core.catalog.CatalogGrouping
 import app.swarm.tv.core.catalog.MergedEntry
+import app.swarm.tv.core.catalog.ShuffleMode
 import app.swarm.tv.core.peer.CatalogEntry
 import app.swarm.tv.core.peer.MediaKind
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -115,5 +117,27 @@ class BrowseAllShelfTest {
         val artists = artistsForBrowseAll(entries, "Rock")
         assertEquals(listOf("A"), artists.map { it.artist })
         assertEquals(listOf("t1"), artists.single().albums.single().tracks.map { it.fingerprint })
+    }
+
+    @Test
+    fun `genre-scoped track queue cannot select another genre`() {
+        val jazz1 = track("j1", "Artist", "Jazz")
+        val jazz2Base = track("j2", "Artist", "Jazz")
+        val jazz2 = jazz2Base.copy(entry = jazz2Base.entry.copy(trackNumber = 2))
+        val rock = track("r1", "Artist", "Rock")
+
+        val grouped = CatalogGrouping.groupTracksByArtistAlbum(entriesForGenreScope(listOf(jazz1, rock, jazz2), "Jazz"))
+        assertEquals("j2", CatalogGrouping.nextTrack(jazz1, grouped, ShuffleMode.OFF)?.fingerprint)
+    }
+
+    @Test
+    fun `genre-scoped episode queue cannot select another genre`() {
+        val crime1 = episode("c1", "Case Files", "Crime")
+        val crime2Base = episode("c2", "Case Files", "Crime")
+        val crime2 = crime2Base.copy(entry = crime2Base.entry.copy(episode = 2))
+        val drama = episode("d1", "Case Files", "Drama")
+
+        val grouped = CatalogGrouping.groupEpisodesByShowSeason(entriesForGenreScope(listOf(crime1, drama, crime2), "Crime"))
+        assertEquals("c2", CatalogGrouping.nextEpisode(crime1, grouped)?.fingerprint)
     }
 }

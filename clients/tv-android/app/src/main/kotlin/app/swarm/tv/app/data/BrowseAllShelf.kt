@@ -16,13 +16,21 @@ internal const val BROWSE_ALL_SHOWS_TITLE = "Shows"
 internal const val BROWSE_ALL_MUSIC_TITLE = "Music"
 
 /**
+ * Narrows a catalog to the genre that originated a nested browse screen.
+ * Playback uses the same membership rule as Browse All so skip, autoplay,
+ * shuffle, and previous cannot escape a genre-scoped artist or show screen.
+ */
+internal fun entriesForGenreScope(entries: List<MergedEntry>, genreScope: String?): List<MergedEntry> =
+    genreScope?.let { scope -> entries.filter { it.entry.genres.contains(scope) } } ?: entries
+
+/**
  * Rebuild a genre-scoped Browse All grid. [title] is the clicked shelf's
  * genre name, which may spell the same as the top-level Movies/Shows/Music
  * headings — those strings are not reserved, so membership is always the
  * genre match, never "the whole kind."
  */
 internal fun moviesForBrowseAll(entries: List<MergedEntry>, title: String): List<MergedEntry> =
-    CatalogGrouping.movies(entries).filter { it.entry.genres.contains(title) }
+    CatalogGrouping.movies(entries.filter { it.entry.genres.contains(title) })
 
 internal fun showsForBrowseAll(entries: List<MergedEntry>, title: String): List<ShowGroup> =
     CatalogGrouping.groupEpisodesByShowSeason(entries.filter { it.entry.genres.contains(title) })

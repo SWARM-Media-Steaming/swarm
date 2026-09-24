@@ -25,7 +25,10 @@ internal fun moviesForBrowseAll(entries: List<MergedEntry>, title: String): List
     CatalogGrouping.movies(entries).filter { it.entry.genres.contains(title) }
 
 internal fun showsForBrowseAll(entries: List<MergedEntry>, title: String): List<ShowGroup> =
-    CatalogGrouping.browsableShows(entries.filter { it.entry.genres.contains(title) })
+    CatalogGrouping.groupEpisodesByShowSeason(entries.filter { it.entry.genres.contains(title) })
+        // Keep catalog-delta rebuilds consistent with the genre shelf: groups
+        // without a numbered preview season are extras, not browseable shows.
+        .filter { CatalogGrouping.previewSeasons(it).isNotEmpty() }
 
 internal fun artistsForBrowseAll(entries: List<MergedEntry>, title: String): List<ArtistGroup> =
     CatalogGrouping.groupTracksByArtistAlbum(entries.filter { it.entry.genres.contains(title) })

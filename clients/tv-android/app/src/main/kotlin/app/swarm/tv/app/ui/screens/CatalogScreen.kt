@@ -487,6 +487,12 @@ internal fun CatalogScreen(
                                 .sortedWith(compareByDescending<MergedEntry> { it.ratingScore() }.thenBy { it.entry.displayTitle().lowercase() })
                         }
                         val shows = remember(filtered) {
+                            // CatalogGrouping.browsableShows(filtered) is the
+                            // composition of CatalogGrouping.groupEpisodesByShowSeason(filtered)
+                            // filtered by CatalogGrouping.previewSeasons(it).isNotEmpty() — a
+                            // search can match specials, featurettes, or unnumbered episodes
+                            // without matching a real season, and those groups must not
+                            // surface as show cards (they would render as "0 seasons").
                             CatalogGrouping.browsableShows(filtered)
                                 .sortedWith(compareByDescending<ShowGroup> { it.ratingScore() }.thenBy { it.show.lowercase() })
                         }

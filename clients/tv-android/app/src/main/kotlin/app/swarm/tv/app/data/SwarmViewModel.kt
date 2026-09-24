@@ -1907,6 +1907,9 @@ class SwarmViewModel(
             )
         }
         is UiState.ShowSeasons -> {
+            // Unscoped fallback (no genre) routes through CatalogGrouping.browsableShows,
+            // the previewSeasons-filtered composition of
+            // CatalogGrouping.groupEpisodesByShowSeason(catalog.entries).
             val shows = state.genreScope?.let { showsForBrowseAll(catalog.entries, it) }
                 ?: CatalogGrouping.browsableShows(catalog.entries)
             val show = shows.find { it.show == state.show.show } ?: state.show

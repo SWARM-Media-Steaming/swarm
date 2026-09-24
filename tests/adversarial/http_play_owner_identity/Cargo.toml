@@ -1,0 +1,17 @@
+[workspace]
+
+[package]
+name = "adversarial-issue-390-http-play-owner-identity"
+description = "Adversarial UAT for issue #390: proves the plain-HTTP /play route now flows a stable, per-device playback_owner (the paired device's token_hash) into MediaService::resolve_for_peer, and specifically that two devices sharing the same user-editable display name are NOT treated as the same playback owner over the real HTTP wire."
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "cookies", "rustls-tls"] }
+serde_json = "1"
+swarm-core = { path = "../../../crates/swarm-core" }
+swarm-media = { path = "../../../crates/swarm-media" }
+swarm-server = { path = "../../../apps/server", default-features = false }
+tokio = { version = "1", features = ["full"] }

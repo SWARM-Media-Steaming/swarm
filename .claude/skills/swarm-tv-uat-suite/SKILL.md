@@ -59,6 +59,12 @@ that specified it.
 The canonical, current scenario matrix is in `scripts/tests/TV_TESTING.md`; update
 that matrix whenever the user explicitly authorizes adding a scenario.
 
+The movie problem-report flow is intentionally a two-select interaction: the
+first D-pad Center opens the picker, and a second D-pad Center on a real
+`PROBLEM_REPORT_OPTION_PREFIX` category submits the report. The success toast
+must be awaited only after that category selection; do not restore the old
+one-click-send assumption when maintaining the frozen UAT.
+
 ## Baseline for writing reliable TV UAT tests
 
 Use these rules for every new scenario. They encode failures already found on

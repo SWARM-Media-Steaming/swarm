@@ -1429,6 +1429,32 @@
         "servers": []
       },
       "timeoutSeconds": 1800
+    },
+    {
+      "command": [
+        "python3",
+        "tests/adversarial/test_issue_398_genre_scope_player_lifecycle.py"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-398-genre-scope-player-lifecycle",
+      "name": "Adversarial: issue #398 genre scope through player lifecycle",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "python3"
+        ],
+        "files": [
+          "tests/adversarial/test_issue_398_genre_scope_player_lifecycle.py",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/data/SwarmViewModel.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/data/BrowseAllShelf.kt"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 120
     }
   ],
   "version": 1

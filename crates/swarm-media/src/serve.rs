@@ -1612,16 +1612,30 @@ fn image_content_type(relative_path: &str) -> &'static str {
     }
 }
 
-/// Calls [`TranscodeManager::finish_use`] exactly once when dropped — on
-/// natural stream completion (the final yielded [`BodyState`] is dropped)
-/// and on early drop alike, since a caller abandoning a stream mid-read (an
-/// HTTP client seeking or disconnecting mid-range-request, say) is routine,
-/// not exceptional, and must not leak the session either way. Kept private:
-/// [`Resolved::session_id`] is private for the same reason — nothing outside
-/// [`stream_body`] should be able to forget to release it.
+/// Releases exactly once — via [`Self::release_clean`] or, failing that, on
+/// drop — whether the request's body ran to natural end-of-stream (the final
+/// yielded [`BodyState`] is dropped) or was abandoned early (a caller
+/// seeking or disconnecting mid-range-request, say). Both are routine and
+/// must not leak the session, but they are no longer reported identically:
+/// [`TranscodeManager::cancel_stale_claimed_for_owner`] needs to tell a
+/// genuinely crashed claim (abandoned mid-body, `/stop` never arrives) apart
+/// from the ordinary gap between two range requests of one continuous,
+/// still-being-watched playback (each one runs to a clean end). Kept
+/// private: [`Resolved::session_id`] is private for the same reason —
+/// nothing outside [`stream_body`] should be able to forget to release it.
 struct SessionGuard {
     manager: Arc<TranscodeManager>,
     session_id: Option<String>,
+}
+
+impl SessionGuard {
+    /// Called only when this request's own declared body has been read to
+    /// its natural end — never on early abandonment or error.
+    fn release_clean(mut self) {
+        if let Some(session_id) = self.session_id.take() {
+            self.manager.finish_use_clean(&session_id);
+        }
+    }
 }
 
 impl Drop for SessionGuard {
@@ -1713,10 +1727,15 @@ async fn read_next(
             ))
         }
         // remaining == 0: body exhausted. Returning None here — rather than
-        // yielding one last empty chunk — drops `guard` (owned by this
+        // yielding one last empty chunk — releases `guard` (owned by this
         // match arm's consumed state) right now, which is what actually
-        // releases the transcode session.
-        Ok(None) => None,
+        // releases the transcode session. This is the one path that ran the
+        // request's own declared byte range all the way to its natural end,
+        // so it reports a clean release rather than an abandonment.
+        Ok(None) => {
+            guard.release_clean();
+            None
+        }
         Err(err) => Some((Err(err), BodyState::Finished { guard })),
     }
 }

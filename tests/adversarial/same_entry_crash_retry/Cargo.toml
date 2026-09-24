@@ -1,0 +1,17 @@
+[workspace]
+
+[package]
+name = "adversarial-issue-384-same-entry-crash-retry"
+description = "Adversarial UAT for issue #384: same-owner /play must not 404 an already-claimed stream, and its entry_key guard must not resurrect the pre-#389 five-minute crash-recovery wait for a retry of that same entry."
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+bytes = "1"
+futures-util = "0.3"
+serde_json = "1"
+swarm-core = { path = "../../../crates/swarm-core" }
+swarm-media = { path = "../../../crates/swarm-media" }
+tokio = { version = "1", features = ["full", "test-util"] }

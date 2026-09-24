@@ -25,9 +25,6 @@ internal fun entriesForGenreScope(entries: List<MergedEntry>, genreScope: String
         entries.filter { it.entry.genres.contains(scope) }
     } ?: entries
 
-private fun MergedEntry.hasGenre(genre: String): Boolean =
-    genre.isNotBlank() && entry.genres.any { it == genre && it.isNotBlank() }
-
 /**
  * Rebuild a genre-scoped Browse All grid. [title] is the clicked shelf's
  * genre name, which may spell the same as the top-level Movies/Shows/Music
@@ -35,13 +32,16 @@ private fun MergedEntry.hasGenre(genre: String): Boolean =
  * genre match, never "the whole kind."
  */
 internal fun moviesForBrowseAll(entries: List<MergedEntry>, title: String): List<MergedEntry> =
-    CatalogGrouping.movies(entries.filter { it.hasGenre(title) })
+    if (title.isBlank()) emptyList()
+    else CatalogGrouping.movies(entries.filter { it.entry.genres.contains(title) })
 
 internal fun showsForBrowseAll(entries: List<MergedEntry>, title: String): List<ShowGroup> =
-    CatalogGrouping.groupEpisodesByShowSeason(entries.filter { it.hasGenre(title) })
+    if (title.isBlank()) emptyList()
+    else CatalogGrouping.groupEpisodesByShowSeason(entries.filter { it.entry.genres.contains(title) })
         // Keep catalog-delta rebuilds consistent with the genre shelf: groups
         // without a numbered preview season are extras, not browseable shows.
         .filter { CatalogGrouping.previewSeasons(it).isNotEmpty() }
 
 internal fun artistsForBrowseAll(entries: List<MergedEntry>, title: String): List<ArtistGroup> =
-    CatalogGrouping.groupTracksByArtistAlbum(entries.filter { it.hasGenre(title) })
+    if (title.isBlank()) emptyList()
+    else CatalogGrouping.groupTracksByArtistAlbum(entries.filter { it.entry.genres.contains(title) })

@@ -348,6 +348,19 @@ private fun UiState.embeddedCatalog(): UiState.Catalog? = when (this) {
     else -> null
 }
 
+/** The originating Browse All genre remains the playback queue boundary. */
+private fun UiState.playbackGenreScope(kind: MediaKind): String? = when (this) {
+    is UiState.ArtistAlbums -> genreScope.takeIf { kind == MediaKind.TRACK }
+    is UiState.ShowSeasons -> genreScope.takeIf { kind == MediaKind.EPISODE }
+    else -> null
+}
+
+private fun playbackQueueEntries(
+    previousScreen: UiState,
+    entries: List<MergedEntry>,
+    kind: MediaKind,
+): List<MergedEntry> = entriesForGenreScope(entries, previousScreen.playbackGenreScope(kind))
+
 /**
  * Screens that show hover-preview-eligible browse cards: the browse page
  * itself and the three "Browse All" full grids (#159). Hover previews are
@@ -2199,7 +2212,9 @@ class SwarmViewModel(
             val isHls = selection.mode == PlaybackMode.HLS
             val followingEntry = CatalogGrouping.nextEpisode(
                 next,
-                CatalogGrouping.groupEpisodesByShowSeason(catalog.entries),
+                CatalogGrouping.groupEpisodesByShowSeason(
+                    playbackQueueEntries(current.previous, catalog.entries, MediaKind.EPISODE),
+                ),
             )
             _state.value = currentAfterNegotiation.copy(
                 preloadedNext = PreparedEpisodePlayback(
@@ -2291,7 +2306,9 @@ class SwarmViewModel(
             val isHls = selection.mode == PlaybackMode.HLS
             val following = CatalogGrouping.nextTrack(
                 next,
-                CatalogGrouping.groupTracksByArtistAlbum(catalog.entries),
+                CatalogGrouping.groupTracksByArtistAlbum(
+                    playbackQueueEntries(current.previous, catalog.entries, MediaKind.TRACK),
+                ),
                 _shuffleMode.value,
                 _repeatMode.value,
             )
@@ -2542,7 +2559,9 @@ class SwarmViewModel(
         val catalog = current.previous.embeddedCatalog() ?: return
         val next = CatalogGrouping.nextTrack(
             current.entry,
-            CatalogGrouping.groupTracksByArtistAlbum(catalog.entries),
+            CatalogGrouping.groupTracksByArtistAlbum(
+                playbackQueueEntries(current.previous, catalog.entries, MediaKind.TRACK),
+            ),
             _shuffleMode.value,
             _repeatMode.value,
         )
@@ -2568,7 +2587,9 @@ class SwarmViewModel(
         val catalog = current.previous.embeddedCatalog() ?: return
         val previous = CatalogGrouping.previousTrack(
             current.entry,
-            CatalogGrouping.groupTracksByArtistAlbum(catalog.entries),
+            CatalogGrouping.groupTracksByArtistAlbum(
+                playbackQueueEntries(current.previous, catalog.entries, MediaKind.TRACK),
+            ),
             _repeatMode.value,
         ) ?: return
         playEntry(
@@ -2924,15 +2945,27 @@ class SwarmViewModel(
                 return@launch
             }
             val isHls = selection.mode == PlaybackMode.HLS
-            // Both of these scan the whole catalog (grouping + a sort). Keep
-            // them off the main thread so the browse→player hand-off doesn't
-            // stutter on a large library right as the screen swaps in (#122).
+            // Both of these group and sort the playback queue. Keep them off
+            // the main thread so the browse→player hand-off doesn't stutter
+            // on a large library right as the screen swaps in (#122).
             val shuffleMode = _shuffleMode.value
             val repeatMode = _repeatMode.value
             val (nextEntry, recommendations) = withContext(Dispatchers.Default) {
                 val next = when (entry.entry.kind) {
-                    MediaKind.EPISODE -> CatalogGrouping.nextEpisode(entry, CatalogGrouping.groupEpisodesByShowSeason(catalog.entries))
-                    MediaKind.TRACK -> CatalogGrouping.nextTrack(entry, CatalogGrouping.groupTracksByArtistAlbum(catalog.entries), shuffleMode, repeatMode)
+                    MediaKind.EPISODE -> CatalogGrouping.nextEpisode(
+                        entry,
+                        CatalogGrouping.groupEpisodesByShowSeason(
+                            playbackQueueEntries(previousScreen, catalog.entries, MediaKind.EPISODE),
+                        ),
+                    )
+                    MediaKind.TRACK -> CatalogGrouping.nextTrack(
+                        entry,
+                        CatalogGrouping.groupTracksByArtistAlbum(
+                            playbackQueueEntries(previousScreen, catalog.entries, MediaKind.TRACK),
+                        ),
+                        shuffleMode,
+                        repeatMode,
+                    )
                     MediaKind.MOVIE -> null
                 }
                 next to pauseRecommendations(entry, catalog.entries)

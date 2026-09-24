@@ -1894,7 +1894,7 @@ class SwarmViewModel(
         is UiState.ShowShelf -> state.copy(
             catalog = catalog,
             shows = if (state.scopedToGenre) showsForBrowseAll(catalog.entries, state.title)
-            else CatalogGrouping.groupEpisodesByShowSeason(catalog.entries),
+            else CatalogGrouping.browsableShows(catalog.entries),
         )
         is UiState.ArtistAlbums -> {
             val artists = state.genreScope?.let { artistsForBrowseAll(catalog.entries, it) }
@@ -1908,7 +1908,7 @@ class SwarmViewModel(
         }
         is UiState.ShowSeasons -> {
             val shows = state.genreScope?.let { showsForBrowseAll(catalog.entries, it) }
-                ?: CatalogGrouping.groupEpisodesByShowSeason(catalog.entries)
+                ?: CatalogGrouping.browsableShows(catalog.entries)
             val show = shows.find { it.show == state.show.show } ?: state.show
             state.copy(
                 previous = replaceEmbeddedCatalog(state.previous, catalog),
@@ -3364,7 +3364,7 @@ class SwarmViewModel(
         _state.value = UiState.ShowShelf(
             current,
             shows ?: if (scopedToGenre) showsForBrowseAll(current.entries, title)
-            else CatalogGrouping.groupEpisodesByShowSeason(current.entries),
+            else CatalogGrouping.browsableShows(current.entries),
             title,
             scopedToGenre,
         )
@@ -3373,7 +3373,7 @@ class SwarmViewModel(
     fun openShowSeasons(show: ShowGroup) {
         val previous = _state.value
         val (catalog, shows) = when (previous) {
-            is UiState.Catalog -> previous to CatalogGrouping.groupEpisodesByShowSeason(previous.entries)
+            is UiState.Catalog -> previous to CatalogGrouping.browsableShows(previous.entries)
             is UiState.ShowShelf -> previous.catalog to previous.shows
             else -> return
         }

@@ -159,6 +159,15 @@ object CatalogGrouping {
     }
 
     /**
+     * [groupEpisodesByShowSeason] filtered to groups with at least one
+     * [previewSeasons] entry — the shows a card grid can actually browse
+     * into. Season-0/extras-only groups render as "0 seasons" and should
+     * never surface here, on first load or after a catalog delta rebuild.
+     */
+    fun browsableShows(entries: List<MergedEntry>): List<ShowGroup> =
+        groupEpisodesByShowSeason(entries).filter { previewSeasons(it).isNotEmpty() }
+
+    /**
      * Numbered seasons containing numbered episodes are the only safe source
      * for a show-card preview. Season 0 is the conventional specials/extras
      * bucket, while null seasons or episodes are commonly featurettes,

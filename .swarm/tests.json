@@ -1487,6 +1487,141 @@
     },
     {
       "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "tests/adversarial/scrape_artwork_normalization/Cargo.toml",
+        "--target-dir",
+        "target/adversarial-issue-407",
+        "--test",
+        "issue_407_scrape_artwork_normalization",
+        "--",
+        "--nocapture"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-407-scrape-artwork-normalization",
+      "name": "Adversarial: issue #407 scrape artwork NFC/NFD normalization",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "cargo"
+        ],
+        "files": [
+          "tests/adversarial/scrape_artwork_normalization/Cargo.toml",
+          "tests/adversarial/scrape_artwork_normalization/tests/issue_407_scrape_artwork_normalization.rs",
+          "crates/swarm-media/src/scrape/artwork.rs",
+          "crates/swarm-media/src/scrape/runner.rs",
+          "crates/swarm-media/src/roots.rs"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
+    },
+    {
+      "command": [
+        "python3",
+        "tests/adversarial/test_issue_407_scrape_artwork_contract.py"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-407-scrape-artwork-contract",
+      "name": "Adversarial: issue #407 scrape artwork resolver contract",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "python3"
+        ],
+        "files": [
+          "tests/adversarial/test_issue_407_scrape_artwork_contract.py",
+          "crates/swarm-media/src/scrape/artwork.rs",
+          "crates/swarm-media/src/scrape/runner.rs",
+          "crates/swarm-media/src/roots.rs"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 120
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "tests/adversarial/scrape_artwork_multiroot_normalization/Cargo.toml",
+        "--target-dir",
+        "target/adversarial-issue-407-multiroot",
+        "--test",
+        "issue_407_scrape_artwork_multiroot_normalization",
+        "--",
+        "--nocapture"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-407-scrape-artwork-multiroot-normalization",
+      "name": "Adversarial: issue #407 labelled-root scrape artwork normalization",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "cargo"
+        ],
+        "files": [
+          "tests/adversarial/scrape_artwork_multiroot_normalization/Cargo.toml",
+          "tests/adversarial/scrape_artwork_multiroot_normalization/tests/issue_407_scrape_artwork_multiroot_normalization.rs",
+          "crates/swarm-media/src/scrape/artwork.rs",
+          "crates/swarm-media/src/scrape/runner.rs",
+          "crates/swarm-media/src/roots.rs"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "tests/adversarial/scrape_artwork_ambiguous_normalization/Cargo.toml",
+        "--target-dir",
+        "target/adversarial-issue-407-ambiguous",
+        "--test",
+        "issue_407_scrape_artwork_ambiguous_normalization",
+        "--",
+        "--nocapture"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-407-scrape-artwork-ambiguous-normalization",
+      "name": "Adversarial: issue #407 ambiguous NFC-collision scrape artwork resolution",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "cargo"
+        ],
+        "files": [
+          "tests/adversarial/scrape_artwork_ambiguous_normalization/Cargo.toml",
+          "tests/adversarial/scrape_artwork_ambiguous_normalization/tests/issue_407_scrape_artwork_ambiguous_normalization.rs",
+          "crates/swarm-media/src/scrape/artwork.rs",
+          "crates/swarm-media/src/scrape/runner.rs",
+          "crates/swarm-media/src/roots.rs"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
+    },
+    {
+      "command": [
         "python3",
         "tests/adversarial/test_issue_406_desktop_artwork_unicode_paths.py"
       ],

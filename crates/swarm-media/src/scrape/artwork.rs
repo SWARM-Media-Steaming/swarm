@@ -48,8 +48,8 @@ pub async fn save_artwork(
     filename: &str,
     bytes: &[u8],
 ) -> std::io::Result<String> {
-    let (root_path, rest) = roots.split(relative_path);
-    let source_path = root_path.join(rest.replace('/', std::path::MAIN_SEPARATOR_STR));
+    let (root_path, _) = roots.split(relative_path);
+    let source_path = roots.resolve_existing(relative_path);
     let parent = source_path.parent().unwrap_or(&root_path);
     let images_dir = parent.join("images");
     tokio::fs::create_dir_all(&images_dir).await?;
@@ -73,14 +73,12 @@ pub async fn save_artwork(
 /// checking the DB column alone would wrongly treat that as "already have
 /// it" and never repair it.
 pub async fn exists(roots: &SharedRootResolver, relative_path: &str) -> bool {
-    let (root_path, rest) = roots.split(relative_path);
-    let absolute = root_path.join(rest.replace('/', std::path::MAIN_SEPARATOR_STR));
+    let absolute = roots.resolve_existing(relative_path);
     tokio::fs::try_exists(&absolute).await.unwrap_or(false)
 }
 
 fn absolute_path(roots: &SharedRootResolver, relative_path: &str) -> std::path::PathBuf {
-    let (root_path, rest) = roots.split(relative_path);
-    root_path.join(rest.replace('/', std::path::MAIN_SEPARATOR_STR))
+    roots.resolve_existing(relative_path)
 }
 
 /// Makes stored artwork references truthful again. A historical reorganization
@@ -232,6 +230,21 @@ mod tests {
             b"bytes"
         );
         std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[tokio::test]
+    async fn exists_finds_artwork_in_a_unicode_normalized_directory() {
+        let root =
+            std::env::temp_dir().join(format!("swarm-artwork-unicode-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let actual = root.join("music/Cafe\u{301}/images/album-cover.jpg");
+        std::fs::create_dir_all(actual.parent().unwrap()).unwrap();
+        std::fs::write(&actual, b"cover").unwrap();
+
+        let roots = SharedRootResolver::new(crate::roots::RootResolver::single(root.clone()));
+        assert!(exists(&roots, "music/Café/images/album-cover.jpg").await);
+
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[tokio::test]

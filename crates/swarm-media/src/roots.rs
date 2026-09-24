@@ -134,6 +134,58 @@ impl RootResolver {
         }
     }
 
+    /// As [`Self::resolve_existing`], but for an existing directory. This is
+    /// useful for operations that enumerate a catalogued media folder rather
+    /// than opening a catalogued file.
+    pub fn resolve_existing_dir(&self, relative_path: &str) -> PathBuf {
+        self.resolve_existing_matching(relative_path, Path::is_dir)
+    }
+
+    fn resolve_existing_matching(
+        &self,
+        relative_path: &str,
+        is_expected_type: impl Fn(&Path) -> bool,
+    ) -> PathBuf {
+        let (root, rest) = self.split(relative_path);
+        let exact = root.join(&rest);
+        if is_expected_type(&exact) {
+            return exact;
+        }
+
+        let mut current = root;
+        for component in Path::new(&rest).components() {
+            let std::path::Component::Normal(name) = component else {
+                return exact;
+            };
+            let candidate = current.join(name);
+            if candidate.exists() {
+                current = candidate;
+                continue;
+            }
+
+            let wanted = name.to_string_lossy().nfc().collect::<String>();
+            let Ok(entries) = std::fs::read_dir(&current) else {
+                return exact;
+            };
+            let mut matches = entries
+                .flatten()
+                .filter(|entry| entry.file_name().to_string_lossy().nfc().eq(wanted.chars()));
+            let Some(found) = matches.next() else {
+                return exact;
+            };
+            if matches.next().is_some() {
+                return exact;
+            }
+            current = found.path();
+        }
+
+        if is_expected_type(&current) {
+            current
+        } else {
+            exact
+        }
+    }
+
     /// (absolute root directory, path under that root) for a stored
     /// `relative_path`. Falls back to the first configured root when the
     /// path carries no recognized `{label}/` prefix (always true in the
@@ -234,6 +286,13 @@ impl SharedRootResolver {
 
     pub fn resolve_existing(&self, relative_path: &str) -> PathBuf {
         self.inner.read().unwrap().resolve_existing(relative_path)
+    }
+
+    pub fn resolve_existing_dir(&self, relative_path: &str) -> PathBuf {
+        self.inner
+            .read()
+            .unwrap()
+            .resolve_existing_dir(relative_path)
     }
 
     pub fn split(&self, relative_path: &str) -> (PathBuf, String) {
@@ -386,6 +445,21 @@ mod tests {
             resolved.is_file(),
             "an NFC catalog path must find the NFD name returned by an SMB directory listing"
         );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn resolve_existing_dir_recovers_an_unambiguous_unicode_normalization_mismatch() {
+        let root =
+            std::env::temp_dir().join(format!("swarm-root-unicode-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let actual = root.join("music/Cafe\u{301}");
+        std::fs::create_dir_all(&actual).unwrap();
+
+        let resolver = RootResolver::single(root.clone());
+        let resolved = resolver.resolve_existing_dir("music/Café");
+        assert!(resolved.is_dir());
 
         let _ = std::fs::remove_dir_all(root);
     }

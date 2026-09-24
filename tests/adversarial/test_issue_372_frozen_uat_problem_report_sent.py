@@ -1,12 +1,26 @@
 #!/usr/bin/env python3
-"""Issue #372: frozen TV UAT still waits for a one-click "Problem Report Sent".
+"""Issue #372: frozen TV UAT still waits for "Problem Report Sent".
+
+Amended by a later adversarial pass (issue #407 delivery cycle) to resolve a
+conflict with `test_issue_401_problem_report_picker_submit.py`: issue #401's
+delivery commit (57aab69, "Frozen MovieProblemReportUatTest still one-clicks
+Report a problem while the picker requires a second select") deliberately
+changed the product so a `ProblemReportPicker` category must be D-pad-selected
+before a report sends, and updated the real
+`MovieProblemReportUatTest.submitReportAndAwaitResolve` to select one. That
+postdates and supersedes this suite's original "no picker option" premise
+(point 1 below, as originally written) — verified against the checked-in
+`MovieProblemReportUatTest.kt`, which now selects a category tag between the
+report button and `waitForText`. The one-click assertion was stale, not the
+production code, so it is corrected here rather than left failing.
 
 Expected behavior, derived from the issue and the locked MovieProblemReportUatTest
 before trusting the product diff:
 
 1. MovieProblemReportUatTest.submitReportAndAwaitResolve D-pad-selects
-   MOVIE_DETAIL_REPORT_PROBLEM_BUTTON and then waitForText("Problem Report Sent").
-   The locked suite does not choose a ProblemReportPicker option.
+   MOVIE_DETAIL_REPORT_PROBLEM_BUTTON, waits for the ProblemReportPicker, D-pad
+   selects exactly one PROBLEM_REPORT_OPTION_PREFIX-tagged category, and only
+   then waitForText("Problem Report Sent") (issue #401).
 2. UatTestBase.waitForText uses UIAutomator By.textContains, so the viewer-facing
    success notification must contain that exact contiguous substring.
 3. Issue #354 still requires the selected category to reach the media server and
@@ -76,30 +90,45 @@ def function_body(source: str, signature: str) -> str:
     return source[start : end + 1]
 
 
-def assert_frozen_uat_still_one_click_then_frozen_text() -> None:
+def assert_frozen_uat_selects_a_category_before_frozen_text() -> None:
+    """Issue #401 made the picker's category selection mandatory before a
+    report sends; the frozen UAT this suite protects must require that
+    order, not the pre-#401 one-click contract."""
     source = read(MOVIE_UAT)
     body = function_body(source, "private fun submitReportAndAwaitResolve(")
     button = "selectTagWithDpad(UatTestTags.MOVIE_DETAIL_REPORT_PROBLEM_BUTTON)"
+    picker = "waitForTag(UatTestTags.PROBLEM_REPORT_PICKER)"
+    option_lookup = "firstTagStartingWith(UatTestTags.PROBLEM_REPORT_OPTION_PREFIX)"
+    select_category = "selectTagWithDpad(categoryTag)"
     wait = f'waitForText("{FROZEN_SUBSTRING}")'
+
     button_at = body.find(button)
+    picker_at = body.find(picker)
+    option_at = body.find(option_lookup)
+    select_at = body.find(select_category)
     wait_at = body.find(wait)
+
     if button_at == -1:
         fail("frozen UAT no longer D-pad-selects MOVIE_DETAIL_REPORT_PROBLEM_BUTTON")
+    if picker_at == -1 or picker_at < button_at:
+        fail("frozen UAT no longer waits for the problem-report picker after the report button (issue #401)")
+    if option_at == -1 or option_at < picker_at:
+        fail("frozen UAT no longer looks up a category option from the picker (issue #401)")
+    if select_at == -1 or select_at < option_at:
+        fail("frozen UAT no longer D-pad-selects the looked-up category before sending (issue #401)")
     if wait_at == -1:
         fail(
             "frozen UAT no longer waitForText("
             f"{FROZEN_SUBSTRING!r}); By.textContains would miss a renamed toast"
         )
-    if wait_at < button_at:
-        fail("frozen UAT waits for Problem Report Sent before selecting the report button")
-    between = body[button_at + len(button) : wait_at]
-    if "PROBLEM_REPORT_OPTION" in between or "PROBLEM_REPORT_PICKER" in between:
-        fail("frozen UAT now selects a category picker option; the suite lock forbids that")
+    if wait_at < select_at:
+        fail("frozen UAT waits for Problem Report Sent before selecting a category")
+    between = body[select_at + len(select_category) : wait_at]
     if "selectTagWithDpad" in between:
-        fail("frozen UAT inserted another D-pad select between report button and waitForText")
+        fail("frozen UAT inserted another D-pad select between the category choice and waitForText")
     if 'waitForText("Problem report sent")' in body or 'waitForText("problem report sent")' in body:
         fail("frozen UAT waitForText is case-sensitive; a lowercased needle is a different contract")
-    print("ok frozen UAT still one-clicks report then waitForText('Problem Report Sent')")
+    print("ok frozen UAT selects a category (issue #401) then waitForText('Problem Report Sent')")
 
 
 def assert_wait_for_text_is_text_contains() -> None:
@@ -195,7 +224,7 @@ def assert_early_return_does_not_claim_success() -> None:
 
 
 def main() -> None:
-    assert_frozen_uat_still_one_click_then_frozen_text()
+    assert_frozen_uat_selects_a_category_before_frozen_text()
     assert_wait_for_text_is_text_contains()
     assert_success_notify_contains_frozen_substring_and_category()
     assert_early_return_does_not_claim_success()

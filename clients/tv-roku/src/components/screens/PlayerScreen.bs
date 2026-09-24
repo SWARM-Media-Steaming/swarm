@@ -119,7 +119,7 @@ sub savePosition(playerPositionSecs as float)
     if m.entry.duration_secs <> invalid
         durationSecs = m.entry.duration_secs
     end if
-    Swarm.Registry.SetWatchState(m.entry.fingerprint, absolutePosition, durationSecs)
+    Swarm.Registry.SetWatchState(m.entry.fingerprint, absolutePosition, durationSecs, m.entry.show_title, m.entry.season, m.entry.episode)
 end sub
 
 function onKeyEvent(key as string, press as boolean) as boolean

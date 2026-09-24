@@ -488,6 +488,13 @@ struct Session {
     /// cannot be claimed (and therefore cannot be reaped by that function)
     /// until its first request lands.
     last_release_clean: bool,
+    /// The catalog entry this session was negotiated for. Used by
+    /// [`TranscodeManager::cancel_stale_claimed_for_owner`] (#384) to tell a
+    /// same-title retry (where a clean last release must not be treated as
+    /// abandonment) apart from a request for a *different* title, which
+    /// means the owner has moved on regardless of how their last read of
+    /// the old title ended.
+    entry_key: String,
 }
 
 #[derive(Default)]
@@ -828,7 +835,7 @@ impl TranscodeManager {
             if let Some(owner) = owner {
                 self.cancel_unclaimed_for_owner(owner);
                 if entry.kind != MediaKind::Track {
-                    self.cancel_stale_claimed_for_owner(owner);
+                    self.cancel_stale_claimed_for_owner(owner, &entry.entry_key);
                 }
             }
         }
@@ -1197,6 +1204,10 @@ impl TranscodeManager {
         owner: Option<&str>,
         track: bool,
     ) -> Result<String, TranscodeError> {
+        let SessionKind::Direct { entry_key } = &kind else {
+            unreachable!("reserve() is only ever called for SessionKind::Direct");
+        };
+        let entry_key = entry_key.clone();
         let mut state = self.state.lock().unwrap();
         let already_reserved: u64 = state
             .sessions
@@ -1223,6 +1234,7 @@ impl TranscodeManager {
                 in_use: 0,
                 track,
                 last_release_clean: false,
+                entry_key,
             },
         );
         if let Some(owner) = owner {
@@ -1312,10 +1324,16 @@ impl TranscodeManager {
     /// client legitimately issues a sequence of separate ranged GETs against
     /// one still-being-watched session, each fully completing before the
     /// next begins, so `in_use` drops to 0 in the ordinary gap between two
-    /// of them too. Only a session whose most recent release was an early
+    /// of them too. For a session negotiated for the *same* entry the owner
+    /// is retrying, only a most-recent release that was an early
     /// abandonment rather than a natural end-of-stream
-    /// (`!session.last_release_clean`) is treated as orphaned here.
-    fn cancel_stale_claimed_for_owner(&self, owner: &str) {
+    /// (`!session.last_release_clean`) is treated as orphaned here — but
+    /// that clean-release exemption is scoped to that one entry. A claimed
+    /// session left over from a *different* entry is reaped regardless of
+    /// how its last read ended: "last read finished cleanly" says nothing
+    /// about whether the owner is still watching that entry once a
+    /// different one has been requested instead.
+    fn cancel_stale_claimed_for_owner(&self, owner: &str, negotiating_entry_key: &str) {
         let stale = {
             let state = self.state.lock().unwrap();
             state
@@ -1325,7 +1343,10 @@ impl TranscodeManager {
                     session_owner.as_str() == owner
                         && state.claimed.contains(*id)
                         && state.sessions.get(*id).is_some_and(|session| {
-                            !session.track && session.in_use == 0 && !session.last_release_clean
+                            !session.track
+                                && session.in_use == 0
+                                && (session.entry_key != negotiating_entry_key
+                                    || !session.last_release_clean)
                         })
                 })
                 .map(|(id, _)| id.clone())
@@ -1408,6 +1429,7 @@ impl TranscodeManager {
                     in_use: 0,
                     track: entry.kind == MediaKind::Track,
                     last_release_clean: false,
+                    entry_key: entry.entry_key.clone(),
                 },
             );
             if let Some(owner) = owner {
@@ -2591,6 +2613,7 @@ mod tests {
             in_use: 0,
             track: false,
             last_release_clean: false,
+            entry_key: "entry".into(),
         };
         let mut state = State::default();
         state.sessions.insert(
@@ -2647,6 +2670,7 @@ mod tests {
             in_use: 0,
             track: false,
             last_release_clean: false,
+            entry_key: "entry".into(),
         };
         {
             let mut state = manager.state.lock().unwrap();
@@ -2699,6 +2723,7 @@ mod tests {
             in_use: 0,
             track: false,
             last_release_clean: false,
+            entry_key: "movie".into(),
         };
         {
             let mut state = manager.state.lock().unwrap();
@@ -2751,6 +2776,7 @@ mod tests {
             in_use: 0,
             last_release_clean: false,
             track,
+            entry_key: "movie".into(),
         };
         {
             let mut state = manager.state.lock().unwrap();
@@ -2778,7 +2804,7 @@ mod tests {
             state.claimed.insert("other-tv-episode".into());
         }
 
-        manager.cancel_stale_claimed_for_owner("living-room");
+        manager.cancel_stale_claimed_for_owner("living-room", "movie");
 
         let state = manager.state.lock().unwrap();
         assert!(!state.sessions.contains_key("crashed-episode"));
@@ -2813,6 +2839,7 @@ mod tests {
                     in_use: 0,
                     track: false,
                     last_release_clean: false,
+                    entry_key: "movie".into(),
                 },
             );
         }

@@ -1,0 +1,17 @@
+[workspace]
+
+[package]
+name = "adversarial-issue-412-unsatisfiable-range-session-leak"
+description = "Adversarial UAT for issue #412: unsatisfiable Range request on a claimed direct-play session must release its in_use count."
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+bytes = "1"
+futures-util = "0.3"
+serde_json = "1"
+swarm-core = { path = "../../../crates/swarm-core" }
+swarm-media = { path = "../../../crates/swarm-media" }
+tokio = { version = "1", features = ["full", "test-util"] }

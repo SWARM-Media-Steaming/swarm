@@ -1,0 +1,14 @@
+[workspace]
+
+[package]
+name = "adversarial-issue-407-scrape-artwork-normalization"
+description = "Adversarial UAT for issue #407: scrape artwork existence and local-cover import honor Unicode-normalized catalog paths."
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+swarm-core = { path = "../../../crates/swarm-core" }
+swarm-media = { path = "../../../crates/swarm-media" }
+tokio = { version = "1", features = ["full", "test-util"] }

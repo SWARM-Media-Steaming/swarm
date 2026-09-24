@@ -1174,7 +1174,7 @@ async fn import_local_album_cover(
 ) -> Option<String> {
     let relative_parent = Path::new(&entry.relative_path).parent()?;
     let relative_parent = relative_parent.to_str()?;
-    let absolute_parent = roots.resolve(relative_parent);
+    let absolute_parent = roots.resolve_existing_dir(relative_parent);
     let mut directory = tokio::fs::read_dir(absolute_parent).await.ok()?;
     let mut candidates = Vec::new();
     while let Ok(Some(candidate)) = directory.next_entry().await {
@@ -2007,6 +2007,31 @@ mod tests {
             "music/Slipknot/We Are Not Your Kind (2019)/images/album-cover.png"
         );
         assert_eq!(std::fs::read(root.join(relative)).unwrap(), [1u8]);
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
+    #[tokio::test]
+    async fn local_album_cover_import_finds_a_unicode_normalized_album_directory() {
+        let (root, db_path) = fixture_dirs("local-album-cover-unicode");
+        let album = root.join("music/Cafe\u{301}");
+        std::fs::create_dir_all(&album).unwrap();
+        std::fs::write(album.join("01 - Track.flac"), vec![0u8; 10]).unwrap();
+        std::fs::write(album.join("folder.jpg"), [1u8]).unwrap();
+
+        let library = Library::open(db_path.to_str().unwrap()).await.unwrap();
+        scan_root(&library, &root).await.unwrap();
+        let mut entry = library.list().await.unwrap().pop().unwrap();
+        entry.relative_path = "music/Café/01 - Track.flac".into();
+
+        let relative = import_local_album_cover(&resolver(&root), &entry)
+            .await
+            .expect("cover beside an NFD directory should be imported");
+
+        assert_eq!(relative, "music/Café/images/album-cover.jpg");
+        assert_eq!(
+            std::fs::read(album.join("images/album-cover.jpg")).unwrap(),
+            [1u8]
+        );
         std::fs::remove_dir_all(root.parent().unwrap()).ok();
     }
 

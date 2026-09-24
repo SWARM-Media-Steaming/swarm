@@ -1484,6 +1484,35 @@
         "servers": []
       },
       "timeoutSeconds": 120
+    },
+    {
+      "command": [
+        "python3",
+        "tests/adversarial/test_issue_406_desktop_artwork_unicode_paths.py"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-406-desktop-artwork-unicode-paths",
+      "name": "Adversarial: issue #406 desktop artwork NFC/NFD SMB paths",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "cargo",
+          "python3"
+        ],
+        "files": [
+          "tests/adversarial/test_issue_406_desktop_artwork_unicode_paths.py",
+          "apps/server/src/gui.rs",
+          "apps/server/src/gui_tests/metadata_editing.rs",
+          "crates/swarm-media/src/roots.rs",
+          "Cargo.toml"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
     }
   ],
   "version": 1

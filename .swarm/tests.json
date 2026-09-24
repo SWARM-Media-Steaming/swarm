@@ -1032,6 +1032,41 @@
     },
     {
       "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "tests/adversarial/switch_title_clean_release/Cargo.toml",
+        "--target-dir",
+        "target/adversarial-issue-384-switch-title",
+        "--test",
+        "issue_384_switch_title_clean_release",
+        "--",
+        "--nocapture"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-384-switch-title-clean-release",
+      "name": "Adversarial: issue #384 cross-title negotiation must reap a cleanly-finished-but-abandoned session",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "cargo"
+        ],
+        "files": [
+          "tests/adversarial/switch_title_clean_release/Cargo.toml",
+          "tests/adversarial/switch_title_clean_release/tests/issue_384_switch_title_clean_release.rs",
+          "crates/swarm-media/src/transcode.rs",
+          "crates/swarm-media/src/serve.rs"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
+    },
+    {
+      "command": [
         "python3",
         "tests/adversarial/test_genre_show_browse_all_preview_seasons.py"
       ],

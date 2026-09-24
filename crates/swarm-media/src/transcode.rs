@@ -1339,22 +1339,62 @@ impl TranscodeManager {
             state
                 .owners
                 .iter()
-                .filter(|(id, session_owner)| {
-                    session_owner.as_str() == owner
-                        && state.claimed.contains(*id)
-                        && state.sessions.get(*id).is_some_and(|session| {
-                            !session.track
-                                && session.in_use == 0
-                                && (session.entry_key != negotiating_entry_key
-                                    || !session.last_release_clean)
-                        })
+                .filter(|(id, _)| {
+                    Self::is_stale_claimed_session_for_owner(
+                        &state,
+                        id,
+                        owner,
+                        negotiating_entry_key,
+                    )
                 })
                 .map(|(id, _)| id.clone())
                 .collect::<Vec<_>>()
         };
         for id in stale {
-            self.remove_session(&id);
+            self.remove_stale_claimed_session_for_owner(&id, owner, negotiating_entry_key);
         }
+    }
+
+    fn is_stale_claimed_session_for_owner(
+        state: &State,
+        id: &str,
+        owner: &str,
+        negotiating_entry_key: &str,
+    ) -> bool {
+        state.owners.get(id).map(String::as_str) == Some(owner)
+            && state.claimed.contains(id)
+            && state.sessions.get(id).is_some_and(|session| {
+                !session.track
+                    && session.in_use == 0
+                    && (session.entry_key != negotiating_entry_key || !session.last_release_clean)
+            })
+    }
+
+    fn remove_stale_claimed_session_for_owner(
+        &self,
+        id: &str,
+        owner: &str,
+        negotiating_entry_key: &str,
+    ) {
+        let removed = {
+            let mut state = self.state.lock().unwrap();
+            // Recheck while holding the removal lock: a new direct or HLS
+            // request may have started using this claimed session after the
+            // candidate list was collected.
+            if !Self::is_stale_claimed_session_for_owner(
+                &state,
+                id,
+                owner,
+                negotiating_entry_key,
+            ) {
+                None
+            } else {
+                state.owners.remove(id);
+                state.claimed.remove(id);
+                state.sessions.remove(id)
+            }
+        };
+        Self::cleanup_removed_session(removed);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2812,6 +2852,51 @@ mod tests {
         assert!(state.sessions.contains_key("preloaded-track"));
         assert!(state.sessions.contains_key("other-tv-episode"));
         assert!(!state.owners.contains_key("crashed-episode"));
+    }
+
+    #[test]
+    fn stale_claimed_removal_rechecks_that_the_session_is_inactive() {
+        let manager = TranscodeManager::new(TranscodeConfig::disabled(std::env::temp_dir().join(
+            format!("swarm-stale-claimed-recheck-test-{}", session_id()),
+        )));
+        let session = Session {
+            kind: SessionKind::Direct {
+                entry_key: "movie".into(),
+            },
+            preview: false,
+            cancelled: Arc::new(AtomicBool::new(false)),
+            reserved_bps: 128_000,
+            budget_exempt: true,
+            rate_limiter: Arc::new(SessionRateLimiter::new(0)),
+            last_access: Instant::now(),
+            in_use: 0,
+            track: false,
+            last_release_clean: false,
+            entry_key: "movie".into(),
+        };
+        {
+            let mut state = manager.state.lock().unwrap();
+            state.sessions.insert("playing".into(), session);
+            state.owners.insert("playing".into(), "living-room".into());
+            state.claimed.insert("playing".into());
+
+            // Model a request that begins after stale IDs have been collected
+            // but before this ID reaches the removal loop.
+            assert!(TranscodeManager::is_stale_claimed_session_for_owner(
+                &state,
+                "playing",
+                "living-room",
+                "movie",
+            ));
+            state.sessions.get_mut("playing").unwrap().in_use = 1;
+        }
+
+        manager.remove_stale_claimed_session_for_owner("playing", "living-room", "movie");
+
+        let state = manager.state.lock().unwrap();
+        assert!(state.sessions.contains_key("playing"));
+        assert!(state.owners.contains_key("playing"));
+        assert!(state.claimed.contains("playing"));
     }
 
     #[test]

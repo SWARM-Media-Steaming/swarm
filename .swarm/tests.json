@@ -1276,6 +1276,42 @@
         "servers": []
       },
       "timeoutSeconds": 120
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "tests/adversarial/http_play_owner_identity/Cargo.toml",
+        "--target-dir",
+        "target/adversarial-issue-390",
+        "--test",
+        "issue_390_http_play_owner_identity",
+        "--",
+        "--nocapture"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-390-http-play-owner-identity",
+      "name": "Adversarial: issue #390 HTTP /play playback-owner identity (display-name collision)",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "cargo"
+        ],
+        "files": [
+          "tests/adversarial/http_play_owner_identity/Cargo.toml",
+          "tests/adversarial/http_play_owner_identity/tests/issue_390_http_play_owner_identity.rs",
+          "apps/server/src/http_media.rs",
+          "apps/server/src/state_db.rs",
+          "crates/swarm-media/src/transcode.rs"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
     }
   ],
   "version": 1

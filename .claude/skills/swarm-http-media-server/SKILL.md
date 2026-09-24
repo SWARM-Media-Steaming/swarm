@@ -103,10 +103,11 @@ need driving it.
 `/play`, `/stream/.../media`, `/media/{key}`, and `/hls/...` all build a
 `PeerRequest` from the incoming HTTP request (parse the `Range` header
 into `ByteRange::FromTo`/`Suffix` — see `parse_range_header`), call the
-already-existing `MediaService::resolve_for_network(&request, is_lan)`
-(confirmed to do **zero** auth itself — `require_bearer` above is the
-only thing standing between a request and this call), then hand the
-resulting `Resolved` to `swarm_media::serve::stream_body` and feed its
+already-existing `MediaService::resolve_for_peer(&request, is_lan, client,
+playback_owner)` via `resolve_and_respond` (confirmed to do **zero** auth
+itself — `require_bearer` above is the only thing standing between a
+request and this call), then hand the resulting `Resolved` to
+`swarm_media::serve::stream_body` and feed its
 output straight into `axum::body::Body::from_stream`. Do not write a new
 manual read-loop against `Resolved::body` here. `stream_body` exists
 specifically so this surface and QUIC's `handle_stream` share one
@@ -124,13 +125,26 @@ was verified against a real regression (temporarily neutered the `Drop`
 impl and confirmed the test fails) before being trusted.
 
 `is_lan_ip` (not a bespoke check) determines the `is_lan` argument to
-`resolve_for_network` — this gates whether the shared upload-bandwidth
+`resolve_for_peer` — this gates whether the shared upload-bandwidth
 budget applies at all, so getting it wrong in either direction is a real
 cost/availability bug, not cosmetic. The router is started with
 `.into_make_service_with_connect_info::<SocketAddr>()` specifically so
 handlers can extract the real peer address for this — don't switch to
 plain `into_make_service()` (that's `mcp.rs`'s precedent, which never
 needs peer IP).
+
+`playback_owner` — passed to `resolve_for_peer`, not `resolve_for_network`
+or `resolve_for_client` — is `AuthenticatedDevice`'s `token_hash`, not its
+display name: the name is user-editable in the dashboard and the QUIC
+precedent (`resolve_for_peer` in `swarm-media`'s `serve.rs`) is explicit
+that a reconnect-stable *identity*, not a friendly label, is what
+`TranscodeManager::plan`'s `cancel_stale_claimed_for_owner` needs to reap
+a device's own stale claimed session without cross-cancelling another
+device's. Any new authenticated route added here must keep flowing
+through `resolve_and_respond`/`resolve_for_peer` with that same owner —
+reverting to `resolve_for_client` (owner `None`) silently turns claimed-
+session reaping back off for this whole transport, which is exactly the
+bug issue #390 fixed.
 
 `MediaService` resolves catalog paths through `SharedRootResolver::resolve_existing`,
 not a hand-built `root.join(...)`. It preserves exact paths first, then has a narrowly

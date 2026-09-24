@@ -1455,6 +1455,35 @@
         "servers": []
       },
       "timeoutSeconds": 120
+    },
+    {
+      "command": [
+        "python3",
+        "tests/adversarial/test_issue_401_problem_report_picker_submit.py"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-401-problem-report-picker-submit",
+      "name": "Adversarial: issue #401 movie report picker requires category submit",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "python3"
+        ],
+        "files": [
+          "tests/adversarial/test_issue_401_problem_report_picker_submit.py",
+          "clients/tv-android/app/src/androidTest/kotlin/app/swarm/tv/app/uat/MovieProblemReportUatTest.kt",
+          "clients/tv-android/app/src/androidTest/kotlin/app/swarm/tv/app/uat/UatTestBase.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/UatTestTags.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/components/ProblemReportPicker.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/MovieDetailScreen.kt"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 120
     }
   ],
   "version": 1

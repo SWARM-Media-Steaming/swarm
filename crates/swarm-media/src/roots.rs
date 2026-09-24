@@ -94,7 +94,44 @@ impl RootResolver {
     /// component, so it cannot silently choose between two distinct files on
     /// a filesystem where NFC and NFD names are genuinely different.
     pub fn resolve_existing(&self, relative_path: &str) -> PathBuf {
-        self.resolve_existing_matching(relative_path, Path::is_file)
+        let (root, rest) = self.split(relative_path);
+        let exact = root.join(&rest);
+        if exact.is_file() {
+            return exact;
+        }
+
+        let mut current = root;
+        for component in Path::new(&rest).components() {
+            let std::path::Component::Normal(name) = component else {
+                return exact;
+            };
+            let candidate = current.join(name);
+            if candidate.exists() {
+                current = candidate;
+                continue;
+            }
+
+            let wanted = name.to_string_lossy().nfc().collect::<String>();
+            let Ok(entries) = std::fs::read_dir(&current) else {
+                return exact;
+            };
+            let mut matches = entries
+                .flatten()
+                .filter(|entry| entry.file_name().to_string_lossy().nfc().eq(wanted.chars()));
+            let Some(found) = matches.next() else {
+                return exact;
+            };
+            if matches.next().is_some() {
+                return exact;
+            }
+            current = found.path();
+        }
+
+        if current.is_file() {
+            current
+        } else {
+            exact
+        }
     }
 
     /// As [`Self::resolve_existing`], but for an existing directory. This is

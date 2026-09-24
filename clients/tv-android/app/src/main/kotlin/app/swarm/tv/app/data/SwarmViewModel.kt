@@ -3332,7 +3332,7 @@ class SwarmViewModel(
             else -> return
         }
         val scope = (previous as? UiState.ArtistShelf)?.takeIf { it.scopedToGenre }?.title
-            ?: genreScope.takeIf { previous is UiState.Catalog }
+            ?: genreScope.takeIf { previous is UiState.Catalog && it?.isNotBlank() == true }
         _state.value = UiState.ArtistAlbums(
             previous = previous,
             catalog = catalog,
@@ -3424,7 +3424,7 @@ class SwarmViewModel(
             else -> return
         }
         val scope = (previous as? UiState.ShowShelf)?.takeIf { it.scopedToGenre }?.title
-            ?: genreScope.takeIf { previous is UiState.Catalog }
+            ?: genreScope.takeIf { previous is UiState.Catalog && it?.isNotBlank() == true }
         _state.value = UiState.ShowSeasons(
             previous = previous,
             catalog = catalog,

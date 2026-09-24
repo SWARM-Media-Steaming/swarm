@@ -159,8 +159,9 @@ def assert_scope_precedence_and_immediate_filtering() -> None:
         ("openArtistAlbums", artist_open, "ArtistShelf"),
         ("openShowSeasons", show_open, "ShowShelf"),
     ):
+        # Accept both the original pattern and the version with #421's blank guard.
         scope_line = re.search(
-            rf"val scope = \(previous as\? UiState\.{shelf}\)\?\.takeIf \{{ it\.scopedToGenre \}}\?\.title\s*\n\s*\?\: genreScope\.takeIf \{{ previous is UiState\.Catalog \}}",
+            rf"val scope = \(previous as\? UiState\.{shelf}\)\?\.takeIf \{{ it\.scopedToGenre \}}\?\.title\s*\n\s*\?\: genreScope\.takeIf \{{ previous is UiState\.Catalog(?:\s*&&\s*it\?\.\w+\(\)\s*==\s*true)? \}}",
             body,
         )
         if not scope_line:

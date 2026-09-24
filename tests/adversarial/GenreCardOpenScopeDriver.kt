@@ -18,10 +18,10 @@ import kotlin.system.exitProcess
  * straight from Catalog.
  *
  * This mirrors, deliberately verbatim, the scope-selection expression in
- * SwarmViewModel.openArtistAlbums/openShowSeasons:
+ * SwarmViewModel.openArtistAlbums/openShowSeasons (with #421's blank guard):
  *
  *   val scope = (previous as? ArtistShelf)?.takeIf { it.scopedToGenre }?.title
- *       ?: genreScope.takeIf { previous is Catalog }
+ *       ?: genreScope.takeIf { previous is Catalog && it?.isNotBlank() == true }
  *
  * A stand-in [Previous] sealed type replaces UiState so this driver does
  * not need to pull in the whole SwarmViewModel/UiState dependency graph —
@@ -35,11 +35,11 @@ private sealed class Previous {
 
 private fun resolveArtistScope(previous: Previous, genreScopeParam: String?): String? =
     (previous as? Previous.ArtistShelf)?.takeIf { it.scopedToGenre }?.title
-        ?: genreScopeParam.takeIf { previous is Previous.Catalog }
+        ?: genreScopeParam.takeIf { previous is Previous.Catalog && it?.isNotBlank() == true }
 
 private fun resolveShowScope(previous: Previous, genreScopeParam: String?): String? =
     (previous as? Previous.ShowShelf)?.takeIf { it.scopedToGenre }?.title
-        ?: genreScopeParam.takeIf { previous is Previous.Catalog }
+        ?: genreScopeParam.takeIf { previous is Previous.Catalog && it?.isNotBlank() == true }
 
 /** Mirrors the `artists =` line in openArtistAlbums: only a direct Catalog
  * open with a resolved scope narrows immediately; everything else (a Browse
@@ -138,6 +138,24 @@ fun main() {
         listOf("Kind of Blue", "On the Corner"),
     )
 
+    // #421: blank or whitespace-only genre scopes from Catalog are treated
+    // as "no scope" — they cannot narrow to a genre that doesn't exist.
+    val blankGenreScope = resolveArtistScope(Previous.Catalog, "")
+    check("blank-genre-scope-from-catalog-is-treated-as-no-scope", blankGenreScope, null)
+    check(
+        "blank-genre-scope-does-not-narrow-the-list",
+        albumsOf(resolveArtistList(Previous.Catalog, entries, wholeArtists, blankGenreScope), "Miles"),
+        listOf("Kind of Blue", "On the Corner"),
+    )
+
+    val whitespaceGenreScope = resolveArtistScope(Previous.Catalog, "   ")
+    check("whitespace-genre-scope-from-catalog-is-treated-as-no-scope", whitespaceGenreScope, null)
+    check(
+        "whitespace-genre-scope-does-not-narrow-the-list",
+        albumsOf(resolveArtistList(Previous.Catalog, entries, wholeArtists, whitespaceGenreScope), "Miles"),
+        listOf("Kind of Blue", "On the Corner"),
+    )
+
     // A user genre literally named "Music" must still scope, not be treated
     // as the unscoped top-level row (heading text is not the discriminator).
     val namedMusicGenre = track("music-genre", "Miles", "Music Genre Album", BROWSE_ALL_MUSIC_TITLE)
@@ -197,6 +215,24 @@ fun main() {
     check(
         "top-level-show-row-open-keeps-every-episode",
         episodesOf(resolveShowList(Previous.Catalog, showEntries, wholeShows, topLevelShowScope), "The Wire"),
+        listOf("wire-s1e1", "wire-drama"),
+    )
+
+    // #421: blank or whitespace-only genre scopes from Catalog are treated
+    // as "no scope" — they cannot narrow to a genre that doesn't exist.
+    val blankShowGenreScope = resolveShowScope(Previous.Catalog, "")
+    check("blank-genre-scope-show-from-catalog-is-treated-as-no-scope", blankShowGenreScope, null)
+    check(
+        "blank-genre-scope-show-does-not-narrow-the-list",
+        episodesOf(resolveShowList(Previous.Catalog, showEntries, wholeShows, blankShowGenreScope), "The Wire"),
+        listOf("wire-s1e1", "wire-drama"),
+    )
+
+    val whitespaceShowGenreScope = resolveShowScope(Previous.Catalog, "   ")
+    check("whitespace-genre-scope-show-from-catalog-is-treated-as-no-scope", whitespaceShowGenreScope, null)
+    check(
+        "whitespace-genre-scope-show-does-not-narrow-the-list",
+        episodesOf(resolveShowList(Previous.Catalog, showEntries, wholeShows, whitespaceShowGenreScope), "The Wire"),
         listOf("wire-s1e1", "wire-drama"),
     )
 

@@ -1683,6 +1683,36 @@
         "servers": []
       },
       "timeoutSeconds": 1800
+    },
+    {
+      "command": [
+        "python3",
+        "tests/adversarial/test_issue_421_blank_genre_shelf_guard.py"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-blank-genre-shelf-guard",
+      "name": "Adversarial: issue #421 blank genre shelf guard",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "python3",
+          "java"
+        ],
+        "files": [
+          "tests/adversarial/test_issue_421_blank_genre_shelf_guard.py",
+          "tests/adversarial/BlankGenreShelfGuardDriver.kt",
+          "clients/tv-android/gradlew",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/data/BrowseAllShelf.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/data/SwarmViewModel.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/CatalogScreen.kt"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
     }
   ],
   "version": 1

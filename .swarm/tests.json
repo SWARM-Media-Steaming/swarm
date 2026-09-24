@@ -962,6 +962,111 @@
     },
     {
       "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "tests/adversarial/same_entry_crash_retry/Cargo.toml",
+        "--target-dir",
+        "target/adversarial-issue-384",
+        "--test",
+        "issue_384_same_entry_crash_retry",
+        "--",
+        "--nocapture"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-384-same-entry-crash-retry",
+      "name": "Adversarial: issue #384 same-owner /play on an already-claimed stream",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "cargo"
+        ],
+        "files": [
+          "tests/adversarial/same_entry_crash_retry/Cargo.toml",
+          "tests/adversarial/same_entry_crash_retry/tests/issue_384_same_entry_crash_retry.rs",
+          "crates/swarm-media/src/transcode.rs",
+          "crates/swarm-media/src/serve.rs"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "tests/adversarial/same_owner_range_gap_retry/Cargo.toml",
+        "--target-dir",
+        "target/adversarial-issue-384-range-gap",
+        "--test",
+        "issue_384_same_owner_range_gap_retry",
+        "--",
+        "--nocapture"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-384-same-owner-range-gap-retry",
+      "name": "Adversarial: issue #384 same-owner /play between range requests of a live stream",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "cargo"
+        ],
+        "files": [
+          "tests/adversarial/same_owner_range_gap_retry/Cargo.toml",
+          "tests/adversarial/same_owner_range_gap_retry/tests/issue_384_same_owner_range_gap_retry.rs",
+          "crates/swarm-media/src/transcode.rs",
+          "crates/swarm-media/src/serve.rs"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "tests/adversarial/switch_title_clean_release/Cargo.toml",
+        "--target-dir",
+        "target/adversarial-issue-384-switch-title",
+        "--test",
+        "issue_384_switch_title_clean_release",
+        "--",
+        "--nocapture"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-384-switch-title-clean-release",
+      "name": "Adversarial: issue #384 cross-title negotiation must reap a cleanly-finished-but-abandoned session",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "cargo"
+        ],
+        "files": [
+          "tests/adversarial/switch_title_clean_release/Cargo.toml",
+          "tests/adversarial/switch_title_clean_release/tests/issue_384_switch_title_clean_release.rs",
+          "crates/swarm-media/src/transcode.rs",
+          "crates/swarm-media/src/serve.rs"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
+    },
+    {
+      "command": [
         "python3",
         "tests/adversarial/test_genre_show_browse_all_preview_seasons.py"
       ],

@@ -126,25 +126,63 @@ namespace Swarm.Registry
     end sub
 
     ' ---- watch state ----
-    ' fingerprint -> { positionSecs, durationSecs, watched, updatedAt }
+    ' fingerprint -> { positionSecs, durationSecs, watched, updatedAt,
+    ' showTitle, season, episode }. showTitle/season/episode are only
+    ' populated for episode entries (invalid for movies/tracks) and are the
+    ' same identity Fire TV's WatchState.kt snapshots -- a normalized
+    ' (lowercase-trimmed) show title plus integer season/episode -- so a
+    ' recode that changes the fingerprint can still resolve the in-progress
+    ' episode. See #379.
 
-    function GetWatchState(fingerprint as string) as dynamic
+    ' Looks up by fingerprint first. If that misses and a full
+    ' showTitle/season/episode identity is supplied, falls back to a scan
+    ' for the most recently updated entry with a matching identity -- this
+    ' is what lets a post-recode fingerprint recover pre-recode progress.
+    function GetWatchState(fingerprint as string, showTitle = invalid as dynamic, season = invalid as dynamic, episode = invalid as dynamic) as dynamic
         all = ReadMap(SectionWatch, "entries")
         if all.DoesExist(fingerprint)
             return all[fingerprint]
         end if
-        return invalid
+        if showTitle = invalid or season = invalid or episode = invalid
+            return invalid
+        end if
+        best = invalid
+        for each key in all.Keys()
+            candidate = all[key]
+            if MatchesEpisodeIdentity(candidate, showTitle, season, episode)
+                if best = invalid or candidate.updatedAt > best.updatedAt
+                    best = candidate
+                end if
+            end if
+        end for
+        return best
     end function
 
-    sub SetWatchState(fingerprint as string, positionSecs as float, durationSecs as float)
+    function MatchesEpisodeIdentity(entry as object, showTitle as string, season as integer, episode as integer) as boolean
+        if entry.showTitle = invalid or entry.season = invalid or entry.episode = invalid
+            return false
+        end if
+        return entry.showTitle = LCase(showTitle.Trim()) and entry.season = season and entry.episode = episode
+    end function
+
+    sub SetWatchState(fingerprint as string, positionSecs as float, durationSecs as float, showTitle = invalid as dynamic, season = invalid as dynamic, episode = invalid as dynamic)
         all = ReadMap(SectionWatch, "entries")
         watched = durationSecs > 0.0 and (positionSecs / durationSecs) >= 0.95
-        all[fingerprint] = {
+        record = {
             positionSecs: positionSecs
             durationSecs: durationSecs
             watched: watched
             updatedAt: NowSeconds()
+            showTitle: invalid
+            season: invalid
+            episode: invalid
         }
+        if showTitle <> invalid and season <> invalid and episode <> invalid
+            record.showTitle = LCase(showTitle.Trim())
+            record.season = season
+            record.episode = episode
+        end if
+        all[fingerprint] = record
         all = EnforceLru(all, MaxWatchStateEntries)
         WriteJson(SectionWatch, "entries", all)
     end sub

@@ -1141,6 +1141,36 @@
         "servers": []
       },
       "timeoutSeconds": 120
+    },
+    {
+      "command": [
+        "python3",
+        "tests/adversarial/test_issue_379_roku_watch_state_recode.py"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-379-roku-watch-state-recode",
+      "name": "Adversarial: issue #379 Roku watch state show/season/episode recode fallback",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "python3"
+        ],
+        "files": [
+          "tests/adversarial/test_issue_379_roku_watch_state_recode.py",
+          "tests/roku_catalog_grouping.py",
+          "clients/tv-roku/src/source/Registry.bs",
+          "clients/tv-roku/src/source/CatalogGrouping.bs",
+          "clients/tv-roku/src/components/screens/CatalogScreen.bs",
+          "clients/tv-roku/src/components/screens/PlayerScreen.bs",
+          "clients/tv-roku/src/components/screens/MovieDetailScreen.bs"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 120
     }
   ],
   "version": 1

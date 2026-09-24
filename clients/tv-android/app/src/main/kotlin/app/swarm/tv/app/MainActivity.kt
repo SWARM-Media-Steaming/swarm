@@ -541,11 +541,11 @@ private fun SwarmApp(
     onOpenMovieShelf: (String, List<MergedEntry>, Boolean) -> Unit,
     onBackFromMovieShelf: () -> Unit,
     onOpenArtistShelf: (String, List<ArtistGroup>, Boolean) -> Unit,
-    onOpenArtist: (ArtistGroup) -> Unit,
+    onOpenArtist: (ArtistGroup, String?) -> Unit,
     onBackFromArtistShelf: () -> Unit,
     onBackFromArtistAlbums: () -> Unit,
     onOpenShowShelf: (String, List<ShowGroup>, Boolean) -> Unit,
-    onOpenShow: (ShowGroup) -> Unit,
+    onOpenShow: (ShowGroup, String?) -> Unit,
     onSelectShowSeason: (SeasonGroup?) -> Unit,
     onBackFromShowShelf: () -> Unit,
     onBackFromShowSeasons: () -> Unit,
@@ -984,11 +984,11 @@ private fun SwarmApp(
                         lastFocusedArtistKey = BROWSE_ALL_TILE_FOCUS_KEY
                         onOpenArtistShelf(title, artists, scopedToGenre)
                     },
-                    onOpenArtist = { artist ->
+                    onOpenArtist = { artist, genreScope ->
                         lastFocusedMovieKey = null
                         lastFocusedShowKey = null
                         lastFocusedArtistKey = artist.artist
-                        onOpenArtist(artist)
+                        onOpenArtist(artist, genreScope)
                     },
                     onOpenShowShelf = { title, shows, scopedToGenre ->
                         lastFocusedMovieKey = null
@@ -996,11 +996,11 @@ private fun SwarmApp(
                         lastFocusedArtistKey = null
                         onOpenShowShelf(title, shows, scopedToGenre)
                     },
-                    onOpenShow = { show ->
+                    onOpenShow = { show, genreScope ->
                         lastFocusedMovieKey = null
                         lastFocusedShowKey = show.show
                         lastFocusedArtistKey = null
-                        onOpenShow(show)
+                        onOpenShow(show, genreScope)
                     },
                     onOpenSwarm = {
                         showCatalogExitConfirm = false
@@ -1054,7 +1054,7 @@ private fun SwarmApp(
                         lastFocusedMovieKey = null
                         lastFocusedShowKey = null
                         lastFocusedArtistKey = artist.artist
-                        onOpenArtist(artist)
+                        onOpenArtist(artist, null)
                     },
                     onBack = onBackFromArtistShelf,
                     initialFocusKey = lastFocusedArtistKey,
@@ -1109,7 +1109,7 @@ private fun SwarmApp(
                         lastFocusedMovieKey = null
                         lastFocusedShowKey = show.show
                         lastFocusedArtistKey = null
-                        onOpenShow(show)
+                        onOpenShow(show, null)
                     },
                     onBack = onBackFromShowShelf,
                     initialFocusKey = lastFocusedShowKey,

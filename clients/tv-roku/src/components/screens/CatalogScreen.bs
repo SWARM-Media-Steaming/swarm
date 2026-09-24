@@ -1,5 +1,6 @@
 import "pkg:/source/CatalogGrouping.bs"
 import "pkg:/source/Artwork.bs"
+import "pkg:/source/Registry.bs"
 
 const MaxShelfItems = 10
 const TileWidth = 130
@@ -219,16 +220,26 @@ sub activateFocusedTile()
     else if action.kind = "show"
         firstEp = Swarm.CatalogGrouping.FirstEpisode(action.show.episodes)
         if firstEp <> invalid
-            startPlayback(firstEp)
+            startPlayback(firstEp, resumePositionSecsFor(firstEp))
         end if
     else if action.kind = "artist"
         firstTrack = Swarm.CatalogGrouping.FirstTrack(action.artist.tracks)
         if firstTrack <> invalid
-            startPlayback(firstTrack)
+            startPlayback(firstTrack, 0.0)
         end if
     end if
 end sub
 
-sub startPlayback(entry as object)
-    m.appState.callFunc("pushScreen", { screen: "player", data: { entry: entry, resumePositionSecs: 0.0 } })
+' Falls back to the show/season/episode identity when the fingerprint alone
+' doesn't resolve (e.g. an overnight recode changed it) -- see #379.
+function resumePositionSecsFor(entry as object) as float
+    saved = Swarm.Registry.GetWatchState(entry.fingerprint, entry.show_title, entry.season, entry.episode)
+    if saved <> invalid and not saved.watched and saved.positionSecs > 0.0
+        return saved.positionSecs
+    end if
+    return 0.0
+end function
+
+sub startPlayback(entry as object, resumePositionSecs as float)
+    m.appState.callFunc("pushScreen", { screen: "player", data: { entry: entry, resumePositionSecs: resumePositionSecs } })
 end sub

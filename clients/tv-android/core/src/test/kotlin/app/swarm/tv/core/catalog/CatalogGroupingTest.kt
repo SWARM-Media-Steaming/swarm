@@ -214,6 +214,17 @@ class CatalogGroupingTest {
     }
 
     @Test
+    fun `browsableShows omits groups without preview seasons`() {
+        val entries = listOf(
+            episode("real", "Dexter", 2, 3),
+            episode("special", "Behind the Scenes", 0, 1),
+            episode("loose", "Interview", null, null),
+        )
+
+        assertEquals(listOf("Dexter"), CatalogGrouping.browsableShows(entries).map { it.show })
+    }
+
+    @Test
     fun `show preview randomizes both real seasons and their episodes`() {
         val entries = listOf(
             episode("s1e1", "Dexter", 1, 1),

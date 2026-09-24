@@ -163,8 +163,9 @@ The dashboard's "Resolve" button is a Tauri desktop-GUI command with no
 existing HTTP route, so an unattended run can't click it. `apps/server`
 exposes a debug-build-only `POST /errors/{id}/resolve` endpoint (mirroring
 the existing dismiss endpoint's gating) specifically for this suite. The
-flow: the instrumented test submits a real problem report through the UI,
-confirms the "Problem Report Sent." toast, then emits a logcat checkpoint
+flow: the instrumented test opens the report picker, selects a real category
+option by its `PROBLEM_REPORT_OPTION_PREFIX` tag with D-pad Center, then
+confirms the "Problem Report Sent." toast before it emits a logcat checkpoint
 (`UAT_AWAITING_SERVER_RESOLVE`) and waits. The orchestration script watches
 for that checkpoint while the instrumentation run is still in progress,
 queries `client_errors` for the most recently received still-unresolved row

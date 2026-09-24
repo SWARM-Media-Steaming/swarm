@@ -1,0 +1,15 @@
+[workspace]
+
+[package]
+name = "adversarial-issue-407-scrape-artwork-ambiguous-normalization"
+description = "Adversarial UAT for issue #407: an on-disk directory-name collision under NFC normalization must not let scrape artwork existence or local-cover import guess between two distinct real directories."
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+swarm-core = { path = "../../../crates/swarm-core" }
+swarm-media = { path = "../../../crates/swarm-media" }
+tokio = { version = "1", features = ["full", "test-util"] }
+unicode-normalization = "0.1"

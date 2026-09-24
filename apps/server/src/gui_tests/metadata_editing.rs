@@ -2,7 +2,7 @@
 //! scanned entry.
 
 use super::harness::test_app_with_media_root;
-use crate::{list_entries, rescan, set_manual_metadata};
+use crate::{clear_scraped_metadata, get_artwork_bytes, list_entries, rescan, set_manual_metadata};
 use tauri::Manager;
 
 async fn seed_one_entry(app: &tauri::AppHandle<tauri::test::MockRuntime>, root_dir: &std::path::Path) -> String {
@@ -76,4 +76,48 @@ async fn set_manual_metadata_on_an_unknown_entry_key_is_a_silent_no_op() {
         .await
         .expect("list_entries should succeed");
     assert!(entries.is_empty(), "no entry should have been created");
+}
+
+#[tokio::test]
+async fn artwork_commands_handle_unicode_normalized_smb_paths() {
+    let (test_app, root_dir) = test_app_with_media_root().await;
+    let app = test_app.handle();
+    let nfd_directory = "Cafe\u{301}";
+    let nfc_artwork_path = "Café/images/cover.jpg";
+    let actual_artwork_path = root_dir.path().join(nfd_directory).join("images/cover.jpg");
+
+    std::fs::create_dir_all(actual_artwork_path.parent().unwrap())
+        .expect("create NFD fixture directory");
+    std::fs::write(&actual_artwork_path, b"cover bytes").expect("write fixture artwork");
+    let entry_key = seed_one_entry(&app, root_dir.path()).await;
+
+    let core = app
+        .state::<crate::AppState>()
+        .core(&app)
+        .await
+        .expect("get server core");
+    core.library
+        .set_artwork(
+            &entry_key,
+            swarm_media::store::ArtworkKind::Cover,
+            nfc_artwork_path,
+        )
+        .await
+        .expect("store NFC artwork path");
+
+    assert_eq!(
+        get_artwork_bytes(app.clone(), app.state(), entry_key.clone(), "cover".to_string())
+            .await
+            .expect("read artwork"),
+        Some(b"cover bytes".to_vec()),
+        "the GUI must find an NFD SMB artwork path stored as NFC"
+    );
+
+    clear_scraped_metadata(app.clone(), app.state(), entry_key)
+        .await
+        .expect("clear metadata");
+    assert!(
+        !actual_artwork_path.exists(),
+        "cleanup must delete the NFD artwork file stored as an NFC catalog path"
+    );
 }

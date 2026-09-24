@@ -3007,7 +3007,10 @@ async fn get_artwork_bytes<R: tauri::Runtime>(
     let Some((relative_path, _version)) = lookup.map_err(|e| e.to_string())? else {
         return Ok(None);
     };
-    let path = core.media_roots.resolve(&relative_path);
+    // Artwork paths are catalog values too. An SMB directory listing can
+    // expose an NFD spelling after the catalog retained NFC, so mirror the
+    // HTTP artwork handler's safe existing-path fallback.
+    let path = core.media_roots.resolve_existing(&relative_path);
     match tokio::fs::read(&path).await {
         Ok(bytes) => Ok(Some(bytes)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -3705,7 +3708,9 @@ async fn clear_scraped_metadata<R: tauri::Runtime>(
         .await
         .map_err(|e| e.to_string())?;
     for relative_path in cleared_paths {
-        let path = core.media_roots.resolve(&relative_path);
+        // Scraped artwork can carry the same NFC/NFD mismatch as the media
+        // entry that owns it, particularly on macOS SMB mounts.
+        let path = core.media_roots.resolve_existing(&relative_path);
         let _ = tokio::fs::remove_file(&path).await;
     }
     Ok(())

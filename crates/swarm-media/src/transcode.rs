@@ -474,13 +474,6 @@ struct Session {
     /// keeps two claimed sessions alive for one owner) apart from an
     /// episode/movie session, which never does.
     track: bool,
-    /// The entry this reservation plays. Used only by
-    /// [`TranscodeManager::cancel_stale_claimed_for_owner`] to tell an
-    /// abandoned session for a *different* entry (safe to reap) apart from
-    /// a same-owner retry/re-negotiation of the entry that is already
-    /// claimed and playing (#384: must never be reaped just because it is
-    /// momentarily between requests, i.e. `in_use == 0`).
-    entry_key: String,
 }
 
 #[derive(Default)]
@@ -821,7 +814,7 @@ impl TranscodeManager {
             if let Some(owner) = owner {
                 self.cancel_unclaimed_for_owner(owner);
                 if entry.kind != MediaKind::Track {
-                    self.cancel_stale_claimed_for_owner(owner, &entry.entry_key);
+                    self.cancel_stale_claimed_for_owner(owner);
                 }
             }
         }
@@ -1190,10 +1183,6 @@ impl TranscodeManager {
             return Err(TranscodeError::Bandwidth);
         }
         let id = session_id();
-        let entry_key = match &kind {
-            SessionKind::Direct { entry_key } => entry_key.clone(),
-            SessionKind::Hls { .. } => unreachable!("reserve() only ever creates direct-play sessions"),
-        };
         state.sessions.insert(
             id.clone(),
             Session {
@@ -1206,7 +1195,6 @@ impl TranscodeManager {
                 last_access: Instant::now(),
                 in_use: 0,
                 track,
-                entry_key,
             },
         );
         if let Some(owner) = owner {
@@ -1285,20 +1273,13 @@ impl TranscodeManager {
     /// A fresh, non-preview, non-track request from the *same* owner can reap
     /// only an inactive claimed session immediately. `in_use` remains nonzero
     /// while the response body is being streamed, which distinguishes a live
-    /// playback retry from a stream that was dropped by a crashed client —
-    /// but only between requests for two different entries: a direct-play
-    /// session's `in_use` is briefly 0 between every Range request even
-    /// while the TV is happily still watching it, so this must also require
-    /// the claimed session's entry to differ from `current_entry_key` (#384:
-    /// negotiating `/play` again for the entry a TV already claimed and is
-    /// actively playing — the ordinary transport-retry/still-watching path —
-    /// used to 404 that live stream because it landed on this reaper between
-    /// two of its Range requests). Track sessions are excluded because
+    /// playback retry from a stream that was dropped by a crashed client.
+    /// Track sessions are excluded because
     /// `preloadNextTrack` intentionally keeps the currently-playing track's
     /// session claimed while it negotiates the next one ahead of a gapless
     /// transition — that pair of claimed sessions for one owner is expected,
     /// not orphaned.
-    fn cancel_stale_claimed_for_owner(&self, owner: &str, current_entry_key: &str) {
+    fn cancel_stale_claimed_for_owner(&self, owner: &str) {
         let stale = {
             let state = self.state.lock().unwrap();
             state
@@ -1307,11 +1288,10 @@ impl TranscodeManager {
                 .filter(|(id, session_owner)| {
                     session_owner.as_str() == owner
                         && state.claimed.contains(*id)
-                        && state.sessions.get(*id).is_some_and(|session| {
-                            !session.track
-                                && session.in_use == 0
-                                && session.entry_key != current_entry_key
-                        })
+                        && state
+                            .sessions
+                            .get(*id)
+                            .is_some_and(|session| !session.track && session.in_use == 0)
                 })
                 .map(|(id, _)| id.clone())
                 .collect::<Vec<_>>()
@@ -1392,7 +1372,6 @@ impl TranscodeManager {
                     last_access: Instant::now(),
                     in_use: 0,
                     track: entry.kind == MediaKind::Track,
-                    entry_key: entry.entry_key.clone(),
                 },
             );
             if let Some(owner) = owner {
@@ -2575,7 +2554,6 @@ mod tests {
             last_access: Instant::now(),
             in_use: 0,
             track: false,
-            entry_key: "movie".into(),
         };
         let mut state = State::default();
         state.sessions.insert(
@@ -2631,7 +2609,6 @@ mod tests {
             last_access: Instant::now(),
             in_use: 0,
             track: false,
-            entry_key: "movie".into(),
         };
         {
             let mut state = manager.state.lock().unwrap();
@@ -2683,7 +2660,6 @@ mod tests {
             last_access: Instant::now(),
             in_use: 0,
             track: false,
-            entry_key: "movie".into(),
         };
         {
             let mut state = manager.state.lock().unwrap();
@@ -2715,22 +2691,17 @@ mod tests {
     /// consuming a `max_sessions` slot for the full idle timeout, so
     /// retrying the very episode that crashed kept failing with "capacity
     /// full". `cancel_stale_claimed_for_owner` should reap that owner's
-    /// inactive claimed, non-track session for the *previous* (S4E3) entry —
-    /// but never an active stream, a claimed track session (the deliberate
-    /// ahead-of-time preload from `preloadNextTrack`), another owner's
-    /// claimed session, or (#384) a claimed session for the *same* entry
-    /// currently being negotiated: a direct-play retry/re-negotiation of the
-    /// entry a TV already claimed and is still watching also has `in_use ==
-    /// 0` between Range requests, and must not be superseded by its own
-    /// still-watching session.
+    /// inactive claimed, non-track sessions — but never an active stream, a
+    /// claimed track session (the deliberate ahead-of-time preload from
+    /// `preloadNextTrack`), or another owner's claimed session.
     #[test]
     fn stale_claimed_non_track_sessions_are_reaped_for_the_same_owner() {
         let manager = TranscodeManager::new(TranscodeConfig::disabled(std::env::temp_dir().join(
             format!("swarm-stale-claimed-preemption-test-{}", session_id()),
         )));
-        let session = |track, entry_key: &str| Session {
+        let session = |track| Session {
             kind: SessionKind::Direct {
-                entry_key: entry_key.into(),
+                entry_key: "movie".into(),
             },
             preview: false,
             cancelled: Arc::new(AtomicBool::new(false)),
@@ -2740,25 +2711,15 @@ mod tests {
             last_access: Instant::now(),
             in_use: 0,
             track,
-            entry_key: entry_key.into(),
         };
         {
             let mut state = manager.state.lock().unwrap();
-            state
-                .sessions
-                .insert("crashed-episode".into(), session(false, "s4e3"));
-            let mut active = session(false, "s4e3");
+            state.sessions.insert("crashed-episode".into(), session(false));
+            let mut active = session(false);
             active.in_use = 1;
             state.sessions.insert("actively-playing".into(), active);
-            state
-                .sessions
-                .insert("preloaded-track".into(), session(true, "s4e3"));
-            state
-                .sessions
-                .insert("other-tv-episode".into(), session(false, "s4e3"));
-            state
-                .sessions
-                .insert("still-watching".into(), session(false, "s4e4"));
+            state.sessions.insert("preloaded-track".into(), session(true));
+            state.sessions.insert("other-tv-episode".into(), session(false));
             state
                 .owners
                 .insert("crashed-episode".into(), "living-room".into());
@@ -2771,27 +2732,19 @@ mod tests {
             state
                 .owners
                 .insert("other-tv-episode".into(), "bedroom".into());
-            state
-                .owners
-                .insert("still-watching".into(), "living-room".into());
             state.claimed.insert("crashed-episode".into());
             state.claimed.insert("actively-playing".into());
             state.claimed.insert("preloaded-track".into());
             state.claimed.insert("other-tv-episode".into());
-            state.claimed.insert("still-watching".into());
         }
 
-        manager.cancel_stale_claimed_for_owner("living-room", "s4e4");
+        manager.cancel_stale_claimed_for_owner("living-room");
 
         let state = manager.state.lock().unwrap();
         assert!(!state.sessions.contains_key("crashed-episode"));
         assert!(state.sessions.contains_key("actively-playing"));
         assert!(state.sessions.contains_key("preloaded-track"));
         assert!(state.sessions.contains_key("other-tv-episode"));
-        assert!(
-            state.sessions.contains_key("still-watching"),
-            "a retry for the entry already claimed and playing must not supersede it"
-        );
         assert!(!state.owners.contains_key("crashed-episode"));
     }
 
@@ -2819,7 +2772,6 @@ mod tests {
                     last_access: Instant::now(),
                     in_use: 0,
                     track: false,
-                    entry_key: "movie".into(),
                 },
             );
         }

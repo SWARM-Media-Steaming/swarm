@@ -94,9 +94,24 @@ impl RootResolver {
     /// component, so it cannot silently choose between two distinct files on
     /// a filesystem where NFC and NFD names are genuinely different.
     pub fn resolve_existing(&self, relative_path: &str) -> PathBuf {
+        self.resolve_existing_matching(relative_path, Path::is_file)
+    }
+
+    /// As [`Self::resolve_existing`], but for an existing directory. This is
+    /// useful for operations that enumerate a catalogued media folder rather
+    /// than opening a catalogued file.
+    pub fn resolve_existing_dir(&self, relative_path: &str) -> PathBuf {
+        self.resolve_existing_matching(relative_path, Path::is_dir)
+    }
+
+    fn resolve_existing_matching(
+        &self,
+        relative_path: &str,
+        is_expected_type: impl Fn(&Path) -> bool,
+    ) -> PathBuf {
         let (root, rest) = self.split(relative_path);
         let exact = root.join(&rest);
-        if exact.is_file() {
+        if is_expected_type(&exact) {
             return exact;
         }
 
@@ -127,7 +142,7 @@ impl RootResolver {
             current = found.path();
         }
 
-        if current.is_file() {
+        if is_expected_type(&current) {
             current
         } else {
             exact
@@ -234,6 +249,13 @@ impl SharedRootResolver {
 
     pub fn resolve_existing(&self, relative_path: &str) -> PathBuf {
         self.inner.read().unwrap().resolve_existing(relative_path)
+    }
+
+    pub fn resolve_existing_dir(&self, relative_path: &str) -> PathBuf {
+        self.inner
+            .read()
+            .unwrap()
+            .resolve_existing_dir(relative_path)
     }
 
     pub fn split(&self, relative_path: &str) -> (PathBuf, String) {
@@ -386,6 +408,21 @@ mod tests {
             resolved.is_file(),
             "an NFC catalog path must find the NFD name returned by an SMB directory listing"
         );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn resolve_existing_dir_recovers_an_unambiguous_unicode_normalization_mismatch() {
+        let root =
+            std::env::temp_dir().join(format!("swarm-root-unicode-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let actual = root.join("music/Cafe\u{301}");
+        std::fs::create_dir_all(&actual).unwrap();
+
+        let resolver = RootResolver::single(root.clone());
+        let resolved = resolver.resolve_existing_dir("music/Café");
+        assert!(resolved.is_dir());
 
         let _ = std::fs::remove_dir_all(root);
     }

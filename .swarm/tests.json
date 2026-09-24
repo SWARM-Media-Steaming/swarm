@@ -1547,6 +1547,42 @@
         "servers": []
       },
       "timeoutSeconds": 120
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "tests/adversarial/scrape_artwork_multiroot_normalization/Cargo.toml",
+        "--target-dir",
+        "target/adversarial-issue-407-multiroot",
+        "--test",
+        "issue_407_scrape_artwork_multiroot_normalization",
+        "--",
+        "--nocapture"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-407-scrape-artwork-multiroot-normalization",
+      "name": "Adversarial: issue #407 labelled-root scrape artwork normalization",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "cargo"
+        ],
+        "files": [
+          "tests/adversarial/scrape_artwork_multiroot_normalization/Cargo.toml",
+          "tests/adversarial/scrape_artwork_multiroot_normalization/tests/issue_407_scrape_artwork_multiroot_normalization.rs",
+          "crates/swarm-media/src/scrape/artwork.rs",
+          "crates/swarm-media/src/scrape/runner.rs",
+          "crates/swarm-media/src/roots.rs"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
     }
   ],
   "version": 1

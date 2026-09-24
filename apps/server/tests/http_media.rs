@@ -570,6 +570,99 @@ async fn stop_releases_the_reservation_over_http() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
+/// #390: `/play` must pass a stable `playback_owner` (the paired device's
+/// `token_hash`, not its display name) so a repeated negotiation from the
+/// same device supersedes only its own unclaimed reservation instead of
+/// leaking one session of reserved bandwidth per abandoned negotiation.
+/// `crates/swarm-media/tests/playback.rs` already proves this at the
+/// `MediaService::resolve_for_peer` level; this proves the real HTTP route
+/// actually plumbs a device identity into that call instead of silently
+/// resolving with no owner (`resolve_for_client`'s `None`), which is exactly
+/// the bug that let claimed-session reaping never run on this transport.
+#[tokio::test]
+async fn play_retry_from_the_same_device_supersedes_its_abandoned_reservation_over_http() {
+    let base = std::env::temp_dir().join(format!("swarm-http-owner-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let media_root = base.join("media");
+    std::fs::create_dir_all(&media_root).unwrap();
+
+    let core = ServerCore::start(test_config(&media_root, base.join("server-data")))
+        .await
+        .unwrap();
+    core.wait_for_scan().await.unwrap();
+
+    let relative_path = "movies/example.mp4";
+    let media_bytes = deterministic_bytes(1_000_000, 7);
+    let media_path = media_root.join(relative_path);
+    std::fs::create_dir_all(media_path.parent().unwrap()).unwrap();
+    std::fs::write(&media_path, &media_bytes).unwrap();
+    let entry = direct_play_entry("bbbb11112222333344445555", relative_path, media_bytes.len() as u64);
+    core.library.upsert(&entry).await.unwrap();
+
+    let base_url = format!("http://{}", core.http_media_addr);
+    let client = reqwest::Client::new();
+    let token = pair_and_get_token(&client, &base_url, &core, "Living Room Roku").await;
+
+    let negotiate = || {
+        let client = client.clone();
+        let base_url = base_url.clone();
+        let token = token.clone();
+        let entry_key = entry.entry_key.clone();
+        async move {
+            let response: PlaybackPlan = client
+                .post(format!("{base_url}/play/{entry_key}"))
+                .bearer_auth(&token)
+                .json(&json!({
+                    "capabilities": CapabilityProfile::fire_tv_baseline(),
+                    "start_position_secs": 0,
+                    "prefer_direct": true,
+                    "preview": false,
+                }))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            response
+        }
+    };
+
+    // The device negotiates but never opens the plan (its /play response
+    // stream was lost, as happens on a real flaky connection).
+    let abandoned = negotiate().await;
+    assert_eq!(abandoned.mode, PlaybackMode::Direct);
+
+    // A retry from the same paired device must replace that unclaimed
+    // reservation rather than piling up a second one.
+    let retry = negotiate().await;
+    assert_eq!(retry.mode, PlaybackMode::Direct);
+    assert_ne!(retry.session_id, abandoned.session_id);
+
+    let abandoned_media = client
+        .get(format!("{base_url}{}", abandoned.path))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        abandoned_media.status(),
+        404,
+        "the superseded plan must no longer consume capacity"
+    );
+
+    let retry_media = client
+        .get(format!("{base_url}{}", retry.path))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(retry_media.status(), 200);
+
+    drop(core);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
 /// A device can't caption anything without this route: `PlaybackPlan.subtitles`
 /// points at server-generated paths (WebVTT from local transcription, in
 /// this case), not directly-fetchable file paths — without `/subtitles/*`

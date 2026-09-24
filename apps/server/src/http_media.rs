@@ -320,8 +320,16 @@ struct AppState {
     link_status: tokio::sync::watch::Receiver<SwarmLinkStatus>,
 }
 
+/// `.0` is the paired device's display name (dashboard/log label); `.1` is
+/// its `token_hash` — stable for the device's lifetime, unlike its name
+/// which an owner can rename in the dashboard, and unlike its address which
+/// can roam across an HTTP-only device's reconnects. Used as `playback_owner`
+/// so claimed-session reaping (`TranscodeManager::plan` ->
+/// `cancel_stale_claimed_for_owner`) runs on this transport exactly as it
+/// does for a QUIC peer's certificate fingerprint — see
+/// `resolve_for_peer`/`resolve_for_transport` in `swarm-media`'s `serve.rs`.
 #[derive(Clone)]
-struct AuthenticatedDevice(String);
+struct AuthenticatedDevice(String, String);
 
 /// Starts the listener as a detached background task (matching every other
 /// listener in this app — QUIC's `accept_loop`, `lan.rs`'s TCP accept loop —
@@ -521,13 +529,12 @@ async fn require_bearer(
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
         .ok_or(StatusCode::UNAUTHORIZED)?;
-    match state
-        .state_db
-        .http_media_device_name(&token_hash(token))
-        .await
-    {
+    let hash = token_hash(token);
+    match state.state_db.http_media_device_name(&hash).await {
         Ok(Some(name)) => {
-            request.extensions_mut().insert(AuthenticatedDevice(name));
+            request
+                .extensions_mut()
+                .insert(AuthenticatedDevice(name, hash));
             Ok(next.run(request).await)
         }
         Ok(None) => Err(StatusCode::UNAUTHORIZED),
@@ -633,7 +640,7 @@ async fn play(
         error_report: None,
         like: None,
     };
-    resolve_and_respond(&state, &request, addr.ip(), &device.0).await
+    resolve_and_respond(&state, &request, addr.ip(), &device).await
 }
 
 async fn report_client_error(
@@ -650,7 +657,7 @@ async fn report_client_error(
         error_report: Some(report),
         like: None,
     };
-    resolve_and_respond(&state, &request, addr.ip(), &device.0).await
+    resolve_and_respond(&state, &request, addr.ip(), &device).await
 }
 
 async fn toggle_like(
@@ -667,7 +674,7 @@ async fn toggle_like(
         error_report: None,
         like: Some(like),
     };
-    resolve_and_respond(&state, &request, addr.ip(), &device.0).await
+    resolve_and_respond(&state, &request, addr.ip(), &device).await
 }
 
 #[cfg(debug_assertions)]
@@ -748,7 +755,7 @@ async fn media_get(
         error_report: None,
         like: None,
     };
-    resolve_and_respond(&state, &request, addr.ip(), &device.0).await
+    resolve_and_respond(&state, &request, addr.ip(), &device).await
 }
 
 fn parse_range_header(value: &axum::http::HeaderValue) -> Option<ByteRange> {
@@ -775,13 +782,14 @@ async fn resolve_and_respond(
     state: &AppState,
     request: &PeerRequest,
     remote_ip: IpAddr,
-    client: &str,
+    device: &AuthenticatedDevice,
 ) -> Response {
+    let AuthenticatedDevice(client, playback_owner) = device;
     let is_lan = is_lan_ip(remote_ip);
     tracing::info!(device = %client, path = %request.path, %remote_ip, is_lan, "http media request");
     let resolved = state
         .service
-        .resolve_for_client(request, is_lan, client)
+        .resolve_for_peer(request, is_lan, client, playback_owner)
         .await;
 
     let status =

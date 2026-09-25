@@ -26,8 +26,9 @@ use std::io::BufWriter;
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
+use tokio::sync::Semaphore;
 use swarm_core::entry_key::is_valid_entry_key;
 use swarm_core::peer::{
     BuzzChoice, BuzzRequest, BuzzResponse, CatalogEntry, CatalogManifest, CatalogThumbprint,
@@ -228,12 +229,30 @@ pub struct Resolved {
     session_id: Option<String>,
 }
 
-/// Tuning mirrors `scan::TRANSIENT_STAT_RETRIES`/`TRANSIENT_STAT_RETRY_DELAY`
-/// — same measured `smbfs` flake, same budget (~1.9s worst case), just
-/// waited out with an async sleep here instead of a blocking one (see
-/// [`resolve_existing_media_file`]).
-const RESOLVE_EXISTING_RETRIES: u32 = 7;
-const RESOLVE_EXISTING_RETRY_DELAY: Duration = Duration::from_millis(30);
+/// Tuning is deliberately much smaller than `scan::TRANSIENT_STAT_RETRIES`/
+/// `TRANSIENT_STAT_RETRY_DELAY` (same measured `smbfs` flake, same shape of
+/// fix): the scan-time retry runs off the request path inside
+/// `spawn_blocking`, so its ~1.9s budget only ever delays a background
+/// walk. This one runs inline in an async request handler, so its budget is
+/// wall-clock time a real client — or, worse, a flood of concurrent
+/// requests against known-missing entries — can force the server to hold
+/// open. Capped at ~600ms worst case per attempt chain, and
+/// [`RESOLVE_RETRY_PERMITS`] below additionally bounds how many requests may
+/// be inside that wait at once, so the aggregate cost of hammering `/play`
+/// or `/media` for missing entries stays bounded no matter how many
+/// requests an attacker fires (see [`resolve_existing_media_file`]).
+const RESOLVE_EXISTING_RETRIES: u32 = 5;
+const RESOLVE_EXISTING_RETRY_DELAY: Duration = Duration::from_millis(40);
+
+/// Caps how many requests may simultaneously be waiting out a transient-miss
+/// retry in [`resolve_existing_media_file`]. Without this, a client that
+/// knows (or has seen via the catalog) entry keys backed by a flaky or
+/// emptied share could fire many concurrent `/play`/`media` requests and
+/// force that many async tasks into the multi-attempt wait at once — turning
+/// an intentionally-bounded per-request retry into unbounded amplification.
+/// A request that can't get a permit falls straight through to the
+/// pre-#355-followup behavior: one immediate stat, then 404, no retry.
+static RESOLVE_RETRY_PERMITS: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(24));
 
 /// Resolve a catalog path to an existing, readable file, retrying a
 /// transient not-found the same way `scan::retry_transient_not_found` does
@@ -253,10 +272,18 @@ const RESOLVE_EXISTING_RETRY_DELAY: Duration = Duration::from_millis(30);
 /// transiently unreadable mid-reconnect makes a stat of anything inside it
 /// fail with `PermissionDenied` because the traversal itself is denied, not
 /// because the entry is absent, so that error kind gets the same retry.
+///
+/// The very first stat never waits on [`RESOLVE_RETRY_PERMITS`] — only a
+/// *retry* (i.e. after the first attempt fails transiently) needs a permit,
+/// acquired once and held for the rest of this call. That keeps an ordinary,
+/// permanently-missing-file 404 exactly as cheap as it was before this
+/// existed, and only bounds the added multi-attempt wait this function
+/// introduces.
 async fn resolve_existing_media_file(
     mut resolve: impl FnMut() -> PathBuf,
 ) -> Option<(PathBuf, std::fs::Metadata)> {
     let mut attempt = 0;
+    let mut retry_permit = None;
     loop {
         let path = resolve();
         match std::fs::metadata(&path) {
@@ -268,6 +295,15 @@ async fn resolve_existing_media_file(
                     std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
                 ) && attempt + 1 < RESOLVE_EXISTING_RETRIES =>
             {
+                if retry_permit.is_none() {
+                    match RESOLVE_RETRY_PERMITS.try_acquire() {
+                        Ok(permit) => retry_permit = Some(permit),
+                        // Too many requests are already retrying; give up
+                        // now rather than pile on an unbounded number of
+                        // concurrent multi-attempt waits.
+                        Err(_) => return None,
+                    }
+                }
                 tokio::time::sleep(RESOLVE_EXISTING_RETRY_DELAY * (1 << attempt)).await;
                 attempt += 1;
             }
@@ -992,7 +1028,7 @@ impl MediaService {
     /// (`mark_entry_missing`), with no confirmation window — the `grace`
     /// parameter to `mark_missing_by_path` only gates repeat *scan-time*
     /// misses on an already-unavailable row. Left alone, that latch
-    /// outlives `resolve_existing_media_file`'s ~1.9s retry budget and
+    /// outlives `resolve_existing_media_file`'s ~600ms retry budget and
     /// survives until the next full rescan (`AUTO_LIBRARY_WATCH_INTERVAL`,
     /// 15 minutes, or manual), 404ing every request in between even once
     /// the file is back — the #355 trusted amendment's "same track 404s

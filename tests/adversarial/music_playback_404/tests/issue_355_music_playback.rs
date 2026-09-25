@@ -784,7 +784,16 @@ async fn resolve_existing_falls_back_only_when_exact_join_misses() {
 #[tokio::test]
 async fn one_outage_past_the_retry_budget_latches_the_row_404_after_the_file_recovers() {
     let fx = fixture("latch").await;
-    let relative = "Music/Solarstone/Pure Trance Vol 8/06 - Solar Movement.mp3";
+    // `.m4a`, not `.mp3`: this test's `service(&fx)` fixture disables
+    // transcoding and negotiates with `fire_tv_baseline()`, whose
+    // `containers` are only `["mp4", "hls"]` — an `.mp3` extension maps to
+    // container `"mp3"` in `direct_compatible()` (transcode.rs), which that
+    // profile never lists, so it would 503 on codec/container mismatch
+    // regardless of the availability-latch behavior under test here. `.m4a`
+    // maps to `"mp4"` and stays direct-play-compatible, matching the
+    // sibling `playback.rs` fixtures that already avoid `.mp3` for the same
+    // reason.
+    let relative = "Music/Solarstone/Pure Trance Vol 8/06 - Solar Movement.m4a";
     let entry_key = "aaaaaaaaaaaaaaaaaaaaaa10";
     fx.library
         .upsert(&track_entry(entry_key, relative, 9_201_596))

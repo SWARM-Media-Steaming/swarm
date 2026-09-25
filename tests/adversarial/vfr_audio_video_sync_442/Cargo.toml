@@ -1,0 +1,14 @@
+[workspace]
+
+[package]
+name = "adversarial-issue-442-vfr-audio-video-sync"
+description = "Adversarial UAT for issue #442: American Dad (and other VFR animated-TV rips) drift out of audio/video sync over an episode when played on LAN."
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+swarm-core = { path = "../../../crates/swarm-core" }
+swarm-media = { path = "../../../crates/swarm-media" }
+tokio = { version = "1", features = ["full", "test-util"] }

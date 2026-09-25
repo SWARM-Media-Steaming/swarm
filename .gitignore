@@ -1,4 +1,8 @@
 /target
+# Adversarial UAT/security test scaffolds occasionally bootstrap their own
+# Cargo crate under tests/adversarial/; the root /target rule above doesn't
+# reach a nested crate's own build output.
+tests/adversarial/**/target/
 /.run
 Cargo.lock.orig
 *.sqlite

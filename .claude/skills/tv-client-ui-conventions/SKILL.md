@@ -286,13 +286,29 @@ public entry points for two different triggers:
   `PlayerScreen.onPlaybackRuntimeError` when ExoPlayer itself throws
   after negotiation already succeeded (network drop mid-stream, a
   decoder error).
-- `reportAssetProblem(entry)` — user-initiated, a "Report a problem"
-  button on a detail screen, for the things that don't throw an
-  exception but are still wrong (mislabeled title, wrong artwork, audio
-  out of sync). Guard the button's own local `problemReported` state
-  (`remember(entry) { mutableStateOf(false) }`) so a second press
-  before navigating away can't spam duplicate reports — it resets
-  naturally per fresh screen instance, no explicit clearing needed.
+- `reportAssetProblem(entry, category)` — user-initiated, a "Report a
+  problem" button that opens `ProblemReportPicker` (six
+  `ProblemReportCategory` options — Playback Video, Playback Audio,
+  Artwork, Content, Language, Subtitle) before sending; the button
+  itself only flips a local `showProblemPicker`
+  (`remember(entry) { mutableStateOf(false) }`), and only the picker's
+  `onReport(category)` actually calls `reportAssetProblem`, so a second
+  press before navigating away just reopens the same picker instead of
+  spamming duplicate reports. `MovieDetailScreen` is the only detail
+  screen with this button (movies only); shows have no season/show
+  detail equivalent, so `PlayerScreen`'s `PauseOverlay` is the sole
+  report path for an episode (#354) — it must stay ungated by
+  `MediaKind.MOVIE` and outside the `hasNextEpisode` conditional so a
+  last-episode/single-episode show can still report. Because that path
+  runs while `_state.value` is `UiState.Player`, and
+  `embeddedCatalog()` has no `UiState.Player` case, `reportAssetProblem`
+  must resolve its catalog via `current.previous.embeddedCatalog()`
+  when `current is UiState.Player` — the same unwrap every other
+  Player-aware call site in `SwarmViewModel` already does — or the
+  device lookup silently returns before `reportClientError` ever runs
+  and the report never reaches the server (#354 follow-up: this exact
+  gap is why "Report a problem" from a show's pause screen looked like
+  it worked but no report appeared on the server).
 
 Add a third entry point the same way (a new private call into
 `reportClientError` with a distinct `message`) rather than overloading

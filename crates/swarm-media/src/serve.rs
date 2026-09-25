@@ -231,9 +231,44 @@ pub struct Resolved {
 /// Tuning mirrors `scan::TRANSIENT_STAT_RETRIES`/`TRANSIENT_STAT_RETRY_DELAY`
 /// — same measured `smbfs` flake, same budget (~1.9s worst case), just
 /// waited out with an async sleep here instead of a blocking one (see
-/// `MediaService::resolve_existing_media_file`).
+/// [`resolve_existing_media_file`]).
 const RESOLVE_EXISTING_RETRIES: u32 = 7;
 const RESOLVE_EXISTING_RETRY_DELAY: Duration = Duration::from_millis(30);
+
+/// Resolve a catalog path to an existing, readable file, retrying a
+/// transient not-found the same way `scan::retry_transient_not_found` does
+/// for the background walk (see that function's doc for the measured
+/// `smbfs` behavior it's compensating for). A Unicode normalization fix
+/// alone (`RootResolver::resolve_existing`) did not stop issue #355's
+/// playback 404s: the same busy SMB mount can return a transient `NotFound`
+/// for `read_dir`/`metadata` on a file that is genuinely still there,
+/// independent of any spelling mismatch, and `resolve_existing`'s internal
+/// fallback walk has no retry of its own. Runs on the request path inside an
+/// async handler rather than `spawn_blocking`, so retries wait via
+/// `tokio::time::sleep` instead of blocking the worker thread. `resolve` is
+/// called again on every attempt (not just the stat) since the transient
+/// failure can originate inside the fallback walk's own `read_dir` call, not
+/// just a final stat of an already-resolved path.
+async fn resolve_existing_media_file(
+    mut resolve: impl FnMut() -> PathBuf,
+) -> Option<(PathBuf, std::fs::Metadata)> {
+    let mut attempt = 0;
+    loop {
+        let path = resolve();
+        match std::fs::metadata(&path) {
+            Ok(metadata) if metadata.is_file() => return Some((path, metadata)),
+            Ok(_) => return None,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    && attempt + 1 < RESOLVE_EXISTING_RETRIES =>
+            {
+                tokio::time::sleep(RESOLVE_EXISTING_RETRY_DELAY * (1 << attempt)).await;
+                attempt += 1;
+            }
+            Err(_) => return None,
+        }
+    }
+}
 
 fn status(status: u16) -> Resolved {
     Resolved {
@@ -926,43 +961,6 @@ impl MediaService {
         }
     }
 
-    /// Resolve a catalog path to an existing, readable file, retrying a
-    /// transient not-found the same way `scan::retry_transient_not_found`
-    /// does for the background walk (see that function's doc for the
-    /// measured `smbfs` behavior it's compensating for). A Unicode
-    /// normalization fix alone (`RootResolver::resolve_existing`) did not
-    /// stop issue #355's playback 404s: the same busy SMB mount can return a
-    /// transient `NotFound` for `read_dir`/`metadata` on a file that is
-    /// genuinely still there, independent of any spelling mismatch, and
-    /// `resolve_existing`'s internal fallback walk has no retry of its own.
-    /// Runs on the request path inside an async handler rather than
-    /// `spawn_blocking`, so retries wait via `tokio::time::sleep` instead of
-    /// blocking the worker thread. Each attempt re-resolves from scratch
-    /// since the transient failure can originate inside the fallback walk's
-    /// own `read_dir` call, not just a final stat of an already-resolved
-    /// path.
-    async fn resolve_existing_media_file(
-        &self,
-        relative_path: &str,
-    ) -> Option<(PathBuf, std::fs::Metadata)> {
-        let mut attempt = 0;
-        loop {
-            let path = self.roots.resolve_existing(relative_path);
-            match std::fs::metadata(&path) {
-                Ok(metadata) if metadata.is_file() => return Some((path, metadata)),
-                Ok(_) => return None,
-                Err(error)
-                    if error.kind() == std::io::ErrorKind::NotFound
-                        && attempt + 1 < RESOLVE_EXISTING_RETRIES =>
-                {
-                    tokio::time::sleep(RESOLVE_EXISTING_RETRY_DELAY * (1 << attempt)).await;
-                    attempt += 1;
-                }
-                Err(_) => return None,
-            }
-        }
-    }
-
     /// A client hitting a catalog entry whose backing file is gone (renamed
     /// or deleted since the last scan) means the periodic library watch
     /// hasn't caught up yet — flip the row unavailable right now instead of
@@ -1002,7 +1000,8 @@ impl MediaService {
         session_id: Option<String>,
         rate_limiters: Vec<Arc<SessionRateLimiter>>,
     ) -> Resolved {
-        let Some((path, metadata)) = self.resolve_existing_media_file(&entry.relative_path).await
+        let Some((path, metadata)) =
+            resolve_existing_media_file(|| self.roots.resolve_existing(&entry.relative_path)).await
         else {
             self.mark_entry_missing(&entry.relative_path).await;
             return status(404); // deleted since last scan
@@ -1070,7 +1069,7 @@ impl MediaService {
             return status(404);
         };
         let Some((media_path, _metadata)) =
-            self.resolve_existing_media_file(&entry.relative_path).await
+            resolve_existing_media_file(|| self.roots.resolve_existing(&entry.relative_path)).await
         else {
             self.mark_entry_missing(&entry.relative_path).await;
             return status(404);

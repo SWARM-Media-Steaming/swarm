@@ -929,6 +929,12 @@ impl TranscodeManager {
         if is_lan
             && !preferences.preview
             && remux_video_compatible(entry, preferences, client_limit)
+            && !tokio::time::timeout(
+                AUDIO_PROBE_TIMEOUT,
+                crate::probe::has_variable_frame_rate(&self.config.ffmpeg_path, media_path),
+            )
+            .await
+            .unwrap_or(false)
         {
             let video = entry.video.as_ref().expect("remux_video_compatible checked video");
             let reserved_bps = direct_peak_bps(entry).unwrap_or(client_limit);
@@ -1869,6 +1875,15 @@ impl TranscodeManager {
                 }
                 filter.pop();
                 command
+                    // Normalize to constant frame timing before encoding.
+                    // Without this, a variable-frame-rate source (telecined
+                    // or re-timed animated-TV rips — American Dad S1, #442)
+                    // keeps its irregular frame spacing through the encoder,
+                    // which nothing else in this pipeline corrects, while the
+                    // audio track gets fresh constant-rate timestamps — the
+                    // two drift apart over the episode.
+                    .arg("-fps_mode")
+                    .arg("cfr")
                     .arg("-filter_complex_threads")
                     .arg("2")
                     .arg("-filter_complex")

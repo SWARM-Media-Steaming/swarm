@@ -1742,6 +1742,43 @@
         "servers": []
       },
       "timeoutSeconds": 120
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "tests/adversarial/vfr_audio_video_sync_442/Cargo.toml",
+        "--target-dir",
+        "target/adversarial-issue-442",
+        "--test",
+        "issue_442_vfr_audio_video_sync",
+        "--",
+        "--nocapture"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-442-vfr-audio-video-sync",
+      "name": "Adversarial: issue #442 American Dad VFR audio/video sync",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "cargo",
+          "ffmpeg",
+          "ffprobe"
+        ],
+        "files": [
+          "tests/adversarial/vfr_audio_video_sync_442/Cargo.toml",
+          "tests/adversarial/vfr_audio_video_sync_442/tests/issue_442_vfr_audio_video_sync.rs",
+          "crates/swarm-media/src/probe.rs",
+          "crates/swarm-media/src/transcode.rs"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
     }
   ],
   "version": 1

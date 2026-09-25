@@ -248,7 +248,11 @@ const RESOLVE_EXISTING_RETRY_DELAY: Duration = Duration::from_millis(30);
 /// `tokio::time::sleep` instead of blocking the worker thread. `resolve` is
 /// called again on every attempt (not just the stat) since the transient
 /// failure can originate inside the fallback walk's own `read_dir` call, not
-/// just a final stat of an already-resolved path.
+/// just a final stat of an already-resolved path. A reconnecting mount does
+/// not reliably surface as `NotFound` either: a directory that is
+/// transiently unreadable mid-reconnect makes a stat of anything inside it
+/// fail with `PermissionDenied` because the traversal itself is denied, not
+/// because the entry is absent, so that error kind gets the same retry.
 async fn resolve_existing_media_file(
     mut resolve: impl FnMut() -> PathBuf,
 ) -> Option<(PathBuf, std::fs::Metadata)> {
@@ -259,8 +263,10 @@ async fn resolve_existing_media_file(
             Ok(metadata) if metadata.is_file() => return Some((path, metadata)),
             Ok(_) => return None,
             Err(error)
-                if error.kind() == std::io::ErrorKind::NotFound
-                    && attempt + 1 < RESOLVE_EXISTING_RETRIES =>
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+                ) && attempt + 1 < RESOLVE_EXISTING_RETRIES =>
             {
                 tokio::time::sleep(RESOLVE_EXISTING_RETRY_DELAY * (1 << attempt)).await;
                 attempt += 1;
@@ -982,11 +988,48 @@ impl MediaService {
         }
     }
 
+    /// A request-time miss latches `available = 0` on first sight
+    /// (`mark_entry_missing`), with no confirmation window — the `grace`
+    /// parameter to `mark_missing_by_path` only gates repeat *scan-time*
+    /// misses on an already-unavailable row. Left alone, that latch
+    /// outlives `resolve_existing_media_file`'s ~1.9s retry budget and
+    /// survives until the next full rescan (`AUTO_LIBRARY_WATCH_INTERVAL`,
+    /// 15 minutes, or manual), 404ing every request in between even once
+    /// the file is back — the #355 trusted amendment's "same track 404s
+    /// three times, 6-22s apart" pattern. So a plain `library.get` miss
+    /// gets one extra, unretried stat of the catalog path before giving
+    /// up: if the file is there right now, restore availability and use
+    /// it; if not, this costs one cheap `metadata()` call and falls back
+    /// to the ordinary 404, no repeated retry loop against a file that
+    /// may be gone for good.
+    async fn get_entry_for_playback(&self, entry_key: &str) -> Option<crate::store::EntryRecord> {
+        if let Ok(Some(entry)) = self.library.get(entry_key).await {
+            return Some(entry);
+        }
+        let entry = self
+            .library
+            .get_ignoring_availability(entry_key)
+            .await
+            .ok()??;
+        let path = self.roots.resolve_existing(&entry.relative_path);
+        let is_file = std::fs::metadata(&path)
+            .map(|metadata| metadata.is_file())
+            .unwrap_or(false);
+        if !is_file {
+            return None;
+        }
+        self.library
+            .restore_available_by_path(&entry.relative_path)
+            .await
+            .unwrap_or(false)
+            .then_some(entry)
+    }
+
     async fn media(&self, entry_key: &str, request: &PeerRequest, is_lan: bool) -> Resolved {
         if !is_valid_entry_key(entry_key) {
             return status(404);
         }
-        let Ok(Some(entry)) = self.library.get(entry_key).await else {
+        let Some(entry) = self.get_entry_for_playback(entry_key).await else {
             return status(404);
         };
         self.media_entry(entry, request, None, self.rate_limiters(is_lan, None))
@@ -1065,7 +1108,7 @@ impl MediaService {
         let Some(preferences) = request.playback.as_ref() else {
             return transcode_error(TranscodeError::MissingPreferences);
         };
-        let Ok(Some(entry)) = self.library.get(entry_key).await else {
+        let Some(entry) = self.get_entry_for_playback(entry_key).await else {
             return status(404);
         };
         let Some((media_path, _metadata)) =

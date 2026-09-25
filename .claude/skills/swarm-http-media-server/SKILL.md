@@ -153,6 +153,22 @@ different normalization from an older catalog row. This applies equally to `/pla
 the byte-serving routes; bypassing it can make an existing music file fail playback
 preparation with a 404.
 
+That Unicode fix alone was not enough (#355 stayed reproducible after it shipped): the
+same busy `smbfs` mount can also return a transient `NotFound` from the stat/`read_dir`
+calls behind `resolve_existing` for a file that is genuinely still there — the exact
+flake `scan::retry_transient_not_found` already retries for the background walk, but
+`play`/`media`/`session_media` had no equivalent on the request path. `MediaService::
+resolve_existing_media_file` (private to `serve.rs`) now retries a `NotFound` stat with
+a bounded `tokio::time::sleep` backoff — much shorter than the scan-time retry's
+~1.9s (~600ms worst case), since this one runs inline on the request path instead of
+off in `spawn_blocking`, and gated behind a small global semaphore
+(`RESOLVE_RETRY_PERMITS`) so a flood of concurrent requests against known-missing
+entries can't each hold an async task open for the full retry budget — before falling
+back to marking the row missing. `play` and `media`/`session_media`'s `media_entry`
+both go through it; a new route added over `resolve_existing` for a catalog file (not
+a locally cached derivative) should too, or it will reintroduce this exact 404 under
+the same SMB flakiness.
+
 ## `/health` is a third, deliberately tiny route group
 
 `GET /health` answers "is this server up, and is it visible through the SWARM

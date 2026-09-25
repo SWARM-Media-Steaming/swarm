@@ -729,7 +729,9 @@
           "tests/adversarial/music_playback_404/tests/issue_355_music_playback.rs",
           "crates/swarm-media/src/serve.rs",
           "crates/swarm-media/src/roots.rs",
-          "clients/tv-android/core/src/main/kotlin/app/swarm/tv/core/catalog/CatalogSession.kt"
+          "clients/tv-android/core/src/main/kotlin/app/swarm/tv/core/catalog/CatalogSession.kt",
+          "crates/swarm-media/src/store.rs",
+          "apps/server/src/gui.rs"
         ],
         "mounts": [],
         "servers": []

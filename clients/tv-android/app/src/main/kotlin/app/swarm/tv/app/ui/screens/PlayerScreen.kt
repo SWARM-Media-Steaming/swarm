@@ -164,6 +164,11 @@ internal const val BUFFERING_NOTIFICATION_DELAY_MS = 3_000L
  * first) is what makes holding the button keep seeking. */
 internal const val PLAYBACK_SEEK_STEP_MS = 60_000L
 
+/** How long a burst of skip presses must go quiet before it commits a real
+ * Player.seekTo (see [coalescedSeekTargetMs]). Short enough that a single,
+ * isolated press still feels instant. */
+internal const val SEEK_COALESCE_QUIET_MS = 250L
+
 /** Returns the [kind] IntroDB marker covering [positionMs], using IntroDB's
  * null-start convention for a segment that begins with the episode.
  * Open-ended segments (no [SkipSegment.endMs]) cannot provide a skip target
@@ -420,6 +425,19 @@ internal fun isServerOfflineLoadError(error: IOException): Boolean =
             else -> false
         }
     }
+
+/** Accumulates a burst of rapid skip presses (mashed, or held via Android's
+ * key-repeat redelivering ACTION_DOWN) into a single pending target, instead
+ * of the caller reissuing Player.seekTo once per press. On a direct-play MKV,
+ * every seekTo tears down and restarts Media3's progressive extractor read;
+ * firing that once per key-repeat tick could land the restart mid-EBML-
+ * element, corrupting the parse (ERROR_CODE_PARSING_CONTAINER_MALFORMED) and
+ * — from the resulting burst of transport IOExceptions on the abandoned
+ * loads — falsely tripping the "server has gone offline" banner (#443). The
+ * caller commits [pendingTargetMs] with a real seekTo only once presses stop
+ * arriving for [SEEK_COALESCE_QUIET_MS]. */
+internal fun coalescedSeekTargetMs(pendingTargetMs: Long?, currentPositionMs: Long, deltaMs: Long): Long =
+    ((pendingTargetMs ?: currentPositionMs) + deltaMs).coerceAtLeast(0L)
 
 /** Delays an offline report until a retryable load failure actually exhausts
  * the player's buffer. A single timed-out prefetch can recover without the
@@ -728,6 +746,10 @@ fun PlayerScreen(
         mutableStateOf(player.playbackState == Player.STATE_READY)
     }
     val playbackOutage = remember(sessionId) { PlaybackOutageTracker() }
+    // Coalesces a burst of skip presses into one real seek — see
+    // coalescedSeekTargetMs and its LaunchedEffect below (#443).
+    var pendingSeekTargetMs by remember(sessionId) { mutableStateOf<Long?>(null) }
+    var seekRequestGeneration by remember(sessionId) { mutableStateOf(0L) }
     var showPauseOverlay by remember(sessionId) { mutableStateOf(!player.playWhenReady) }
     var consumeSurfaceSelectKeyUp by remember(sessionId) { mutableStateOf(false) }
     var offeredIntro by remember(sessionId) { mutableStateOf<SkipSegment?>(null) }
@@ -867,6 +889,17 @@ fun PlayerScreen(
             restartOutsideAvailableWindow = playbackMode == PlaybackMode.HLS,
             onRestartAt = { positionMs -> onSeekOutsideBuffer(positionMs / 1000.0) },
         )
+    }
+    // Commits the coalesced skip target with a single real seekTo only once
+    // the burst of presses that produced it goes quiet (see
+    // coalescedSeekTargetMs). Recomposing on seekRequestGeneration restarts
+    // this coroutine's delay on every new press, cancelling any not-yet-fired
+    // commit from the presses before it.
+    LaunchedEffect(controllerPlayer, sessionId, seekRequestGeneration) {
+        val target = pendingSeekTargetMs ?: return@LaunchedEffect
+        delay(SEEK_COALESCE_QUIET_MS)
+        pendingSeekTargetMs = null
+        controllerPlayer.seekTo(target)
     }
     // Media3 has no continuous playhead callback, so sample the lightweight
     // in-process position while video is running. The offer appears at most
@@ -1204,12 +1237,22 @@ fun PlayerScreen(
                 if (surfaceAction != null) {
                     if (event.action == KeyEvent.ACTION_DOWN) {
                         when (surfaceAction) {
-                            RemotePlaybackAction.SEEK_FORWARD -> controllerPlayer.seekTo(
-                                controllerPlayer.currentPosition + PLAYBACK_SEEK_STEP_MS,
-                            )
-                            RemotePlaybackAction.SEEK_BACK -> controllerPlayer.seekTo(
-                                (controllerPlayer.currentPosition - PLAYBACK_SEEK_STEP_MS).coerceAtLeast(0L),
-                            )
+                            RemotePlaybackAction.SEEK_FORWARD -> {
+                                pendingSeekTargetMs = coalescedSeekTargetMs(
+                                    pendingSeekTargetMs,
+                                    controllerPlayer.currentPosition,
+                                    PLAYBACK_SEEK_STEP_MS,
+                                )
+                                seekRequestGeneration += 1L
+                            }
+                            RemotePlaybackAction.SEEK_BACK -> {
+                                pendingSeekTargetMs = coalescedSeekTargetMs(
+                                    pendingSeekTargetMs,
+                                    controllerPlayer.currentPosition,
+                                    -PLAYBACK_SEEK_STEP_MS,
+                                )
+                                seekRequestGeneration += 1L
+                            }
                             RemotePlaybackAction.PAUSE -> {
                                 consumeSurfaceSelectKeyUp = true
                                 player.pause()
@@ -1227,8 +1270,22 @@ fun PlayerScreen(
                         }
                         RemotePlaybackAction.PLAY -> player.play()
                         RemotePlaybackAction.PAUSE -> player.pause()
-                        RemotePlaybackAction.SEEK_FORWARD -> controllerPlayer.seekForward()
-                        RemotePlaybackAction.SEEK_BACK -> controllerPlayer.seekBack()
+                        RemotePlaybackAction.SEEK_FORWARD -> {
+                            pendingSeekTargetMs = coalescedSeekTargetMs(
+                                pendingSeekTargetMs,
+                                controllerPlayer.currentPosition,
+                                controllerPlayer.seekForwardIncrement,
+                            )
+                            seekRequestGeneration += 1L
+                        }
+                        RemotePlaybackAction.SEEK_BACK -> {
+                            pendingSeekTargetMs = coalescedSeekTargetMs(
+                                pendingSeekTargetMs,
+                                controllerPlayer.currentPosition,
+                                -controllerPlayer.seekBackIncrement,
+                            )
+                            seekRequestGeneration += 1L
+                        }
                         RemotePlaybackAction.SHOW_CONTROLS -> {
                             if (!showPauseOverlay && !showContinuePrompt) {
                                 playerView.showController()

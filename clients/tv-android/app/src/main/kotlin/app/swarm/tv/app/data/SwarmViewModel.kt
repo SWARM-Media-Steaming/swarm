@@ -3153,7 +3153,14 @@ class SwarmViewModel(
      */
     fun reportAssetProblem(entry: MergedEntry, category: ProblemReportCategory) {
         val current = _state.value
-        val catalog = current.embeddedCatalog() ?: return
+        // [embeddedCatalog] has no UiState.Player case (see its doc comment),
+        // so reporting from the pause screen — the only surface a show can
+        // report from, since there is no show detail screen — must unwrap
+        // through [UiState.Player.previous] like every other Player-aware
+        // call site in this file, or this returns before notify and the
+        // report silently never reaches the server.
+        val catalogHolder: UiState = if (current is UiState.Player) current.previous else current
+        val catalog = catalogHolder.embeddedCatalog() ?: return
         val device = catalog.devices.find { it.deviceId == entry.sources.first() } ?: return
         Log.i(logTag, "user reported ${category.label} problem for ${entry.entry.entryKey}")
         reportClientError(

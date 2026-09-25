@@ -322,6 +322,69 @@ pub async fn keyframe_at_or_before(
         })
 }
 
+/// Whether the video track's frame rate is variable rather than constant.
+///
+/// ffprobe reports both `r_frame_rate` (the stream's nominal/container rate)
+/// and `avg_frame_rate` (frame count over duration). For CFR sources these
+/// match; a VFR source — common in older animated-TV DVD/broadcast rips,
+/// including telecined or re-timed episodes like American Dad S1 (#442) —
+/// reports a real average that diverges from the nominal rate. Remuxing such
+/// a source's video untouched (`-c:v copy`) while re-encoding audio to a
+/// fresh constant-rate AAC stream (the normal LAN remux path) lets the two
+/// drift apart over the episode, since nothing renormalizes the irregular
+/// video frame timing. Callers use this to route VFR sources through the
+/// re-encode ladder instead, where `-fps_mode cfr` forces even frame timing.
+///
+/// `false` (assume CFR, keep the cheap remux path) on any probe failure —
+/// consistent with the rest of this module's fail-open behavior.
+pub async fn has_variable_frame_rate(ffmpeg_path: &Path, media_path: &Path) -> bool {
+    let Ok(output) = tokio::process::Command::new(ffprobe_path_for(ffmpeg_path))
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=r_frame_rate,avg_frame_rate",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(media_path)
+        .output()
+        .await
+    else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut rates = text.trim().split([',', '\n']).filter_map(parse_ffprobe_rate);
+    let (Some(nominal), Some(average)) = (rates.next(), rates.next()) else {
+        return false;
+    };
+    if nominal <= 0.0 || average <= 0.0 {
+        return false;
+    }
+    // A couple percent of slack absorbs rounding in ffprobe's rational
+    // output; real VFR content (e.g. 23.976/29.97 pulldown mixes) diverges
+    // far more than that.
+    (nominal - average).abs() / nominal > 0.02
+}
+
+/// ffprobe reports frame rates as a rational string (`"24000/1001"`, `"0/0"`
+/// when unknown).
+fn parse_ffprobe_rate(field: &str) -> Option<f64> {
+    let field = field.trim();
+    let (numerator, denominator) = field.split_once('/')?;
+    let numerator: f64 = numerator.parse().ok()?;
+    let denominator: f64 = denominator.parse().ok()?;
+    if denominator == 0.0 {
+        return None;
+    }
+    Some(numerator / denominator)
+}
+
 fn ffprobe_path_for(ffmpeg_path: &Path) -> PathBuf {
     if let Some(configured) = std::env::var_os("SWARM_FFPROBE_PATH") {
         return PathBuf::from(configured);
@@ -494,6 +557,14 @@ mod tests {
     }
 
     #[test]
+    fn parses_ffprobe_rational_frame_rates() {
+        assert_eq!(parse_ffprobe_rate("24000/1001"), Some(24000.0 / 1001.0));
+        assert_eq!(parse_ffprobe_rate("25/1"), Some(25.0));
+        assert_eq!(parse_ffprobe_rate("0/0"), None);
+        assert_eq!(parse_ffprobe_rate("not-a-rate"), None);
+    }
+
+    #[test]
     fn english_audio_wins_over_an_earlier_default_track() {
         let parsed = streams(
             r#"{"streams":[
@@ -638,5 +709,48 @@ mod tests {
         assert_eq!(parsed[0].profile.as_deref(), Some("578"));
         assert_eq!(parsed[0].pix_fmt.as_deref(), Some("yuv420p10le"));
         assert_eq!(parsed[0].color_transfer.as_deref(), Some("smpte2084"));
+    }
+
+    #[tokio::test]
+    async fn constant_frame_rate_source_is_not_flagged_as_vfr_when_ffmpeg_is_available() {
+        if tokio::process::Command::new("ffmpeg")
+            .arg("-version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await
+            .is_err()
+        {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "swarm-probe-vfr-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("cfr.mp4");
+        let generated = tokio::process::Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=320x240:rate=30:duration=1",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-y",
+            ])
+            .arg(&source)
+            .status()
+            .await
+            .unwrap();
+        assert!(generated.success());
+        let ffmpeg_path = PathBuf::from("ffmpeg");
+        assert!(!has_variable_frame_rate(&ffmpeg_path, &source).await);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

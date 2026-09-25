@@ -228,6 +228,13 @@ pub struct Resolved {
     session_id: Option<String>,
 }
 
+/// Tuning mirrors `scan::TRANSIENT_STAT_RETRIES`/`TRANSIENT_STAT_RETRY_DELAY`
+/// — same measured `smbfs` flake, same budget (~1.9s worst case), just
+/// waited out with an async sleep here instead of a blocking one (see
+/// `MediaService::resolve_existing_media_file`).
+const RESOLVE_EXISTING_RETRIES: u32 = 7;
+const RESOLVE_EXISTING_RETRY_DELAY: Duration = Duration::from_millis(30);
+
 fn status(status: u16) -> Resolved {
     Resolved {
         header: PeerResponseHeader {
@@ -919,6 +926,43 @@ impl MediaService {
         }
     }
 
+    /// Resolve a catalog path to an existing, readable file, retrying a
+    /// transient not-found the same way `scan::retry_transient_not_found`
+    /// does for the background walk (see that function's doc for the
+    /// measured `smbfs` behavior it's compensating for). A Unicode
+    /// normalization fix alone (`RootResolver::resolve_existing`) did not
+    /// stop issue #355's playback 404s: the same busy SMB mount can return a
+    /// transient `NotFound` for `read_dir`/`metadata` on a file that is
+    /// genuinely still there, independent of any spelling mismatch, and
+    /// `resolve_existing`'s internal fallback walk has no retry of its own.
+    /// Runs on the request path inside an async handler rather than
+    /// `spawn_blocking`, so retries wait via `tokio::time::sleep` instead of
+    /// blocking the worker thread. Each attempt re-resolves from scratch
+    /// since the transient failure can originate inside the fallback walk's
+    /// own `read_dir` call, not just a final stat of an already-resolved
+    /// path.
+    async fn resolve_existing_media_file(
+        &self,
+        relative_path: &str,
+    ) -> Option<(PathBuf, std::fs::Metadata)> {
+        let mut attempt = 0;
+        loop {
+            let path = self.roots.resolve_existing(relative_path);
+            match std::fs::metadata(&path) {
+                Ok(metadata) if metadata.is_file() => return Some((path, metadata)),
+                Ok(_) => return None,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::NotFound
+                        && attempt + 1 < RESOLVE_EXISTING_RETRIES =>
+                {
+                    tokio::time::sleep(RESOLVE_EXISTING_RETRY_DELAY * (1 << attempt)).await;
+                    attempt += 1;
+                }
+                Err(_) => return None,
+            }
+        }
+    }
+
     /// A client hitting a catalog entry whose backing file is gone (renamed
     /// or deleted since the last scan) means the periodic library watch
     /// hasn't caught up yet — flip the row unavailable right now instead of
@@ -958,8 +1002,8 @@ impl MediaService {
         session_id: Option<String>,
         rate_limiters: Vec<Arc<SessionRateLimiter>>,
     ) -> Resolved {
-        let path = self.roots.resolve_existing(&entry.relative_path);
-        let Ok(metadata) = std::fs::metadata(&path) else {
+        let Some((path, metadata)) = self.resolve_existing_media_file(&entry.relative_path).await
+        else {
             self.mark_entry_missing(&entry.relative_path).await;
             return status(404); // deleted since last scan
         };
@@ -1025,11 +1069,12 @@ impl MediaService {
         let Ok(Some(entry)) = self.library.get(entry_key).await else {
             return status(404);
         };
-        let media_path = self.roots.resolve_existing(&entry.relative_path);
-        if !media_path.is_file() {
+        let Some((media_path, _metadata)) =
+            self.resolve_existing_media_file(&entry.relative_path).await
+        else {
             self.mark_entry_missing(&entry.relative_path).await;
             return status(404);
-        }
+        };
         match self
             .transcodes
             .plan(&entry, &media_path, preferences, is_lan, playback_owner)
@@ -1284,7 +1329,12 @@ impl MediaService {
         // Artwork paths are catalog values too. On SMB mounts a later
         // directory listing can expose an NFD spelling for a name the
         // catalog retained as NFC, so use the same safe existing-path
-        // fallback as media playback.
+        // fallback as media playback. Deliberately not the request-time
+        // retry `resolve_existing_media_file` adds for #355: an already
+        // cached thumbnail below is served from local disk keyed by
+        // `entry_key`/`version` and does not require `source_path` to exist
+        // right now, so failing this resolution early would throw away that
+        // cache-hit resilience for no benefit.
         let source_path = self.roots.resolve_existing(&relative_path);
         let source_path = self
             .cached_artwork_path(

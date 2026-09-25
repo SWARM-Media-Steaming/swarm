@@ -749,3 +749,165 @@ async fn resolve_existing_falls_back_only_when_exact_join_misses() {
         .resolve_existing("Music/DoesNotExist/track.m4a")
         .is_file());
 }
+
+// --- Trusted #355 amendment follow-up ---------------------------------
+//
+// The reporter's own post-fix log (a track named "Solar Movement - Pure
+// Soul (Dark Mix)", entry_key `ebe89f5bd288b591f9f6ddcd`) shows the SAME
+// entry failing `/play` negotiation three separate times — 19:23:32,
+// 19:23:38, 19:23:44 (client-driven retries roughly 6s apart) — plus two
+// other, unrelated entries failing the same way earlier in the same
+// session (19:22:56, 19:23:10). A per-request retry bounded at ~1.9s
+// worst case (`RESOLVE_EXISTING_RETRIES`/`RESOLVE_EXISTING_RETRY_DELAY` in
+// `serve.rs`) cannot explain three independent 404s spread across 12+
+// seconds for the *same* file unless something outlives that budget and
+// then persists. `serve.rs::mark_entry_missing` -> `store.rs::
+// mark_missing_by_path` explains it: the very first miss (available != 0)
+// flips `available = 0` unconditionally, with no confirmation window —
+// the "grace" parameter only gates repeat *scan-time* misses after the
+// row is already unavailable. `MediaService::play`/`media` both call
+// `self.library.get(entry_key)` — which filters `available = 1` — *before*
+// ever reaching `resolve_existing_media_file`'s retry. So one outage
+// longer than ~1.9s latches the row 404 for every later request, no
+// matter how quickly the file actually comes back, until a full rescan
+// restores it (`restore_available_by_path` is only ever called from
+// `scan_roots`; the automatic background rescan is
+// `AUTO_LIBRARY_WATCH_INTERVAL` = 15 minutes in `apps/server/src/gui.rs`,
+// otherwise a manual rescan). That is a far better match for the
+// amendment's evidence than a sub-two-second blip, and it is not covered
+// by the retry-timing test already added for this issue
+// (`crates/swarm-media/tests/playback.rs::
+// transient_missing_file_still_negotiates_playback_once_it_appears`),
+// which only ever calls `resolve` once and never revisits the same entry
+// after recovery.
+
+#[tokio::test]
+async fn one_outage_past_the_retry_budget_latches_the_row_404_after_the_file_recovers() {
+    let fx = fixture("latch").await;
+    // `.m4a`, not `.mp3`: this test's `service(&fx)` fixture disables
+    // transcoding and negotiates with `fire_tv_baseline()`, whose
+    // `containers` are only `["mp4", "hls"]` — an `.mp3` extension maps to
+    // container `"mp3"` in `direct_compatible()` (transcode.rs), which that
+    // profile never lists, so it would 503 on codec/container mismatch
+    // regardless of the availability-latch behavior under test here. `.m4a`
+    // maps to `"mp4"` and stays direct-play-compatible, matching the
+    // sibling `playback.rs` fixtures that already avoid `.mp3` for the same
+    // reason.
+    let relative = "Music/Solarstone/Pure Trance Vol 8/06 - Solar Movement.m4a";
+    let entry_key = "aaaaaaaaaaaaaaaaaaaaaa10";
+    fx.library
+        .upsert(&track_entry(entry_key, relative, 9_201_596))
+        .await
+        .unwrap();
+
+    // The file is not present yet and stays absent past the request-time
+    // retry budget (~1.9s worst case), so this first negotiation must
+    // exhaust its retries and self-heal the catalog exactly as issue #73
+    // requires for a genuine miss.
+    let service = service(&fx);
+    let first = service.resolve(&play_request(entry_key)).await;
+    assert_eq!(
+        first.header.status, 404,
+        "sanity check: the file must still be absent when the first negotiation gives up"
+    );
+    assert!(
+        fx.library.get(entry_key).await.unwrap().is_none(),
+        "an outage that outlasts the retry budget must still flip the row unavailable"
+    );
+
+    // The underlying condition now fully recovers — not a further glitch,
+    // an ordinary, indefinitely-present file, matching what the reporting
+    // server's own SMB mount looks like once it reconnects.
+    write_file(&fx.media_root, &relative, &vec![9u8; 4_096]);
+    assert!(fx.media_root.join(&relative).is_file());
+
+    let second = service.resolve(&play_request(entry_key)).await;
+    assert_eq!(
+        second.header.status, 200,
+        "a catalogued track whose file exists right now must negotiate playback — a stale \
+         `available = 0` latch left over from one past outage must not keep 404ing it forever. \
+         This is the pattern in the #355 trusted amendment: the same track kept 404ing across \
+         three separate client negotiation attempts 6-22s apart even though the share was not \
+         permanently gone."
+    );
+    assert!(
+        fx.library.get(entry_key).await.unwrap().is_some(),
+        "a recovered file must be usable again without waiting for a full library rescan"
+    );
+}
+
+#[tokio::test]
+async fn permission_denied_from_a_reconnecting_mount_is_not_retried_like_not_found_is() {
+    // `resolve_existing_media_file` (serve.rs) only widens the retry
+    // condition to `ErrorKind::NotFound`. A busy/reconnecting network
+    // mount does not reliably surface as ENOENT: on macOS/Linux, a
+    // directory that is transiently unreadable mid-reconnect makes a stat
+    // of anything inside it fail with EACCES (`PermissionDenied`)
+    // instead, because the traversal itself is denied, not because the
+    // entry is absent. That failure mode gets none of the retry the
+    // NotFound case gets, and 404s (and latches, per the test above)
+    // immediately.
+    let fx = fixture("perm-denied").await;
+    let parent = fx.media_root.join("Music/Artist/Album");
+    std::fs::create_dir_all(&parent).unwrap();
+    let relative = "Music/Artist/Album/01 - Track.m4a";
+    write_file(&fx.media_root, relative, &[4u8; 2_048]);
+
+    #[cfg(not(unix))]
+    {
+        eprintln!(
+            "SKIP: permission_denied_from_a_reconnecting_mount_is_not_retried_like_not_found_is \
+             requires a unix host to simulate EACCES via directory permissions"
+        );
+        return;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Feature-detect that this process actually has directory
+        // permissions enforced against it (root, and some sandboxes,
+        // bypass DAC entirely) before relying on it to simulate a busy
+        // mount, the same portability guard `host_treats_nfc_nfd_as_same`
+        // already uses for the Unicode fallback tests above.
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let blocked = std::fs::metadata(fx.media_root.join(relative)).is_err();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if !blocked {
+            eprintln!(
+                "SKIP: directory permissions are not enforced for this process (root or a \
+                 permission-bypassing sandbox); cannot simulate EACCES"
+            );
+            return;
+        }
+
+        let entry_key = "aaaaaaaaaaaaaaaaaaaaaa11";
+        fx.library
+            .upsert(&track_entry(entry_key, relative, 2_048))
+            .await
+            .unwrap();
+
+        let service = service(&fx);
+
+        // Block the directory, then let a background task restore it
+        // partway through the retry budget — mirroring a mount that
+        // reconnects mid-request. If PermissionDenied were retried the
+        // same way NotFound is, this would still resolve to 200.
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let restore_parent = parent.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let _ = std::fs::set_permissions(&restore_parent, std::fs::Permissions::from_mode(0o755));
+        });
+
+        let resolved = service.resolve(&play_request(entry_key)).await;
+        let _ = std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755));
+
+        assert_eq!(
+            resolved.header.status, 200,
+            "a transient EACCES from a reconnecting mount (not just ENOENT) must still recover \
+             within the retry budget — resolve_existing_media_file only retries `ErrorKind::NotFound` today"
+        );
+    }
+}

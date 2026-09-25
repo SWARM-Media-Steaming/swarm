@@ -1497,6 +1497,25 @@ impl Library {
         Ok(row.map(EntryRecord::from))
     }
 
+    /// Same lookup as [`Self::get`] but without the `available = 1` filter,
+    /// for the one caller (request-time playback resolution) that needs to
+    /// re-check a row the library already gave up on: a request-time miss
+    /// that outlasts `resolve_existing_media_file`'s retry budget latches
+    /// `available = 0` via [`Self::mark_missing_by_path`], and nothing but a
+    /// full rescan (`scan_roots`) calls [`Self::restore_available_by_path`]
+    /// to undo that — so a share that reconnects between requests would
+    /// otherwise 404 forever instead of just until the next scheduled scan.
+    pub async fn get_ignoring_availability(
+        &self,
+        entry_key: &str,
+    ) -> sqlx::Result<Option<EntryRecord>> {
+        let row = sqlx::query_as::<_, EntryRow>(&format!("{ENTRY_SELECT} WHERE entry_key = ?"))
+            .bind(entry_key)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(EntryRecord::from))
+    }
+
     pub async fn list(&self) -> sqlx::Result<Vec<EntryRecord>> {
         let rows = sqlx::query_as::<_, EntryRow>(&format!(
             "{ENTRY_SELECT} WHERE available = 1 ORDER BY relative_path"

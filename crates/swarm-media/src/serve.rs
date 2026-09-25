@@ -26,8 +26,9 @@ use std::io::BufWriter;
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
+use tokio::sync::Semaphore;
 use swarm_core::entry_key::is_valid_entry_key;
 use swarm_core::peer::{
     BuzzChoice, BuzzRequest, BuzzResponse, CatalogEntry, CatalogManifest, CatalogThumbprint,
@@ -226,6 +227,89 @@ pub struct Resolved {
     pub body: Body,
     /// Playback session held in-use until `handle_stream` finishes writing.
     session_id: Option<String>,
+}
+
+/// Tuning is deliberately much smaller than `scan::TRANSIENT_STAT_RETRIES`/
+/// `TRANSIENT_STAT_RETRY_DELAY` (same measured `smbfs` flake, same shape of
+/// fix): the scan-time retry runs off the request path inside
+/// `spawn_blocking`, so its ~1.9s budget only ever delays a background
+/// walk. This one runs inline in an async request handler, so its budget is
+/// wall-clock time a real client — or, worse, a flood of concurrent
+/// requests against known-missing entries — can force the server to hold
+/// open. Capped at ~600ms worst case per attempt chain, and
+/// [`RESOLVE_RETRY_PERMITS`] below additionally bounds how many requests may
+/// be inside that wait at once, so the aggregate cost of hammering `/play`
+/// or `/media` for missing entries stays bounded no matter how many
+/// requests an attacker fires (see [`resolve_existing_media_file`]).
+const RESOLVE_EXISTING_RETRIES: u32 = 5;
+const RESOLVE_EXISTING_RETRY_DELAY: Duration = Duration::from_millis(40);
+
+/// Caps how many requests may simultaneously be waiting out a transient-miss
+/// retry in [`resolve_existing_media_file`]. Without this, a client that
+/// knows (or has seen via the catalog) entry keys backed by a flaky or
+/// emptied share could fire many concurrent `/play`/`media` requests and
+/// force that many async tasks into the multi-attempt wait at once — turning
+/// an intentionally-bounded per-request retry into unbounded amplification.
+/// A request that can't get a permit falls straight through to the
+/// pre-#355-followup behavior: one immediate stat, then 404, no retry.
+static RESOLVE_RETRY_PERMITS: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(24));
+
+/// Resolve a catalog path to an existing, readable file, retrying a
+/// transient not-found the same way `scan::retry_transient_not_found` does
+/// for the background walk (see that function's doc for the measured
+/// `smbfs` behavior it's compensating for). A Unicode normalization fix
+/// alone (`RootResolver::resolve_existing`) did not stop issue #355's
+/// playback 404s: the same busy SMB mount can return a transient `NotFound`
+/// for `read_dir`/`metadata` on a file that is genuinely still there,
+/// independent of any spelling mismatch, and `resolve_existing`'s internal
+/// fallback walk has no retry of its own. Runs on the request path inside an
+/// async handler rather than `spawn_blocking`, so retries wait via
+/// `tokio::time::sleep` instead of blocking the worker thread. `resolve` is
+/// called again on every attempt (not just the stat) since the transient
+/// failure can originate inside the fallback walk's own `read_dir` call, not
+/// just a final stat of an already-resolved path. A reconnecting mount does
+/// not reliably surface as `NotFound` either: a directory that is
+/// transiently unreadable mid-reconnect makes a stat of anything inside it
+/// fail with `PermissionDenied` because the traversal itself is denied, not
+/// because the entry is absent, so that error kind gets the same retry.
+///
+/// The very first stat never waits on [`RESOLVE_RETRY_PERMITS`] — only a
+/// *retry* (i.e. after the first attempt fails transiently) needs a permit,
+/// acquired once and held for the rest of this call. That keeps an ordinary,
+/// permanently-missing-file 404 exactly as cheap as it was before this
+/// existed, and only bounds the added multi-attempt wait this function
+/// introduces.
+async fn resolve_existing_media_file(
+    mut resolve: impl FnMut() -> PathBuf,
+) -> Option<(PathBuf, std::fs::Metadata)> {
+    let mut attempt = 0;
+    let mut retry_permit = None;
+    loop {
+        let path = resolve();
+        match std::fs::metadata(&path) {
+            Ok(metadata) if metadata.is_file() => return Some((path, metadata)),
+            Ok(_) => return None,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+                ) && attempt + 1 < RESOLVE_EXISTING_RETRIES =>
+            {
+                if retry_permit.is_none() {
+                    match RESOLVE_RETRY_PERMITS.try_acquire() {
+                        Ok(permit) => retry_permit = Some(permit),
+                        // Too many requests are already retrying; give up
+                        // now rather than pile on an unbounded number of
+                        // concurrent multi-attempt waits.
+                        Err(_) => return None,
+                    }
+                }
+                tokio::time::sleep(RESOLVE_EXISTING_RETRY_DELAY * (1 << attempt)).await;
+                attempt += 1;
+            }
+            Err(_) => return None,
+        }
+    }
 }
 
 fn status(status: u16) -> Resolved {
@@ -940,11 +1024,48 @@ impl MediaService {
         }
     }
 
+    /// A request-time miss latches `available = 0` on first sight
+    /// (`mark_entry_missing`), with no confirmation window — the `grace`
+    /// parameter to `mark_missing_by_path` only gates repeat *scan-time*
+    /// misses on an already-unavailable row. Left alone, that latch
+    /// outlives `resolve_existing_media_file`'s ~600ms retry budget and
+    /// survives until the next full rescan (`AUTO_LIBRARY_WATCH_INTERVAL`,
+    /// 15 minutes, or manual), 404ing every request in between even once
+    /// the file is back — the #355 trusted amendment's "same track 404s
+    /// three times, 6-22s apart" pattern. So a plain `library.get` miss
+    /// gets one extra, unretried stat of the catalog path before giving
+    /// up: if the file is there right now, restore availability and use
+    /// it; if not, this costs one cheap `metadata()` call and falls back
+    /// to the ordinary 404, no repeated retry loop against a file that
+    /// may be gone for good.
+    async fn get_entry_for_playback(&self, entry_key: &str) -> Option<crate::store::EntryRecord> {
+        if let Ok(Some(entry)) = self.library.get(entry_key).await {
+            return Some(entry);
+        }
+        let entry = self
+            .library
+            .get_ignoring_availability(entry_key)
+            .await
+            .ok()??;
+        let path = self.roots.resolve_existing(&entry.relative_path);
+        let is_file = std::fs::metadata(&path)
+            .map(|metadata| metadata.is_file())
+            .unwrap_or(false);
+        if !is_file {
+            return None;
+        }
+        self.library
+            .restore_available_by_path(&entry.relative_path)
+            .await
+            .unwrap_or(false)
+            .then_some(entry)
+    }
+
     async fn media(&self, entry_key: &str, request: &PeerRequest, is_lan: bool) -> Resolved {
         if !is_valid_entry_key(entry_key) {
             return status(404);
         }
-        let Ok(Some(entry)) = self.library.get(entry_key).await else {
+        let Some(entry) = self.get_entry_for_playback(entry_key).await else {
             return status(404);
         };
         self.media_entry(entry, request, None, self.rate_limiters(is_lan, None))
@@ -958,8 +1079,9 @@ impl MediaService {
         session_id: Option<String>,
         rate_limiters: Vec<Arc<SessionRateLimiter>>,
     ) -> Resolved {
-        let path = self.roots.resolve_existing(&entry.relative_path);
-        let Ok(metadata) = std::fs::metadata(&path) else {
+        let Some((path, metadata)) =
+            resolve_existing_media_file(|| self.roots.resolve_existing(&entry.relative_path)).await
+        else {
             self.mark_entry_missing(&entry.relative_path).await;
             return status(404); // deleted since last scan
         };
@@ -1022,14 +1144,15 @@ impl MediaService {
         let Some(preferences) = request.playback.as_ref() else {
             return transcode_error(TranscodeError::MissingPreferences);
         };
-        let Ok(Some(entry)) = self.library.get(entry_key).await else {
+        let Some(entry) = self.get_entry_for_playback(entry_key).await else {
             return status(404);
         };
-        let media_path = self.roots.resolve_existing(&entry.relative_path);
-        if !media_path.is_file() {
+        let Some((media_path, _metadata)) =
+            resolve_existing_media_file(|| self.roots.resolve_existing(&entry.relative_path)).await
+        else {
             self.mark_entry_missing(&entry.relative_path).await;
             return status(404);
-        }
+        };
         match self
             .transcodes
             .plan(&entry, &media_path, preferences, is_lan, playback_owner)
@@ -1284,7 +1407,12 @@ impl MediaService {
         // Artwork paths are catalog values too. On SMB mounts a later
         // directory listing can expose an NFD spelling for a name the
         // catalog retained as NFC, so use the same safe existing-path
-        // fallback as media playback.
+        // fallback as media playback. Deliberately not the request-time
+        // retry `resolve_existing_media_file` adds for #355: an already
+        // cached thumbnail below is served from local disk keyed by
+        // `entry_key`/`version` and does not require `source_path` to exist
+        // right now, so failing this resolution early would throw away that
+        // cache-hit resilience for no benefit.
         let source_path = self.roots.resolve_existing(&relative_path);
         let source_path = self
             .cached_artwork_path(

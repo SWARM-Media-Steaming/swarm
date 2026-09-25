@@ -136,6 +136,125 @@ async fn music_playback_preparation_handles_unicode_normalized_smb_paths() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// #355 follow-up: a Unicode-normalization fix for `RootResolver` alone did
+/// not stop reports of "server could not prepare playback (404)" after it
+/// shipped. `scan::retry_transient_not_found`'s doc comment already
+/// documents the same root cause for the background walk — a busy `smbfs`
+/// mount returns a transient `NotFound` from a stat/`read_dir` call for a
+/// file that is genuinely still there — but nothing gave the request-time
+/// `/play` and `/media` path resolution an equivalent retry, so that exact
+/// flake surfaced as a real, user-visible negotiation 404 instead. This
+/// proves negotiation recovers when the file only becomes visible moments
+/// after the first lookup, standing in for a stat that transiently errors
+/// on a file that was there the whole time.
+#[tokio::test]
+async fn transient_missing_file_still_negotiates_playback_once_it_appears() {
+    let root = std::env::temp_dir().join(format!("swarm-playback-transient-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let media_root = root.join("media");
+    let relative_path = "music/Artist/Album/track.m4a";
+    let media_path = media_root.join(relative_path);
+    std::fs::create_dir_all(media_path.parent().unwrap()).unwrap();
+
+    let library = Arc::new(
+        Library::open(root.join("library.sqlite").to_str().unwrap())
+            .await
+            .unwrap(),
+    );
+    let entry = EntryRecord {
+        entry_key: "0123456789abcdef01234567".into(),
+        relative_path: relative_path.into(),
+        kind: MediaKind::Track,
+        title: "Track".into(),
+        size: 4_096,
+        modified_time: 0,
+        fingerprint: "fingerprint".into(),
+        artist: None,
+        album: None,
+        track_number: None,
+        show_title: None,
+        season: None,
+        episode: None,
+        year: None,
+        duration_secs: Some(180.0),
+        video: None,
+        audio: Some(AudioStreamInfo {
+            codec: "aac".into(),
+            channels: 2,
+            bitrate: Some(128_000),
+        }),
+        scraped_title: None,
+        episode_title: None,
+        genres: vec![],
+        artwork_version: 0,
+        cast: vec![],
+        overview: None,
+        rating: None,
+        community_rating: None,
+        community_rating_votes: None,
+        parent_entry_key: None,
+        extra_type: None,
+        extra_title: None,
+        extra_relative_path: None,
+        extra_category_path: None,
+    };
+    library.upsert(&entry).await.unwrap();
+
+    let service = MediaService::with_transcoding(
+        Arc::clone(&library),
+        media_root,
+        TranscodeConfig {
+            enabled: false,
+            ffmpeg_path: "ffmpeg".into(),
+            session_dir: root.join("sessions"),
+            max_upload_bps: 10_000_000,
+            reserve_percent: 30,
+            max_sessions: 1,
+            idle_timeout: Duration::from_secs(300),
+            segment_duration_secs: 4,
+            ..Default::default()
+        },
+    );
+    let negotiation = PeerRequest {
+        path: format!("/play/{}", entry.entry_key),
+        range: None,
+        if_none_match: None,
+        playback: Some(PlaybackPreferences {
+            capabilities: CapabilityProfile::fire_tv_baseline(),
+            start_position_secs: 0,
+            prefer_direct: true,
+            preview: false,
+        }),
+        error_report: None,
+        like: None,
+    };
+
+    // The file does not exist at negotiation start and only appears ~70ms
+    // in — inside the retry budget, but well past a single immediate stat.
+    let payload = vec![9u8; 4_096];
+    tokio::spawn({
+        let media_path = media_path.clone();
+        let payload = payload.clone();
+        async move {
+            tokio::time::sleep(Duration::from_millis(70)).await;
+            std::fs::write(&media_path, &payload).unwrap();
+        }
+    });
+
+    let resolved = service.resolve(&negotiation).await;
+    assert_eq!(
+        resolved.header.status, 200,
+        "a file that appears within the retry budget must still negotiate playback, not 404 (#355)"
+    );
+    assert!(
+        library.get(&entry.entry_key).await.unwrap().is_some(),
+        "a transient miss recovered by retry must not mark the row missing"
+    );
+
+    drop(service);
+    let _ = std::fs::remove_dir_all(root);
+}
+
 #[tokio::test]
 async fn playback_negotiation_returns_a_budgeted_direct_session_with_range_support() {
     let root = std::env::temp_dir().join(format!("swarm-playback-route-{}", std::process::id()));

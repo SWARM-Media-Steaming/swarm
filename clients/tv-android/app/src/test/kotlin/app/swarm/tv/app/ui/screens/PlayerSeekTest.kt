@@ -167,4 +167,32 @@ class PlayerSeekTest {
         assertEquals("timeout", tracker.onLoadError("timeout", Player.STATE_BUFFERING))
     }
 
+    @Test
+    fun `first skip press in a burst targets from the live playhead`() {
+        assertEquals(
+            120_000L,
+            coalescedSeekTargetMs(pendingTargetMs = null, currentPositionMs = 60_000L, deltaMs = 60_000L),
+        )
+    }
+
+    @Test
+    fun `a burst of skip presses accumulates off the pending target, not the stale playhead`() {
+        // Regression for #443: mashing/holding skip used to fire one real
+        // Player.seekTo per key-repeat tick. Every press here must stack onto
+        // the not-yet-committed target rather than the player's live
+        // position, which stays put until the coalesced seek commits.
+        var pending = coalescedSeekTargetMs(pendingTargetMs = null, currentPositionMs = 0L, deltaMs = 60_000L)
+        pending = coalescedSeekTargetMs(pendingTargetMs = pending, currentPositionMs = 0L, deltaMs = 60_000L)
+        pending = coalescedSeekTargetMs(pendingTargetMs = pending, currentPositionMs = 0L, deltaMs = 60_000L)
+
+        assertEquals(180_000L, pending)
+    }
+
+    @Test
+    fun `coalesced skip-back target never goes negative`() {
+        assertEquals(
+            0L,
+            coalescedSeekTargetMs(pendingTargetMs = null, currentPositionMs = 10_000L, deltaMs = -60_000L),
+        )
+    }
 }

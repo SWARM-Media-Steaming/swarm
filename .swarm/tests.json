@@ -1779,6 +1779,32 @@
         "servers": []
       },
       "timeoutSeconds": 1800
+    },
+    {
+      "id": "adversarial-issue-443-seek-coalescing",
+      "name": "Adversarial Issue 443 Seek Coalescing",
+      "command": [
+        "python3",
+        "tests/adversarial/test_issue_443_skip_seek_coalescing.py"
+      ],
+      "origin": "adversarial",
+      "disruptive": false,
+      "enabled": true,
+      "timeoutSeconds": 300,
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "python3",
+          "java"
+        ],
+        "files": [
+          "tests/adversarial/test_issue_443_skip_seek_coalescing.py",
+          "tests/adversarial/Issue443SeekCoalescingDriver.kt"
+        ],
+        "mounts": [],
+        "servers": []
+      }
     }
   ],
   "version": 1

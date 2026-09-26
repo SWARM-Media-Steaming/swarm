@@ -1781,6 +1781,31 @@
       "timeoutSeconds": 1800
     },
     {
+      "command": [
+        "python3",
+        "tests/adversarial/test_issue_449_vfr_probe_timeout.py"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-449-vfr-probe-timeout",
+      "name": "Adversarial: issue #449 VFR probe slow-share timeout",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "python3"
+        ],
+        "files": [
+          "tests/adversarial/test_issue_449_vfr_probe_timeout.py",
+          "crates/swarm-media/src/transcode.rs"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 120
+    },
+    {
       "id": "adversarial-issue-443-seek-coalescing",
       "name": "Adversarial Issue 443 Seek Coalescing",
       "command": [

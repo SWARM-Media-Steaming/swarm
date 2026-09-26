@@ -36,6 +36,10 @@ const STARTUP_STALL_TIMEOUT: Duration = Duration::from_secs(30);
 const PREVIEW_STARTUP_HARD_CAP: Duration = Duration::from_secs(13);
 const PREVIEW_STARTUP_STALL_TIMEOUT: Duration = Duration::from_secs(7);
 const AUDIO_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+/// The VFR check decides whether a remux would preserve unsafe timestamps, so
+/// give metadata on a high-latency share time to arrive before failing open.
+/// Audio-track selection remains on its short startup-sensitive deadline.
+const VFR_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Bound on the keyframe lookup that precedes a split mid-file seek — a slow
 /// share just falls back to a plain input seek rather than holding up playback.
 const KEYFRAME_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -926,16 +930,34 @@ impl TranscodeManager {
         // adaptivity, whereas on LAN bandwidth is a non-issue and the only
         // thing a transcode buys is wasted CPU. Never for previews, which want
         // the smallest possible first segment.
-        if is_lan
+        let remux_eligible = is_lan
             && !preferences.preview
-            && remux_video_compatible(entry, preferences, client_limit)
-            && !tokio::time::timeout(
-                AUDIO_PROBE_TIMEOUT,
+            && remux_video_compatible(entry, preferences, client_limit);
+        let variable_frame_rate = if remux_eligible {
+            match tokio::time::timeout(
+                VFR_PROBE_TIMEOUT,
                 crate::probe::has_variable_frame_rate(&self.config.ffmpeg_path, media_path),
             )
             .await
-            .unwrap_or(false)
-        {
+            {
+                Ok(variable_frame_rate) => variable_frame_rate,
+                Err(_) => {
+                    // Preserve the existing fail-open remux behavior, but make
+                    // slow shares visible to operators instead of silently
+                    // bypassing the timestamp-safety check.
+                    tracing::warn!(
+                        media_path = %media_path.display(),
+                        timeout_secs = VFR_PROBE_TIMEOUT.as_secs(),
+                        "variable-frame-rate probe timed out; falling back to remux"
+                    );
+                    false
+                }
+            }
+        } else {
+            false
+        };
+
+        if remux_eligible && !variable_frame_rate {
             let video = entry.video.as_ref().expect("remux_video_compatible checked video");
             let reserved_bps = direct_peak_bps(entry).unwrap_or(client_limit);
             let source_rendition = Rendition {
@@ -2567,6 +2589,12 @@ mod tests {
     use super::*;
     use swarm_core::capability::CapabilityProfile;
     use swarm_core::peer::{AudioStreamInfo, MediaKind, VideoStreamInfo};
+
+    #[test]
+    fn vfr_probe_has_a_longer_dedicated_timeout() {
+        assert_eq!(VFR_PROBE_TIMEOUT, Duration::from_secs(10));
+        assert!(VFR_PROBE_TIMEOUT > AUDIO_PROBE_TIMEOUT);
+    }
 
     fn entry() -> EntryRecord {
         EntryRecord {

@@ -2584,7 +2584,7 @@ async fn approve_ai_reorg_plan<R: tauri::Runtime>(
             }
         });
         if let Err(error) = core
-            .rescan_roots_by_label(&affected_labels, true, Some(progress_tx))
+            .rescan_roots_by_label_for_reorganization(&affected_labels, true, Some(progress_tx))
             .await
         {
             outcome.errors.push(format!("library rescan failed: {error}"));
@@ -2705,7 +2705,7 @@ async fn undo_ai_reorg_plan<R: tauri::Runtime>(
             }
         });
         if let Err(error) = core
-            .rescan_roots_by_label(&affected_labels, true, Some(progress_tx))
+            .rescan_roots_by_label_for_reorganization(&affected_labels, true, Some(progress_tx))
             .await
         {
             outcome.errors.push(format!("library rescan failed: {error}"));

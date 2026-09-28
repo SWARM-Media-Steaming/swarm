@@ -667,6 +667,38 @@ impl ServerCore {
         pause_transcription: bool,
         progress_tx: Option<mpsc::Sender<ScanProgressEvent>>,
     ) -> Result<ScanReport, ServerError> {
+        self.rescan_roots_by_label_with_options(
+            labels,
+            pause_transcription,
+            progress_tx,
+            self.scan_options(),
+        )
+        .await
+    }
+
+    /// Rescan roots after the reviewed AI reorganization has moved files.
+    /// Reorganization supports music independently of the normal catalog
+    /// music-scan preference, so its reconciliation pass must include music
+    /// or the filesystem move would succeed while the old path-derived rows
+    /// remain stale and playback would 404.
+    pub async fn rescan_roots_by_label_for_reorganization(
+        &self,
+        labels: &[String],
+        pause_transcription: bool,
+        progress_tx: Option<mpsc::Sender<ScanProgressEvent>>,
+    ) -> Result<ScanReport, ServerError> {
+        let options = scan_options_for_reorganization(self.scan_options());
+        self.rescan_roots_by_label_with_options(labels, pause_transcription, progress_tx, options)
+            .await
+    }
+
+    async fn rescan_roots_by_label_with_options(
+        &self,
+        labels: &[String],
+        pause_transcription: bool,
+        progress_tx: Option<mpsc::Sender<ScanProgressEvent>>,
+        options: ScanOptions,
+    ) -> Result<ScanReport, ServerError> {
         let all_roots = self.media_roots.roots();
         let requested = labels.iter().map(String::as_str).collect::<HashSet<_>>();
         let selected = all_roots
@@ -694,7 +726,7 @@ impl ServerCore {
             &selected,
             all_roots.len() > 1,
             progress_tx,
-            self.scan_options(),
+            options,
         )
         .await
         {
@@ -2247,6 +2279,11 @@ impl ServerCore {
     }
 }
 
+fn scan_options_for_reorganization(mut options: ScanOptions) -> ScanOptions {
+    options.scan_music_tracks = true;
+    options
+}
+
 async fn remove_file_if_exists(path: &Path) -> std::io::Result<bool> {
     match tokio::fs::remove_file(path).await {
         Ok(()) => Ok(true),
@@ -2405,6 +2442,27 @@ fn is_executable_file(path: &std::path::Path) -> bool {
     #[cfg(not(unix))]
     {
         true
+    }
+}
+
+#[cfg(test)]
+mod reorganization_scan_options_tests {
+    use super::*;
+
+    #[test]
+    fn reorganization_scan_includes_music_without_changing_other_options() {
+        let options = scan_options_for_reorganization(ScanOptions {
+            comprehensive_check: true,
+            scan_music_tracks: false,
+        });
+
+        assert_eq!(
+            options,
+            ScanOptions {
+                comprehensive_check: true,
+                scan_music_tracks: true,
+            }
+        );
     }
 }
 

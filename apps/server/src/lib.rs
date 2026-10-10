@@ -2081,7 +2081,10 @@ impl ServerCore {
                         // Nothing was sent (not advertised, or the send
                         // failed): look again at the health cadence.
                         None => core.link_policy.health_interval,
-                    };
+                    }
+                    // A stale clock (the send keeps failing) must not
+                    // collapse the wait to zero and spin the loop.
+                    .max(lan::REANNOUNCE_RETRY_MIN);
                     next_pass
                         .saturating_duration_since(tokio::time::Instant::now())
                         .min(announce_in)

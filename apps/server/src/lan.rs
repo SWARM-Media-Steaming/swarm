@@ -27,6 +27,11 @@ pub const SERVICE_TYPE: &str = "_swarm-peer._udp.local.";
 /// record while this server was idle gets a fresh announcement instead of
 /// waiting, possibly for days, for a query it never sends.
 pub const REANNOUNCE_INTERVAL: Duration = Duration::from_secs(60);
+/// Shortest pause before the supervisor looks at the announce clock again. A
+/// send that keeps failing (e.g. the mDNS daemon thread is gone) leaves the
+/// clock stale, so without a floor the wait would be zero and the supervisor
+/// would spin, logging a warning each time.
+pub const REANNOUNCE_RETRY_MIN: Duration = Duration::from_secs(15);
 const ACTIVATION_TTL: Duration = Duration::from_secs(5 * 60);
 const TESTING_MODE_TTL: Duration = Duration::from_secs(10 * 60);
 const TESTING_PAIRING_CODE: &str = "00000000";

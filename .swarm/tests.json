@@ -1830,6 +1830,42 @@
         "mounts": [],
         "servers": []
       }
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "tests/adversarial/idle_lan_discovery/Cargo.toml",
+        "--target-dir",
+        "target/adversarial-issue-461",
+        "--test",
+        "issue_461_idle_lan_discovery",
+        "--",
+        "--nocapture"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-461-idle-lan-discovery",
+      "name": "Adversarial: issue #461 idle LAN discovery after long unused runtime",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "cargo"
+        ],
+        "files": [
+          "tests/adversarial/idle_lan_discovery/Cargo.toml",
+          "tests/adversarial/idle_lan_discovery/tests/issue_461_idle_lan_discovery.rs",
+          "apps/server/src/lan.rs",
+          "apps/server/src/lib.rs",
+          "apps/server/src/link.rs"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
     }
   ],
   "version": 1

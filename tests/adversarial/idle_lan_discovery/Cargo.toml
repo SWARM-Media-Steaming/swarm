@@ -1,0 +1,16 @@
+[workspace]
+
+[package]
+name = "adversarial-issue-461-idle-lan-discovery"
+description = "Adversarial UAT for issue #461: a running media server must stay discoverable on the LAN after long idle, without a process restart."
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+mdns-sd = "0.21"
+swarm-media = { path = "../../../crates/swarm-media" }
+swarm-p2p = { path = "../../../crates/swarm-p2p" }
+swarm-server = { path = "../../../apps/server", default-features = false }
+tokio = { version = "1", features = ["full"] }

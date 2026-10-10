@@ -143,11 +143,9 @@ fn reannounce_interval_is_strictly_inside_mdns_host_ttl() {
 }
 
 /// Production #461 was not a healthy 15s health-check loop. The unused
-/// managed SWARM link had been unreachable for days, so the supervisor was
-/// on `dormant_retry` (10 minutes). Re-announce is invoked only from
-/// `supervise_once`, and the next call waits for whatever delay that method
-/// returned. A 10-minute sleep makes the 60-second interval a no-op for the
-/// exact idle shape in the bug report.
+/// managed SWARM link had been unreachable for days, so its retry policy was
+/// dormant (10 minutes). That SWARM retry must stay slow, while a separate
+/// supervisor wake still services the LAN reannounce deadline.
 #[test]
 fn supervisor_delay_cannot_starve_reannounce_while_swarm_is_dormant() {
     let policy = LinkPolicy::default();
@@ -160,16 +158,35 @@ fn supervisor_delay_cannot_starve_reannounce_while_swarm_is_dormant() {
 
     let dormant_delay = policy.retry_delay_for(u32::MAX, true);
     assert!(
-        dormant_delay <= lan::REANNOUNCE_INTERVAL,
-        "unused-SWARM dormant supervisor delay is {dormant_delay:?}, longer than REANNOUNCE_INTERVAL {:?}. \
-         Issue #461's server was in this state (SWARM unreachable, nothing paired through it, 10-minute retries). \
-         Re-announce only runs when supervise_once runs, so the TV's 120s host records expire between announcements. \
-         Keep the re-announce timer independent of dormant SWARM backoff.",
-        lan::REANNOUNCE_INTERVAL
+        dormant_delay >= Duration::from_secs(10 * 60),
+        "unused SWARM should retain its slow dormant retry policy; got {dormant_delay:?}"
+    );
+
+    // The reannounce deadline is an independent wake source. Testing the
+    // raw dormant retry against the LAN interval would accidentally require
+    // polling an unreachable SWARM service every minute.
+    let lib = repo_file("apps/server/src/lib.rs");
+    let supervisor = lib
+        .split("let mut next_pass = tokio::time::Instant::now();")
+        .nth(1)
+        .expect("supervisor loop with independent next_pass deadline");
+    let wait = supervisor
+        .split("let announce_in = match last_announce")
+        .nth(1)
+        .expect("supervisor computes time to LAN reannounce");
+    let wait = wait
+        .split("tokio::select!")
+        .next()
+        .expect("supervisor computes its sleep before selecting wake sources");
+    assert!(
+        wait.contains("next_pass")
+            && wait.contains("saturating_duration_since")
+            && wait.contains("min(announce_in)"),
+        "supervisor sleep must be the earlier of the SWARM pass and LAN reannounce deadline"
     );
     assert!(
-        dormant_delay < MDNS_HOST_TTL,
-        "dormant supervisor delay {dormant_delay:?} exceeds the 120s mDNS host TTL"
+        wait.contains("REANNOUNCE_INTERVAL.saturating_sub(last.elapsed())"),
+        "LAN wake deadline must be based on elapsed time since last successful announcement"
     );
 }
 

@@ -2055,23 +2055,55 @@ impl ServerCore {
             let mut failures: u32 = 0;
             let mut last_attempt: Option<tokio::time::Instant> = None;
             let mut last_announce: Option<tokio::time::Instant> = None;
+            let mut next_pass = tokio::time::Instant::now();
             loop {
-                let delay = {
+                let wait = {
                     let Some(core) = weak.upgrade() else { return };
-                    core.supervise_once(
-                        &mut watch,
-                        &mut failures,
-                        &mut last_attempt,
-                        &mut last_announce,
-                    )
-                    .await
+                    let now = tokio::time::Instant::now();
+                    if now >= next_pass {
+                        let delay = core
+                            .supervise_once(
+                                &mut watch,
+                                &mut failures,
+                                &mut last_attempt,
+                                &mut last_announce,
+                            )
+                            .await;
+                        next_pass = tokio::time::Instant::now() + delay;
+                    } else {
+                        // Woken early only to announce: the SWARM backoff
+                        // (ten minutes once dormant) must not stretch the
+                        // LAN re-announce interval, nor be shortened by it.
+                        core.announce_if_due(&mut last_announce);
+                    }
+                    let announce_in = match last_announce {
+                        Some(last) => lan::REANNOUNCE_INTERVAL.saturating_sub(last.elapsed()),
+                        // Nothing was sent (not advertised, or the send
+                        // failed): look again at the health cadence.
+                        None => core.link_policy.health_interval,
+                    };
+                    next_pass
+                        .saturating_duration_since(tokio::time::Instant::now())
+                        .min(announce_in)
                 };
                 tokio::select! {
-                    _ = tokio::time::sleep(delay) => {}
-                    _ = wake.notified() => {}
+                    _ = tokio::time::sleep(wait) => {}
+                    _ = wake.notified() => next_pass = tokio::time::Instant::now(),
                 }
             }
         });
+    }
+
+    /// Announces the LAN advertisement again when `REANNOUNCE_INTERVAL` has
+    /// passed, even though nothing changed, so a TV that dropped it while idle
+    /// hears it without having to query. The clock is stamped only once a
+    /// send happened, so a failed one is tried again on the next pass.
+    fn announce_if_due(&self, last_announce: &mut Option<tokio::time::Instant>) {
+        if last_announce.is_none_or(|last| last.elapsed() >= lan::REANNOUNCE_INTERVAL)
+            && self.lan_service.reannounce().is_some()
+        {
+            *last_announce = Some(tokio::time::Instant::now());
+        }
     }
 
     /// One pass of the supervisor. Returns how long to wait before the next.
@@ -2089,12 +2121,7 @@ impl ServerCore {
             *failures = 0;
         }
 
-        // Announce the LAN advertisement again even when nothing changed, so
-        // a TV that dropped it while idle hears it without having to query.
-        if last_announce.is_none_or(|last| last.elapsed() >= lan::REANNOUNCE_INTERVAL) {
-            *last_announce = Some(tokio::time::Instant::now());
-            self.lan_service.reannounce();
-        }
+        self.announce_if_due(last_announce);
 
         // A moved machine invalidates everything bound to its old address,
         // whether or not a SWARM service is configured: the LAN advertisement

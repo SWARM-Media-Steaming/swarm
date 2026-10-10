@@ -2054,11 +2054,17 @@ impl ServerCore {
         tokio::spawn(async move {
             let mut failures: u32 = 0;
             let mut last_attempt: Option<tokio::time::Instant> = None;
+            let mut last_announce: Option<tokio::time::Instant> = None;
             loop {
                 let delay = {
                     let Some(core) = weak.upgrade() else { return };
-                    core.supervise_once(&mut watch, &mut failures, &mut last_attempt)
-                        .await
+                    core.supervise_once(
+                        &mut watch,
+                        &mut failures,
+                        &mut last_attempt,
+                        &mut last_announce,
+                    )
+                    .await
                 };
                 tokio::select! {
                     _ = tokio::time::sleep(delay) => {}
@@ -2074,12 +2080,20 @@ impl ServerCore {
         watch: &mut AddressWatch,
         failures: &mut u32,
         last_attempt: &mut Option<tokio::time::Instant>,
+        last_announce: &mut Option<tokio::time::Instant>,
     ) -> std::time::Duration {
         let policy = self.link_policy;
 
         if self.retry_now.swap(false, Ordering::SeqCst) {
             *last_attempt = None;
             *failures = 0;
+        }
+
+        // Announce the LAN advertisement again even when nothing changed, so
+        // a TV that dropped it while idle hears it without having to query.
+        if last_announce.is_none_or(|last| last.elapsed() >= lan::REANNOUNCE_INTERVAL) {
+            *last_announce = Some(tokio::time::Instant::now());
+            self.lan_service.reannounce();
         }
 
         // A moved machine invalidates everything bound to its old address,

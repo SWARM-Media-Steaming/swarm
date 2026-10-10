@@ -22,6 +22,11 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 
 pub const SERVICE_TYPE: &str = "_swarm-peer._udp.local.";
+/// How often the advertisement is announced again on an unchanged network.
+/// Cheap (two small multicast packets), and it means a TV that dropped the
+/// record while this server was idle gets a fresh announcement instead of
+/// waiting, possibly for days, for a query it never sends.
+pub const REANNOUNCE_INTERVAL: Duration = Duration::from_secs(60);
 const ACTIVATION_TTL: Duration = Duration::from_secs(5 * 60);
 const TESTING_MODE_TTL: Duration = Duration::from_secs(10 * 60);
 const TESTING_PAIRING_CODE: &str = "00000000";
@@ -309,6 +314,19 @@ impl LanService {
     /// re-announces it. Returns the address now advertised, or `None` when
     /// nothing is being advertised at all.
     pub fn refresh_advertisement(&self) -> Option<IpAddr> {
+        let address = self.reannounce()?;
+        tracing::info!(%address, "re-announced media server on the LAN after a network change");
+        Some(address)
+    }
+
+    /// Sends the current record again on the current address, with no change
+    /// in the network. Called periodically by the supervisor: a TV that has
+    /// been idle for days can drop a cached record that nothing refreshed, and
+    /// only a fresh announcement brings it back without waiting for that TV to
+    /// query. Registering an unchanged record only announces it (it does not
+    /// probe for a name conflict again). Returns the advertised address, or
+    /// `None` when nothing is advertised.
+    pub fn reannounce(&self) -> Option<IpAddr> {
         let guard = self.advertisement.lock().unwrap_or_else(|p| p.into_inner());
         let advertisement = guard.as_ref()?;
         let address = swarm_p2p::local_addr::detect_local_ipv4();
@@ -320,7 +338,6 @@ impl LanService {
             .register(info)
             .map_err(|err| tracing::warn!(%err, "could not re-register mDNS advertisement"))
             .ok()?;
-        tracing::info!(%address, "re-announced media server on the LAN after a network change");
         Some(address)
     }
 

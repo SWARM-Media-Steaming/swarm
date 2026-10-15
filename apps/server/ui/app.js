@@ -380,7 +380,12 @@ async function refreshMediaRootHealth() {
         const permissionNote = denied.length
           ? " Some are blocked by macOS — use Open macOS Settings to grant access once."
           : "";
-        copy.innerHTML = `${unavailable.length} configured media ${noun} not readable: ${paths}. Reconnect the drive or network share manually.${permissionNote} Playback, artwork, and subtitles will resume automatically after the share becomes available.`;
+        // SMB shares are remounted by the backend on its own; only local
+        // drives still need the user to reconnect them by hand.
+        const reconnectNote = unavailable.some(root => root.network_protocol === "SMB")
+          ? " SWARM retries network shares automatically. If one stays unavailable, use Repair SMB in Settings."
+          : " Reconnect the drive manually.";
+        copy.innerHTML = `${unavailable.length} configured media ${noun} not readable: ${paths}.${reconnectNote}${permissionNote} Playback, artwork, and subtitles will resume automatically after the share becomes available.`;
       }
     }
   } catch (_) {

@@ -15,12 +15,15 @@ mod mcp;
 mod settings;
 
 use rand::RngCore;
-use settings::{AiProviderSetting, MediaRootHealth, MediaRootSetting, RootAssetType, Settings};
+use settings::{
+    AiProviderSetting, MediaRootHealth, MediaRootSetting, RootAssetType, Settings,
+    SmbReconnectPolicy,
+};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use swarm_core::peer::MediaKind;
 use swarm_media::roots::{MediaRoot, MediaRootAssetType};
 use swarm_media::scan::ScanProgressEvent;
@@ -370,16 +373,15 @@ impl AppState {
 }
 
 /// Network mounts can remain present under `/Volumes` while every read
-/// fails. Poll the same real-read health check used by the UI and retry only
-/// a scan that overlapped the outage or had failed once the user reconnects
-/// the storage. Reconnection itself is deliberately manual: asking macOS to
-/// reopen an already-stale SMB URL can create duplicate `/Volumes/share-N`
-/// mounts while the configured path remains unusable.
-
+/// fails. Poll the same real-read health check the UI uses. A macOS SMB root
+/// that stays unreadable is remounted automatically by `repair_smb_root`, paced
+/// by `SmbReconnectPolicy` (a grace period, exponential backoff, and a stop
+/// after repeated failures). Every root that was unreadable is rescanned once
+/// it reads again, so changes made while it was away are picked up.
 fn start_media_root_recovery(core: Arc<ServerCore>, settings_dir: PathBuf) {
     tokio::spawn(async move {
         let mut unavailable = HashSet::<String>::new();
-        let mut needs_recovery_rescan = HashSet::<String>::new();
+        let mut reconnect = SmbReconnectPolicy::default();
         let mut interval = tokio::time::interval(Duration::from_secs(10));
         // Default `Burst` replays every tick missed while a slow health check
         // or reconnect ran long, firing the whole backlog back-to-back
@@ -406,26 +408,100 @@ fn start_media_root_recovery(core: Arc<ServerCore>, settings_dir: PathBuf) {
                 .map(|root| root.label.as_str())
                 .collect::<HashSet<_>>();
             unavailable.retain(|label| configured_labels.contains(label.as_str()));
-            needs_recovery_rescan.retain(|label| configured_labels.contains(label.as_str()));
+
+            // A share is readable only when every configured root on it is.
+            // A macOS permission denial is excluded: remounting cannot clear a
+            // TCC grant, so those shares are left for the user to fix.
+            let now = Instant::now();
+            let mut share_readable = HashMap::<String, bool>::new();
+            let mut share_denied = HashSet::<String>::new();
+            for (root, status) in roots.iter().zip(&health) {
+                let Some(share) = root
+                    .reconnect_url
+                    .as_deref()
+                    .filter(|url| url.starts_with("smb://"))
+                else {
+                    continue;
+                };
+                let readable = share_readable.entry(share.to_string()).or_insert(true);
+                *readable &= status.available;
+                if status.permission_denied {
+                    share_denied.insert(share.to_string());
+                }
+            }
+            for (share, readable) in &share_readable {
+                if *readable {
+                    reconnect.observe_readable(share);
+                } else if !share_denied.contains(share) {
+                    reconnect.observe_unreadable(share, now);
+                }
+            }
+            let due_shares: Vec<String> = share_readable
+                .iter()
+                .filter(|(share, readable)| !**readable && !share_denied.contains(*share))
+                .map(|(share, _)| share.clone())
+                .collect();
+            let mut attempted = false;
+            for share in due_shares {
+                if !reconnect.try_begin(&share, Instant::now()) {
+                    continue;
+                }
+                attempted = true;
+                let Some(root) = roots
+                    .iter()
+                    .find(|root| root.reconnect_url.as_deref() == Some(share.as_str()))
+                    .cloned()
+                else {
+                    continue;
+                };
+                tracing::info!(path = %root.path, "reconnecting unreadable SMB media root automatically");
+                let outcome = match tokio::task::spawn_blocking({
+                    let root = root.clone();
+                    move || settings::repair_smb_root(&root)
+                })
+                .await
+                {
+                    Ok(result) => result,
+                    Err(error) => Err(error.to_string()),
+                };
+                let succeeded = outcome.is_ok();
+                match &outcome {
+                    Ok(()) => tracing::info!(path = %root.path, "automatic SMB reconnect succeeded"),
+                    Err(error) => {
+                        tracing::warn!(path = %root.path, %error, "automatic SMB reconnect failed")
+                    }
+                }
+                if reconnect.finish(&share, Instant::now(), succeeded) {
+                    let message = format!(
+                        "SWARM tried to remount \"{}\" at {} {} times and it is still unreadable, so automatic reconnects have stopped. Check the share on the network, then press Repair SMB in Settings.",
+                        root.label,
+                        root.path,
+                        settings::SMB_RECONNECT_MAX_FAILURES,
+                    );
+                    if let Err(error) = core
+                        .library
+                        .record_server_notification("error", "Automatic reconnect paused", &message)
+                        .await
+                    {
+                        tracing::warn!(%error, "could not save automatic-reconnect notification");
+                    }
+                }
+            }
+            if attempted {
+                // This pass's health snapshot predates the repair. Wait for the
+                // next tick so a root that just came back is not reported as
+                // unavailable, or as a new failure, from stale data.
+                continue;
+            }
+
             let mut recovered = Vec::<String>::new();
-            let mut recovered_needing_rescan = Vec::<String>::new();
-            let scan_needs_retry = matches!(
-                core.scan_status(),
-                ScanState::Scanning | ScanState::Failed(_)
-            );
-            for (root, status) in roots.iter().zip(health) {
+            for (root, status) in roots.iter().zip(&health) {
                 if status.available {
                     if unavailable.remove(&root.label) {
                         tracing::info!(root = %root.label, path = %root.path, "media root recovered");
                         recovered.push(root.label.clone());
-                        if needs_recovery_rescan.remove(&root.label) {
-                            recovered_needing_rescan.push(root.label.clone());
-                        }
                     }
                     continue;
-                }
-                if scan_needs_retry {
-                    needs_recovery_rescan.insert(root.label.clone());
                 }
                 if unavailable.insert(root.label.clone()) {
                     // A macOS TCC denial is not an outage: reconnecting or
@@ -447,7 +523,7 @@ fn start_media_root_recovery(core: Arc<ServerCore>, settings_dir: PathBuf) {
                                 root.label,
                                 root.path,
                                 status.error.as_deref().unwrap_or("unknown I/O error"),
-                                "Reconnect the storage manually. SWARM will detect its return and retry a scan only if one overlapped the outage.",
+                                "SWARM retries network shares automatically and rescans this root once it reads again. If it stays unavailable, use Repair SMB in Settings.",
                             ),
                         )
                     };
@@ -461,29 +537,14 @@ fn start_media_root_recovery(core: Arc<ServerCore>, settings_dir: PathBuf) {
                 }
             }
             if !recovered.is_empty() {
-                if recovered_needing_rescan.is_empty() {
-                    let message = format!(
-                        "Recovered: {}\n\nThe existing library remains valid; no rescan was needed.",
-                        recovered.join(", "),
-                    );
-                    if let Err(error) = core
-                        .library
-                        .record_server_notification("success", "Media storage recovered", &message)
-                        .await
-                    {
-                        tracing::warn!(%error, "could not save media-root recovery notification");
-                    }
-                    continue;
-                }
                 match core
-                    .rescan_roots_by_label(&recovered_needing_rescan, false, None)
+                    .rescan_roots_by_label(&recovered, false, None)
                     .await
                 {
                     Ok(report) => {
                         let message = format!(
-                            "Recovered: {}\nRescanned after the interrupted scan: {}\n\nResult: +{} added, {} updated, {} removed, {} unchanged.",
+                            "Recovered and rescanned: {}\n\nResult: +{} added, {} updated, {} removed, {} unchanged.",
                             recovered.join(", "),
-                            recovered_needing_rescan.join(", "),
                             report.added,
                             report.updated,
                             report.removed,
@@ -504,7 +565,7 @@ fn start_media_root_recovery(core: Arc<ServerCore>, settings_dir: PathBuf) {
                     Err(error) => {
                         tracing::warn!(%error, "media-root recovery rescan failed");
                         let message = format!(
-                            "Recovered: {}\n\nThe interrupted library scan could not be retried: {error}",
+                            "Recovered: {}\n\nThe library rescan could not run: {error}",
                             recovered.join(", "),
                         );
                         if let Err(save_error) = core

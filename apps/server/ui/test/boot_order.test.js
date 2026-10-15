@@ -381,6 +381,11 @@ async function main() {
   if (!document.getElementById("mediaRootWarning").classList.contains("d-none")) {
     failures.push("Expected the storage warning to clear automatically after the root recovers.");
   }
+  testRootHealth = [{ label: "nas", path: "/Volumes/share/movies", available: false, error: "not found", network_protocol: "SMB" }];
+  await dom.window.refreshMediaRootHealth();
+  if (!document.getElementById("mediaRootWarningText").textContent.includes("retries network shares automatically")) {
+    failures.push("Expected an unavailable SMB root to say SWARM retries it automatically.");
+  }
   testMediaRoots = [{ label: "nas", path: "/Volumes/share/movies", reconnect_url: "smb://batocera.local/share" }];
   testRootHealth = [{
     label: "nas",

@@ -4,10 +4,11 @@
 //! deliberately has no environment-only media-root configuration path.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-#[cfg(target_os = "macos")]
+use std::sync::{mpsc, Mutex};
 use std::time::{Duration, Instant};
 
 /// One configured AI provider (issue #235's "AI" tab) — Claude, Codex, or
@@ -118,7 +119,7 @@ pub fn media_root_health(roots: &[MediaRootSetting]) -> Vec<MediaRootHealth> {
         .iter()
         .map(|root| {
             let network_protocol = root.reconnect_url.as_deref().and_then(network_protocol);
-            match media_root_readable(root) {
+            match probe_root(root) {
                 Ok(_) => MediaRootHealth {
                     label: root.label.clone(),
                     path: root.path.clone(),
@@ -161,6 +162,64 @@ fn media_root_readable(root: &MediaRootSetting) -> std::io::Result<()> {
         ));
     }
     probe_media_root(Path::new(&root.path))
+}
+
+/// How long one real read of a media root may take before it counts as
+/// unavailable. A stale SMB session can block a read indefinitely.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Paths whose read is still running after its timeout. A blocked read cannot
+/// be cancelled, so a new probe of the same path is refused until the old one
+/// returns, rather than stacking one stuck thread per health poll.
+static PROBES_IN_FLIGHT: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+fn probe_root(root: &MediaRootSetting) -> std::io::Result<()> {
+    let root = root.clone();
+    let key = PathBuf::from(&root.path);
+    bounded_probe(key, PROBE_TIMEOUT, move || media_root_readable(&root))
+}
+
+fn bounded_probe<F>(key: PathBuf, timeout: Duration, probe: F) -> std::io::Result<()>
+where
+    F: FnOnce() -> std::io::Result<()> + Send + 'static,
+{
+    {
+        let mut in_flight = PROBES_IN_FLIGHT.lock().unwrap_or_else(|e| e.into_inner());
+        if in_flight.contains(&key) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("an earlier read of {} is still pending", key.display()),
+            ));
+        }
+        in_flight.push(key.clone());
+    }
+
+    let (sender, receiver) = mpsc::channel();
+    let worker_key = key.clone();
+    std::thread::spawn(move || {
+        let result = probe();
+        PROBES_IN_FLIGHT
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|path| path != &worker_key);
+        let _ = sender.send(result);
+    });
+
+    match receiver.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!(
+                "reading {} took longer than {} seconds",
+                key.display(),
+                timeout.as_secs()
+            ),
+        )),
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err(std::io::Error::other(format!(
+            "the read of {} stopped unexpectedly",
+            key.display()
+        ))),
+    }
 }
 
 fn probe_media_root(path: &Path) -> std::io::Result<()> {
@@ -228,63 +287,221 @@ pub fn discover_reconnect_url(path: &str) -> Option<String> {
     }
 }
 
-/// Explicit recovery for a stale SMB mount. Unlike the background retry,
-/// this user-triggered operation may force-unmount the exact affected volume
-/// before reopening its saved password-free URL through macOS/Keychain.
+/// Serializes manual and automatic repairs. Two overlapping runs would fight
+/// over the same mount points and could each leave a fresh copy behind.
+static SMB_REPAIR_LOCK: Mutex<()> = Mutex::new(());
+
+/// Remount a stale SMB media root. Used by the Repair SMB button and by the
+/// recovery loop's automatic reconnect (see `SmbReconnectPolicy`).
+///
+/// Every mounted copy of the same share is force-unmounted first, stale or
+/// not. macOS refuses a second mount of a share while an old session is alive
+/// and Finder then names the new copy `share-1`, which the configured path
+/// never sees. Clearing them all lets `open` land on the configured path.
 pub fn repair_smb_root(root: &MediaRootSetting) -> Result<(), String> {
     let url = root
         .reconnect_url
         .as_deref()
         .filter(|url| url.starts_with("smb://"))
         .ok_or_else(|| "this media root does not have a saved SMB connection".to_string())?;
+    let _repair = SMB_REPAIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
     #[cfg(target_os = "macos")]
     {
-        let output = Command::new("/sbin/mount")
-            .output()
-            .map_err(|error| format!("could not inspect mounted volumes: {error}"))?;
-        let mounts = String::from_utf8_lossy(&output.stdout);
-        if let Some(mount_point) = smb_mount_point_for_path(&root.path, &mounts) {
+        for mount_point in smb_mount_points_for_share(url, &list_mounts()?) {
             if !safe_smb_mount_point(&mount_point) {
                 return Err(format!(
                     "refusing to force-unmount unexpected SMB path {mount_point}"
                 ));
             }
-            let status = Command::new("/usr/sbin/diskutil")
-                .args(["unmount", "force", &mount_point])
-                .status()
-                .map_err(|error| format!("could not unmount stale SMB volume: {error}"))?;
-            if !status.success() {
+            if !run_bounded(
+                "/usr/sbin/diskutil",
+                &["unmount", "force", &mount_point],
+                SMB_UNMOUNT_TIMEOUT,
+            )? {
                 return Err(format!(
                     "macOS could not unmount stale SMB volume {mount_point}"
                 ));
             }
         }
+        if !smb_mount_points_for_share(url, &list_mounts()?).is_empty() {
+            return Err(format!(
+                "a copy of {url} is still mounted after unmounting; restart the Mac if it persists"
+            ));
+        }
 
-        let status = Command::new("/usr/bin/open")
-            .args(["-g", url])
-            .status()
-            .map_err(|error| format!("could not reopen SMB connection: {error}"))?;
-        if !status.success() {
+        if !run_bounded("/usr/bin/open", &["-g", url], Duration::from_secs(15))? {
             return Err("macOS could not reopen the SMB connection".to_string());
         }
 
-        let deadline = Instant::now() + Duration::from_secs(60);
+        let deadline = Instant::now() + SMB_REPAIR_WAIT;
         while Instant::now() < deadline {
-            if media_root_readable(root).is_ok() {
+            if probe_root(root).is_ok() {
                 return Ok(());
             }
             std::thread::sleep(Duration::from_millis(500));
         }
-        return Err(format!(
-            "SMB reopened but {} did not become readable within 60 seconds; complete any macOS credential prompt, then retry",
-            root.path
-        ));
+        Err(format!(
+            "SMB reopened but {} did not become readable within {} seconds; complete any macOS credential prompt, then retry",
+            root.path,
+            SMB_REPAIR_WAIT.as_secs()
+        ))
     }
     #[cfg(not(target_os = "macos"))]
     {
         let _ = url;
         Err("automatic SMB repair is currently available on macOS only".to_string())
+    }
+}
+
+#[cfg(target_os = "macos")]
+const SMB_UNMOUNT_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[cfg(target_os = "macos")]
+const SMB_REPAIR_WAIT: Duration = Duration::from_secs(60);
+
+#[cfg(target_os = "macos")]
+fn list_mounts() -> Result<String, String> {
+    let output = Command::new("/sbin/mount")
+        .output()
+        .map_err(|error| format!("could not inspect mounted volumes: {error}"))?;
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Run a system command, killing it if it outlives `timeout`. A command that
+/// touches a wedged SMB session can block without end, which would otherwise
+/// hold the repair lock forever. Returns whether the command exited 0.
+#[cfg(target_os = "macos")]
+fn run_bounded(program: &str, args: &[&str], timeout: Duration) -> Result<bool, String> {
+    let mut child = Command::new(program)
+        .args(args)
+        .spawn()
+        .map_err(|error| format!("could not run {program}: {error}"))?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status.success()),
+            Ok(None) if Instant::now() >= deadline => {
+                // Deliberately not waited on: a process stuck in the kernel
+                // cannot be reaped until its I/O returns.
+                let _ = child.kill();
+                return Err(format!(
+                    "{program} did not finish within {} seconds",
+                    timeout.as_secs()
+                ));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(200)),
+            Err(error) => return Err(format!("could not wait for {program}: {error}")),
+        }
+    }
+}
+
+/// Canonical `host/share` for an SMB URL (`smb://user@host/share`) or a mount
+/// source (`//user:pass@host/share`). The user is dropped and the result is
+/// lowercased, so both spellings of one share compare equal.
+#[cfg(any(target_os = "macos", test))]
+fn smb_share_identity(value: &str) -> Option<String> {
+    let rest = value
+        .strip_prefix("smb://")
+        .or_else(|| value.strip_prefix("//"))?;
+    let host_path = rest.rsplit_once('@').map_or(rest, |(_, host_path)| host_path);
+    Some(host_path.trim_end_matches('/').to_ascii_lowercase())
+}
+
+/// Mount points of every SMB mount serving the same share as `url`, including
+/// duplicates macOS created as `share-1`, `share-2`, and so on.
+#[cfg(any(target_os = "macos", test))]
+fn smb_mount_points_for_share(url: &str, mounts: &str) -> Vec<String> {
+    let Some(wanted) = smb_share_identity(url) else {
+        return Vec::new();
+    };
+    mounts
+        .lines()
+        .filter_map(|line| {
+            let (source, remainder) = line.split_once(" on ")?;
+            let (mount_point, _) = remainder.rsplit_once(" (")?;
+            (smb_share_identity(source)? == wanted).then(|| mount_point.replace("\\040", " "))
+        })
+        .collect()
+}
+
+/// Decides when SWARM may remount an unreadable SMB media root without the
+/// user. A dropped share usually returns within seconds, so a share must stay
+/// unreadable for `SMB_RECONNECT_GRACE` before the first attempt. Failed
+/// attempts back off exponentially. After `SMB_RECONNECT_MAX_FAILURES` in a
+/// row the policy stops until the share reads again or the user presses Repair.
+#[derive(Default)]
+pub struct SmbReconnectPolicy {
+    shares: HashMap<String, ShareReconnectState>,
+}
+
+#[derive(Default)]
+struct ShareReconnectState {
+    unreadable_since: Option<Instant>,
+    failures: u32,
+    next_attempt_at: Option<Instant>,
+    in_progress: bool,
+    gave_up: bool,
+}
+
+pub const SMB_RECONNECT_GRACE: Duration = Duration::from_secs(20);
+pub const SMB_RECONNECT_MAX_FAILURES: u32 = 5;
+const SMB_RECONNECT_BASE_BACKOFF: Duration = Duration::from_secs(60);
+
+impl SmbReconnectPolicy {
+    /// Record that `share` (its reconnect URL) was seen unreadable at `now`.
+    pub fn observe_unreadable(&mut self, share: &str, now: Instant) {
+        self.shares
+            .entry(share.to_string())
+            .or_default()
+            .unreadable_since
+            .get_or_insert(now);
+    }
+
+    /// The share reads again, so every retry and give-up state is cleared.
+    pub fn observe_readable(&mut self, share: &str) {
+        self.shares.remove(share);
+    }
+
+    /// Whether to remount `share` now. A `true` answer marks the attempt in
+    /// progress, so a second caller cannot start an overlapping one.
+    pub fn try_begin(&mut self, share: &str, now: Instant) -> bool {
+        let Some(state) = self.shares.get_mut(share) else {
+            return false;
+        };
+        let Some(since) = state.unreadable_since else {
+            return false;
+        };
+        if state.in_progress
+            || state.gave_up
+            || now.duration_since(since) < SMB_RECONNECT_GRACE
+            || state.next_attempt_at.is_some_and(|at| now < at)
+        {
+            return false;
+        }
+        state.in_progress = true;
+        true
+    }
+
+    /// Record the outcome of an attempt. Returns `true` when this failure
+    /// used up the retries, so the caller can tell the user once.
+    pub fn finish(&mut self, share: &str, now: Instant, succeeded: bool) -> bool {
+        let state = self.shares.entry(share.to_string()).or_default();
+        state.in_progress = false;
+        if succeeded {
+            state.failures = 0;
+            state.next_attempt_at = None;
+            state.unreadable_since = None;
+            return false;
+        }
+        state.failures += 1;
+        let backoff = SMB_RECONNECT_BASE_BACKOFF * 2u32.saturating_pow(state.failures - 1);
+        state.next_attempt_at = Some(now + backoff);
+        if state.failures >= SMB_RECONNECT_MAX_FAILURES {
+            state.gave_up = true;
+            return true;
+        }
+        false
     }
 }
 
@@ -954,5 +1171,119 @@ mod tests {
     fn network_share_validation_rejects_shell_metacharacters_in_server() {
         assert!(validate_network_share("movies", "nas.local;touch bad", "/media").is_err());
         assert!(validate_network_share("movies", "nas.local", "/media").is_ok());
+    }
+
+    #[test]
+    fn smb_share_identity_matches_the_url_and_the_mount_source() {
+        assert_eq!(
+            smb_share_identity("smb://GUEST@batocera.local/share").as_deref(),
+            Some("batocera.local/share")
+        );
+        assert_eq!(
+            smb_share_identity("//GUEST:@Batocera.local/share").as_deref(),
+            Some("batocera.local/share")
+        );
+        assert_eq!(smb_share_identity("/dev/disk3s5"), None);
+    }
+
+    #[test]
+    fn smb_mount_points_for_share_includes_duplicate_copies_only() {
+        let mounts = "\
+//GUEST:@batocera.local/share on /Volumes/share (smbfs, nodev, nosuid, noowners, mounted by Jerrod)
+//GUEST:@batocera.local/share on /Volumes/share-1 (smbfs, nodev, nosuid, noowners, quarantine, mounted by Jerrod)
+//GUEST:@batocera.local/other on /Volumes/other (smbfs, nodev, mounted by Jerrod)
+/dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled)
+";
+        assert_eq!(
+            smb_mount_points_for_share("smb://GUEST@batocera.local/share", mounts),
+            vec!["/Volumes/share".to_string(), "/Volumes/share-1".to_string()]
+        );
+    }
+
+    #[test]
+    fn smb_reconnect_waits_out_the_grace_period_then_backs_off() {
+        let share = "smb://GUEST@batocera.local/share";
+        let start = Instant::now();
+        let mut policy = SmbReconnectPolicy::default();
+        policy.observe_unreadable(share, start);
+
+        assert!(!policy.try_begin(share, start + SMB_RECONNECT_GRACE - Duration::from_secs(1)));
+        let first = start + SMB_RECONNECT_GRACE;
+        assert!(policy.try_begin(share, first));
+        assert!(
+            !policy.try_begin(share, first),
+            "an attempt in progress must block an overlapping one"
+        );
+        assert!(!policy.finish(share, first, false));
+        assert!(!policy.try_begin(share, first + Duration::from_secs(59)));
+        assert!(policy.try_begin(share, first + Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn smb_reconnect_gives_up_after_consecutive_failures_until_readable_again() {
+        let share = "smb://GUEST@batocera.local/share";
+        let start = Instant::now();
+        let mut policy = SmbReconnectPolicy::default();
+        policy.observe_unreadable(share, start);
+
+        let mut now = start + SMB_RECONNECT_GRACE;
+        for attempt in 1..=SMB_RECONNECT_MAX_FAILURES {
+            assert!(policy.try_begin(share, now), "attempt {attempt} should start");
+            let gave_up = policy.finish(share, now, false);
+            assert_eq!(gave_up, attempt == SMB_RECONNECT_MAX_FAILURES);
+            now += Duration::from_secs(3600);
+        }
+        assert!(
+            !policy.try_begin(share, now),
+            "automatic retries must stop after giving up"
+        );
+
+        policy.observe_readable(share);
+        policy.observe_unreadable(share, now);
+        assert!(policy.try_begin(share, now + SMB_RECONNECT_GRACE));
+    }
+
+    #[test]
+    fn smb_reconnect_success_restarts_the_grace_period_for_the_next_outage() {
+        let share = "smb://GUEST@batocera.local/share";
+        let start = Instant::now();
+        let mut policy = SmbReconnectPolicy::default();
+        policy.observe_unreadable(share, start);
+        assert!(policy.try_begin(share, start + SMB_RECONNECT_GRACE));
+        assert!(!policy.finish(share, start + SMB_RECONNECT_GRACE, true));
+
+        let next_outage = start + Duration::from_secs(600);
+        policy.observe_unreadable(share, next_outage);
+        assert!(!policy.try_begin(share, next_outage));
+        assert!(policy.try_begin(share, next_outage + SMB_RECONNECT_GRACE));
+    }
+
+    #[test]
+    fn bounded_probe_times_out_and_refuses_a_second_read_of_the_same_path() {
+        let key = PathBuf::from("/bounded-probe-test/stalled-share");
+        let (release, stalled) = mpsc::channel::<()>();
+        let result = bounded_probe(key.clone(), Duration::from_millis(50), move || {
+            let _ = stalled.recv();
+            Ok(())
+        });
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
+
+        let refused = bounded_probe(key.clone(), Duration::from_millis(50), || -> std::io::Result<()> {
+            panic!("a second read must not start while the first is stalled")
+        });
+        assert_eq!(refused.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
+
+        release.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match bounded_probe(key.clone(), Duration::from_secs(1), || Ok(())) {
+                Ok(()) => break,
+                Err(error) if Instant::now() < deadline => {
+                    let _ = error;
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("the released read should clear the path: {error}"),
+            }
+        }
     }
 }

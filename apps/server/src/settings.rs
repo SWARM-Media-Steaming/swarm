@@ -291,14 +291,25 @@ pub fn discover_reconnect_url(path: &str) -> Option<String> {
 /// over the same mount points and could each leave a fresh copy behind.
 static SMB_REPAIR_LOCK: Mutex<()> = Mutex::new(());
 
-/// Remount a stale SMB media root. Used by the Repair SMB button and by the
-/// recovery loop's automatic reconnect (see `SmbReconnectPolicy`).
+/// Make a stale SMB media root readable again. Used by the Repair SMB button
+/// and by the recovery loop's automatic reconnect (see `SmbReconnectPolicy`).
+/// Returns the path the root is readable at, which differs from `root.path`
+/// when the share is mounted under another name (the caller re-points the
+/// root there).
 ///
-/// Every mounted copy of the same share is force-unmounted first, stale or
-/// not. macOS refuses a second mount of a share while an old session is alive
-/// and Finder then names the new copy `share-1`, which the configured path
-/// never sees. Clearing them all lets `open` land on the configured path.
-pub fn repair_smb_root(root: &MediaRootSetting) -> Result<(), String> {
+/// macOS names a second mount of a share `share-1`, `share-2`, and so on
+/// whenever the original name is taken, so the share often comes back under a
+/// different folder than the one configured. The steps, in order:
+///
+/// 1. A live, readable copy of the share anywhere is adopted as is.
+/// 2. Otherwise every live copy is force-unmounted, because macOS refuses to
+///    mount a share a second time while an old session is alive.
+/// 3. The saved URL is reopened, and whichever copy becomes readable wins.
+///
+/// Only mounts on their own device count as live. After a bad unmount macOS can
+/// leave a plain directory at the old mount point and a ghost entry in the
+/// mount table; neither can be unmounted and neither holds a session.
+pub fn repair_smb_root(root: &MediaRootSetting) -> Result<String, String> {
     let url = root
         .reconnect_url
         .as_deref()
@@ -308,15 +319,20 @@ pub fn repair_smb_root(root: &MediaRootSetting) -> Result<(), String> {
 
     #[cfg(target_os = "macos")]
     {
-        for mount_point in smb_mount_points_for_share(url, &list_mounts()?) {
-            if !safe_smb_mount_point(&mount_point) {
+        let live = live_smb_mounts(url)?;
+        if let Some(path) = readable_path_on_mounts(root, &live) {
+            return Ok(path);
+        }
+
+        for mount_point in &live {
+            if !safe_smb_mount_point(mount_point) {
                 return Err(format!(
                     "refusing to force-unmount unexpected SMB path {mount_point}"
                 ));
             }
             if !run_bounded(
                 "/usr/sbin/diskutil",
-                &["unmount", "force", &mount_point],
+                &["unmount", "force", mount_point],
                 SMB_UNMOUNT_TIMEOUT,
             )? {
                 return Err(format!(
@@ -324,7 +340,7 @@ pub fn repair_smb_root(root: &MediaRootSetting) -> Result<(), String> {
                 ));
             }
         }
-        if !smb_mount_points_for_share(url, &list_mounts()?).is_empty() {
+        if !live_smb_mounts(url)?.is_empty() {
             return Err(format!(
                 "a copy of {url} is still mounted after unmounting; restart the Mac if it persists"
             ));
@@ -337,7 +353,14 @@ pub fn repair_smb_root(root: &MediaRootSetting) -> Result<(), String> {
         let deadline = Instant::now() + SMB_REPAIR_WAIT;
         while Instant::now() < deadline {
             if probe_root(root).is_ok() {
-                return Ok(());
+                return Ok(root.path.clone());
+            }
+            // The configured name may be taken by a leftover directory, in
+            // which case macOS mounts the share beside it instead.
+            if let Some(path) =
+                readable_path_on_mounts(root, &live_smb_mounts(url).unwrap_or_default())
+            {
+                return Ok(path);
             }
             std::thread::sleep(Duration::from_millis(500));
         }
@@ -366,6 +389,98 @@ fn list_mounts() -> Result<String, String> {
         .output()
         .map_err(|error| format!("could not inspect mounted volumes: {error}"))?;
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Mount points of the live mounts of `url`'s share, ghost entries excluded.
+#[cfg(target_os = "macos")]
+fn live_smb_mounts(url: &str) -> Result<Vec<String>, String> {
+    Ok(smb_mount_points_for_share(url, &list_mounts()?)
+        .into_iter()
+        .filter(|mount_point| is_live_mount(mount_point))
+        .collect())
+}
+
+/// Whether `mount_point` is a real mounted volume rather than a leftover
+/// directory still named in the mount table. The check is bounded, since a
+/// wedged SMB session can block even a `stat` of its mount root.
+#[cfg(target_os = "macos")]
+fn is_live_mount(mount_point: &str) -> bool {
+    let path = PathBuf::from(mount_point);
+    bounded_probe(
+        PathBuf::from(format!("{mount_point}#device")),
+        PROBE_TIMEOUT,
+        move || {
+            if differs_from_parent_device(&path, Path::new("/Volumes"))? {
+                Ok(())
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "not a mounted volume",
+                ))
+            }
+        },
+    )
+    .is_ok()
+}
+
+/// A mounted volume reports a different device id than the folder it is
+/// mounted in; a plain directory reports the same one.
+#[cfg(all(unix, any(target_os = "macos", test)))]
+fn differs_from_parent_device(path: &Path, parent: &Path) -> std::io::Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+    Ok(std::fs::metadata(path)?.dev() != std::fs::metadata(parent)?.dev())
+}
+
+/// The path `root` is readable at on the first of `mounts` that serves it,
+/// found by swapping the root's own `/Volumes/<name>` prefix for each mount.
+#[cfg(target_os = "macos")]
+fn readable_path_on_mounts(root: &MediaRootSetting, mounts: &[String]) -> Option<String> {
+    let old_mount = volume_mount_point(&root.path)?;
+    mounts.iter().find_map(|mount_point| {
+        let candidate = rebase_path(&root.path, &old_mount, mount_point)?;
+        let mut probe = root.clone();
+        probe.path = candidate.clone();
+        probe_root(&probe).is_ok().then_some(candidate)
+    })
+}
+
+/// The `/Volumes/<name>` folder macOS mounts a share on, taken from a path
+/// beneath it.
+pub fn volume_mount_point(path: &str) -> Option<String> {
+    let name = path
+        .strip_prefix("/Volumes/")?
+        .split('/')
+        .next()
+        .filter(|name| !name.is_empty())?;
+    Some(format!("/Volumes/{name}"))
+}
+
+/// `path` with its leading `old_mount` folder replaced by `new_mount`.
+fn rebase_path(path: &str, old_mount: &str, new_mount: &str) -> Option<String> {
+    let rest = path.strip_prefix(old_mount)?;
+    (rest.is_empty() || rest.starts_with('/')).then(|| format!("{new_mount}{rest}"))
+}
+
+/// Move every root on the share `share_url` that lives under `old_mount` to
+/// `new_mount`. Library entries are stored relative to their root, so nothing
+/// in the catalog changes. Returns whether any root moved.
+pub fn repoint_share_roots(
+    roots: &mut [MediaRootSetting],
+    share_url: &str,
+    old_mount: &str,
+    new_mount: &str,
+) -> bool {
+    let mut moved = false;
+    for root in roots
+        .iter_mut()
+        .filter(|root| root.reconnect_url.as_deref() == Some(share_url))
+    {
+        if let Some(path) = rebase_path(&root.path, old_mount, new_mount) {
+            root.path = path;
+            moved = true;
+        }
+    }
+    moved
 }
 
 /// Run a system command, killing it if it outlives `timeout`. A command that
@@ -456,6 +571,11 @@ impl SmbReconnectPolicy {
             .or_default()
             .unreadable_since
             .get_or_insert(now);
+    }
+
+    /// Consecutive failed attempts for `share` since it last read.
+    pub fn failure_count(&self, share: &str) -> u32 {
+        self.shares.get(share).map_or(0, |state| state.failures)
     }
 
     /// The share reads again, so every retry and give-up state is cleared.
@@ -1198,6 +1318,88 @@ mod tests {
             smb_mount_points_for_share("smb://GUEST@batocera.local/share", mounts),
             vec!["/Volumes/share".to_string(), "/Volumes/share-1".to_string()]
         );
+    }
+
+    #[test]
+    fn volume_mount_point_is_the_first_folder_under_volumes() {
+        assert_eq!(
+            volume_mount_point("/Volumes/share/movies").as_deref(),
+            Some("/Volumes/share")
+        );
+        assert_eq!(
+            volume_mount_point("/Volumes/share-1").as_deref(),
+            Some("/Volumes/share-1")
+        );
+        assert_eq!(volume_mount_point("/Users/me/movies"), None);
+        assert_eq!(volume_mount_point("/Volumes/"), None);
+    }
+
+    #[test]
+    fn rebase_path_swaps_only_a_whole_leading_folder() {
+        assert_eq!(
+            rebase_path("/Volumes/share/movies", "/Volumes/share", "/Volumes/share-1").as_deref(),
+            Some("/Volumes/share-1/movies")
+        );
+        assert_eq!(
+            rebase_path("/Volumes/share", "/Volumes/share", "/Volumes/share-1").as_deref(),
+            Some("/Volumes/share-1")
+        );
+        // "/Volumes/share-1" must not be treated as being under "/Volumes/share".
+        assert_eq!(
+            rebase_path("/Volumes/share-1/movies", "/Volumes/share", "/Volumes/x"),
+            None
+        );
+    }
+
+    #[test]
+    fn repoint_share_roots_moves_only_roots_on_that_share_and_mount() {
+        let root = |label: &str, path: &str, url: Option<&str>| MediaRootSetting {
+            label: label.into(),
+            path: path.into(),
+            reconnect_url: url.map(str::to_string),
+            asset_type: RootAssetType::default(),
+        };
+        let share = "smb://GUEST@batocera.local/share";
+        let mut roots = vec![
+            root("movies", "/Volumes/share/movies", Some(share)),
+            root("music", "/Volumes/share/music", Some(share)),
+            root("other", "/Volumes/share/other", Some("smb://nas/elsewhere")),
+            root("local", "/Users/me/media", None),
+        ];
+
+        assert!(repoint_share_roots(&mut roots, share, "/Volumes/share", "/Volumes/share-1"));
+        assert_eq!(roots[0].path, "/Volumes/share-1/movies");
+        assert_eq!(roots[1].path, "/Volumes/share-1/music");
+        assert_eq!(roots[2].path, "/Volumes/share/other");
+        assert_eq!(roots[3].path, "/Users/me/media");
+        assert!(!repoint_share_roots(&mut roots, share, "/Volumes/share", "/Volumes/share-2"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_plain_directory_is_not_a_separate_device_from_its_parent() {
+        let parent =
+            std::env::temp_dir().join(format!("swarm-device-test-{}", rand::random::<u64>()));
+        let child = parent.join("leftover");
+        std::fs::create_dir_all(&child).unwrap();
+
+        assert!(!differs_from_parent_device(&child, &parent).unwrap());
+        assert!(differs_from_parent_device(&parent.join("missing"), &parent).is_err());
+
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn smb_failure_count_resets_when_the_share_reads_again() {
+        let share = "smb://GUEST@batocera.local/share";
+        let start = Instant::now();
+        let mut policy = SmbReconnectPolicy::default();
+        policy.observe_unreadable(share, start);
+        assert!(policy.try_begin(share, start + SMB_RECONNECT_GRACE));
+        policy.finish(share, start + SMB_RECONNECT_GRACE, false);
+        assert_eq!(policy.failure_count(share), 1);
+        policy.observe_readable(share);
+        assert_eq!(policy.failure_count(share), 0);
     }
 
     #[test]

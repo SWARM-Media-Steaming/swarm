@@ -372,6 +372,32 @@ impl AppState {
     }
 }
 
+/// After a repair reports where `root` is now readable, persist that mount
+/// folder for every root on the same share. Returns the updated roots when any
+/// moved, or `None` when the share came back where it was configured.
+fn adopt_repaired_mount(
+    settings_dir: &std::path::Path,
+    root: &MediaRootSetting,
+    new_path: &str,
+) -> Result<Option<Vec<MediaRootSetting>>, String> {
+    if new_path == root.path {
+        return Ok(None);
+    }
+    let (Some(old_mount), Some(new_mount), Some(share)) = (
+        settings::volume_mount_point(&root.path),
+        settings::volume_mount_point(new_path),
+        root.reconnect_url.as_deref(),
+    ) else {
+        return Ok(None);
+    };
+    let mut persisted = settings::load(settings_dir);
+    if !settings::repoint_share_roots(&mut persisted.media_roots, share, &old_mount, &new_mount) {
+        return Ok(None);
+    }
+    settings::save(settings_dir, &persisted).map_err(|error| error.to_string())?;
+    Ok(Some(persisted.media_roots))
+}
+
 /// Network mounts can remain present under `/Volumes` while every read
 /// fails. Poll the same real-read health check the UI uses. A macOS SMB root
 /// that stays unreadable is remounted automatically by `repair_smb_root`, paced
@@ -466,9 +492,65 @@ fn start_media_root_recovery(core: Arc<ServerCore>, settings_dir: PathBuf) {
                 };
                 let succeeded = outcome.is_ok();
                 match &outcome {
-                    Ok(()) => tracing::info!(path = %root.path, "automatic SMB reconnect succeeded"),
+                    Ok(new_path) => {
+                        tracing::info!(path = %new_path, "automatic SMB reconnect succeeded");
+                        match adopt_repaired_mount(&settings_dir, &root, new_path) {
+                            Ok(Some(updated)) => {
+                                // The share came back under another folder, so
+                                // the roots were re-pointed. Swapping them into
+                                // the running core also rescans, which makes a
+                                // separate recovery rescan redundant.
+                                for moved in &updated {
+                                    unavailable.remove(&moved.label);
+                                }
+                                if let Err(error) =
+                                    core.update_media_roots(to_media_roots(&updated)).await
+                                {
+                                    tracing::warn!(%error, "could not apply re-pointed media roots");
+                                }
+                                let message = format!(
+                                    "macOS mounted the share at {new_path} instead of {}, so SWARM switched its media roots to the new location and rescanned.",
+                                    root.path,
+                                );
+                                if let Err(error) = core
+                                    .library
+                                    .record_server_notification(
+                                        "success",
+                                        "Media location updated",
+                                        &message,
+                                    )
+                                    .await
+                                {
+                                    tracing::warn!(%error, "could not save media-location notification");
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                tracing::warn!(%error, "could not save the re-pointed media roots");
+                            }
+                        }
+                    }
                     Err(error) => {
-                        tracing::warn!(path = %root.path, %error, "automatic SMB reconnect failed")
+                        tracing::warn!(path = %root.path, %error, "automatic SMB reconnect failed");
+                        // Say so on the first failure, not only after the
+                        // retries run out, so the user knows why it is still down.
+                        if reconnect.failure_count(&share) == 0 {
+                            let message = format!(
+                                "SWARM could not remount \"{}\" at {}: {error}\n\nIt will keep retrying with growing pauses. You can also press Repair SMB in Settings.",
+                                root.label, root.path,
+                            );
+                            if let Err(save_error) = core
+                                .library
+                                .record_server_notification(
+                                    "error",
+                                    "Automatic reconnect failed",
+                                    &message,
+                                )
+                                .await
+                            {
+                                tracing::warn!(%save_error, "could not save reconnect-failure notification");
+                            }
+                        }
                     }
                 }
                 if reconnect.finish(&share, Instant::now(), succeeded) {
@@ -1755,10 +1837,22 @@ async fn repair_smb_root<R: tauri::Runtime>(
             ScanState::Scanning | ScanState::Failed(_)
         )
     });
-    tokio::task::spawn_blocking(move || settings::repair_smb_root(&root))
+    let repair_root = root.clone();
+    let new_path = tokio::task::spawn_blocking(move || settings::repair_smb_root(&repair_root))
         .await
         .map_err(|error| error.to_string())??;
-    let rescan = if needs_rescan {
+    let mut media_roots = persisted.media_roots;
+    // The share may have come back under another folder (`share-1`); follow it.
+    let moved_rescan = match adopt_repaired_mount(&dir, &root, &new_path)? {
+        Some(updated) => {
+            media_roots = updated;
+            state.apply_live_roots(&media_roots).await?
+        }
+        None => None,
+    };
+    let rescan = if moved_rescan.is_some() {
+        moved_rescan
+    } else if needs_rescan {
         let Some(core) = state.core.get() else {
             return Err("media server stopped during SMB repair".to_string());
         };
@@ -1781,7 +1875,7 @@ async fn repair_smb_root<R: tauri::Runtime>(
         None
     };
     Ok(MediaRootsResult {
-        media_roots: persisted.media_roots,
+        media_roots,
         rescan,
         apply_error: None,
     })

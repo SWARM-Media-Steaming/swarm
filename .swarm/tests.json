@@ -1866,6 +1866,40 @@
         "servers": []
       },
       "timeoutSeconds": 1800
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "tests/adversarial/issue_465_titles/Cargo.toml",
+        "--target-dir",
+        "target/adversarial-issue-465",
+        "--test",
+        "issue_465_tales_crypt_titles",
+        "--",
+        "--nocapture"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-465-tales-crypt-titles",
+      "name": "Adversarial: issue #465 Tales from the Crypt season 6 episode titles",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "cargo"
+        ],
+        "files": [
+          "tests/adversarial/issue_465_titles/Cargo.toml",
+          "tests/adversarial/issue_465_titles/tests/issue_465_tales_crypt_titles.rs",
+          "crates/swarm-media/src/store.rs"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
     }
   ],
   "version": 1

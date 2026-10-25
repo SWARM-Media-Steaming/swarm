@@ -284,6 +284,93 @@ impl TmdbClient {
             .and_then(|y| y.parse::<u32>().ok()))
     }
 
+    /// Corrects known TMDb data errors that would otherwise propagate a wrong
+    /// episode title into the library. TMDb's entry for *Tales from the
+    /// Crypt* (id 2391) season 6 bundles three distinct premiere episodes
+    /// into a single episode 1 title
+    /// `"Let the Punishment Fit the Crime / Only Skin Deep / Whirlpool"`
+    /// (all aired 1994-10-31), so a naive `episode_number` lookup makes
+    /// S06E03 return `"Revenge Is the Nuts"` (TMDb E03) instead of the
+    /// correct `"Whirlpool"` (real E03). The correction expands the bundled
+    /// title into three separate episode identities and shifts subsequent
+    /// episode numbers, matching the authoritative ordering used by
+    /// Wikipedia, TVmaze and Cinemeta.
+    fn correct_known_season(
+        show_id: u64,
+        season_number: u32,
+        mut season: ScrapedSeason,
+    ) -> ScrapedSeason {
+        if show_id == 2391 && season_number == 6 {
+            if let Some(first) = season.episode_details.get(&1) {
+                let bundled = first.title.contains('/')
+                    && first.title.contains("Let the Punishment Fit the Crime")
+                    && first.title.contains("Whirlpool");
+                if bundled {
+                    let parts: Vec<String> = first
+                        .title
+                        .split('/')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    if parts.len() == 3 {
+                        // Shift existing 2..N up by 2 to make room, then insert split titles.
+                        let mut shifted: HashMap<u32, ScrapedEpisode> = HashMap::new();
+                        let mut shifted_stills: HashMap<u32, String> = HashMap::new();
+                        // Collect keys to shift descending to avoid overwrite.
+                        let mut keys: Vec<u32> = season
+                            .episode_details
+                            .keys()
+                            .copied()
+                            .filter(|k| *k >= 2)
+                            .collect();
+                        keys.sort_unstable_by(|a, b| b.cmp(a));
+                        for k in keys {
+                            if let Some(ep) = season.episode_details.remove(&k) {
+                                shifted.insert(k + 2, ep);
+                            }
+                            if let Some(url) = season.episode_still_urls.remove(&k) {
+                                shifted_stills.insert(k + 2, url);
+                            }
+                        }
+                        // Original bundled still belongs to the middle split (Only Skin Deep) visually,
+                        // but we propagate it to all three for completeness.
+                        let original_still = season.episode_details.get(&1).and_then(|e| e.still_url.clone());
+                        let original_overview = season.episode_details.get(&1).and_then(|e| e.overview.clone());
+                        // Remove original bundled entry before inserting splits.
+                        season.episode_details.remove(&1);
+                        season.episode_still_urls.remove(&1);
+                        // Insert split episodes 1,2,3.
+                        for (idx, title) in parts.into_iter().enumerate() {
+                            let num = (idx + 1) as u32;
+                            // Only first split keeps original overview; others start empty to avoid misleading synopsis.
+                            let overview = if num == 1 { original_overview.clone() } else { None };
+                            let still = original_still.clone();
+                            season.episode_details.insert(
+                                num,
+                                ScrapedEpisode {
+                                    title,
+                                    overview,
+                                    still_url: still.clone(),
+                                },
+                            );
+                            if let Some(s) = still {
+                                season.episode_still_urls.insert(num, s);
+                            }
+                        }
+                        // Merge shifted back.
+                        for (k, v) in shifted {
+                            season.episode_details.insert(k, v);
+                        }
+                        for (k, v) in shifted_stills {
+                            season.episode_still_urls.insert(k, v);
+                        }
+                    }
+                }
+            }
+        }
+        season
+    }
+
     /// Fetches the season poster and each episode's still image from TMDB's
     /// season endpoint. Those fields are not part of `/tv/{id}`, which is
     /// why treating show details as episode details produced the same show
@@ -312,7 +399,7 @@ impl TmdbClient {
             .json()
             .await
             .map_err(|e| TmdbError::Unavailable(e.to_string()))?;
-        Ok(ScrapedSeason {
+        let season = ScrapedSeason {
             poster_url: body
                 .poster_path
                 .map(|p| format!("{}/w342{p}", self.image_base)),
@@ -345,7 +432,8 @@ impl TmdbClient {
                     )
                 })
                 .collect(),
-        })
+        };
+        Ok(Self::correct_known_season(show_id, season_number, season))
     }
 
     async fn search(
@@ -1281,5 +1369,129 @@ mod tests {
                 .is_err()
         );
         assert!(TmdbOverride::Url("garbage".into()).resolve_id().is_err());
+    }
+
+    #[test]
+    fn correct_known_season_expands_tales_from_the_crypt_s06_bundled_premiere() {
+        let bundled = ScrapedSeason {
+            poster_url: None,
+            episode_still_urls: [(2, "still2".to_string()), (3, "still3".to_string())]
+                .into_iter()
+                .collect(),
+            episode_details: [
+                (
+                    1,
+                    ScrapedEpisode {
+                        title: "Let the Punishment Fit the Crime / Only Skin Deep / Whirlpool"
+                            .to_string(),
+                        overview: Some("bundle overview".to_string()),
+                        still_url: Some("still1".to_string()),
+                    },
+                ),
+                (
+                    2,
+                    ScrapedEpisode {
+                        title: "Operation Friendship".to_string(),
+                        overview: None,
+                        still_url: Some("still2".to_string()),
+                    },
+                ),
+                (
+                    3,
+                    ScrapedEpisode {
+                        title: "Revenge Is the Nuts".to_string(),
+                        overview: None,
+                        still_url: Some("still3".to_string()),
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        };
+        let corrected = TmdbClient::correct_known_season(2391, 6, bundled);
+        assert_eq!(
+            corrected.episode_details.get(&1).unwrap().title,
+            "Let the Punishment Fit the Crime"
+        );
+        assert_eq!(
+            corrected.episode_details.get(&2).unwrap().title,
+            "Only Skin Deep"
+        );
+        assert_eq!(
+            corrected.episode_details.get(&3).unwrap().title,
+            "Whirlpool"
+        );
+        assert_eq!(
+            corrected.episode_details.get(&4).unwrap().title,
+            "Operation Friendship"
+        );
+        assert_eq!(
+            corrected.episode_details.get(&5).unwrap().title,
+            "Revenge Is the Nuts"
+        );
+    }
+
+    #[test]
+    fn correct_known_season_leaves_other_shows_untouched() {
+        let season = ScrapedSeason {
+            poster_url: None,
+            episode_still_urls: HashMap::new(),
+            episode_details: [(
+                1,
+                ScrapedEpisode {
+                    title: "Let the Punishment Fit the Crime / Only Skin Deep / Whirlpool"
+                        .to_string(),
+                    overview: None,
+                    still_url: None,
+                },
+            )]
+            .into_iter()
+            .collect(),
+        };
+        let corrected = TmdbClient::correct_known_season(9999, 6, season.clone());
+        assert_eq!(corrected.episode_details.len(), season.episode_details.len());
+        assert_eq!(
+            corrected.episode_details.get(&1).unwrap().title,
+            "Let the Punishment Fit the Crime / Only Skin Deep / Whirlpool"
+        );
+    }
+
+    #[test]
+    fn correct_known_season_leaves_already_correct_s06_untouched() {
+        let season = ScrapedSeason {
+            poster_url: None,
+            episode_still_urls: HashMap::new(),
+            episode_details: [
+                (
+                    1,
+                    ScrapedEpisode {
+                        title: "Let the Punishment Fit the Crime".to_string(),
+                        overview: None,
+                        still_url: None,
+                    },
+                ),
+                (
+                    2,
+                    ScrapedEpisode {
+                        title: "Only Skin Deep".to_string(),
+                        overview: None,
+                        still_url: None,
+                    },
+                ),
+                (
+                    3,
+                    ScrapedEpisode {
+                        title: "Whirlpool".to_string(),
+                        overview: None,
+                        still_url: None,
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        };
+        let corrected = TmdbClient::correct_known_season(2391, 6, season.clone());
+        assert_eq!(corrected.episode_details.get(&3).unwrap().title, "Whirlpool");
+        assert_eq!(corrected.episode_details.len(), 3);
     }
 }

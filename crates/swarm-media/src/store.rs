@@ -3489,6 +3489,64 @@ impl From<EntryRow> for EntryRecord {
     }
 }
 
+/// Corrects known wrong episode titles that are already persisted from a
+/// previous scrape of TMDb's bundled season 6 data. TMDb once returned
+/// S06E03 as "Revenge Is the Nuts" (their E03) while the real E03 is
+/// "Whirlpool"; without this, an already-scraped library would keep
+/// showing the wrong title until a forced re-scrape. The correction is
+/// applied on every read so existing rows heal without a migration.
+const TALES_S06_TITLES: [&str; 15] = [
+    "Let the Punishment Fit the Crime",
+    "Only Skin Deep",
+    "Whirlpool",
+    "Operation Friendship",
+    "Revenge Is the Nuts",
+    "The Bribe",
+    "The Pit",
+    "The Assassin",
+    "Staired in Horror",
+    "In the Groove",
+    "Surprise Party",
+    "Doctor of Horror",
+    "Comes the Dawn",
+    "99 & 44/100% Pure Horror",
+    "You, Murderer",
+];
+
+pub fn corrected_episode_title(
+    show_title: Option<&str>,
+    season: Option<u32>,
+    episode: Option<u32>,
+    stored: Option<&str>,
+) -> Option<String> {
+    let st = stored?;
+    if st.is_empty() {
+        return None;
+    }
+    let show = show_title.unwrap_or_default().to_lowercase();
+    let is_crypt = show.contains("tales from the crypt") || show.contains("talesfromthecrypt");
+    if is_crypt && season == Some(6) {
+        if let Some(ep) = episode {
+            if (1..=15).contains(&ep) {
+                let canonical = TALES_S06_TITLES[(ep - 1) as usize];
+                // If stored is the bundled slash string, replace with canonical.
+                if st.contains('/') && st.contains("Whirlpool") {
+                    return Some(canonical.to_string());
+                }
+                // If stored already equals canonical (case-insensitive), keep it.
+                if st.eq_ignore_ascii_case(canonical) {
+                    return Some(st.to_string());
+                }
+                // Otherwise the stored value is the old TMDb-shifted title
+                // (e.g. E03 stored "Revenge Is the Nuts" instead of "Whirlpool");
+                // heal it to the canonical title.
+                return Some(canonical.to_string());
+            }
+        }
+    }
+    Some(st.to_string())
+}
+
 impl EntryRecord {
     pub fn to_catalog_entry(&self) -> CatalogEntry {
         CatalogEntry {
@@ -3505,7 +3563,12 @@ impl EntryRecord {
             album: self.album.clone(),
             track_number: self.track_number,
             scraped_title: self.scraped_title.clone(),
-            episode_title: self.episode_title.clone(),
+            episode_title: corrected_episode_title(
+                self.show_title.as_deref(),
+                self.season,
+                self.episode,
+                self.episode_title.as_deref(),
+            ),
             genres: self.genres.clone(),
             video: self.video.clone(),
             audio: self.audio.clone(),
@@ -3540,5 +3603,86 @@ impl EntryRecord {
             extra_relative_path: self.extra_relative_path.clone(),
             extra_category_path: self.extra_category_path.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod corrected_title_tests {
+    use super::*;
+
+    #[test]
+    fn s06e03_whirlpool_heals_wrong_revenge() {
+        assert_eq!(
+            corrected_episode_title(
+                Some("Tales from the Crypt"),
+                Some(6),
+                Some(3),
+                Some("Revenge Is the Nuts")
+            )
+            .as_deref(),
+            Some("Whirlpool")
+        );
+    }
+
+    #[test]
+    fn s06_bundled_slash_heals_to_whirlpool() {
+        assert_eq!(
+            corrected_episode_title(
+                Some("Tales from the Crypt"),
+                Some(6),
+                Some(3),
+                Some("Let the Punishment Fit the Crime / Only Skin Deep / Whirlpool")
+            )
+            .as_deref(),
+            Some("Whirlpool")
+        );
+        assert_eq!(
+            corrected_episode_title(
+                Some("Tales from the Crypt"),
+                Some(6),
+                Some(1),
+                Some("Let the Punishment Fit the Crime / Only Skin Deep / Whirlpool")
+            )
+            .as_deref(),
+            Some("Let the Punishment Fit the Crime")
+        );
+    }
+
+    #[test]
+    fn s06e05_revenge_heals_shifted_pit() {
+        // E05 was stored as "The Pit" due to shift; should heal to "Revenge Is the Nuts"
+        assert_eq!(
+            corrected_episode_title(
+                Some("Tales from the Crypt"),
+                Some(6),
+                Some(5),
+                Some("The Pit")
+            )
+            .as_deref(),
+            Some("Revenge Is the Nuts")
+        );
+    }
+
+    #[test]
+    fn other_show_not_corrected() {
+        assert_eq!(
+            corrected_episode_title(Some("Breaking Bad"), Some(6), Some(3), Some("Revenge Is the Nuts"))
+                .as_deref(),
+            Some("Revenge Is the Nuts")
+        );
+    }
+
+    #[test]
+    fn other_season_not_corrected() {
+        assert_eq!(
+            corrected_episode_title(
+                Some("Tales from the Crypt"),
+                Some(5),
+                Some(3),
+                Some("Revenge Is the Nuts")
+            )
+            .as_deref(),
+            Some("Revenge Is the Nuts")
+        );
     }
 }

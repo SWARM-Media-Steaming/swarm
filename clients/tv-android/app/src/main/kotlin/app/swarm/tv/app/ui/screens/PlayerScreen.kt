@@ -216,6 +216,17 @@ internal fun nextIntroOffer(
 
 private const val AUDIO_BOOST_MAX_MILLIBELS = 10_000
 
+internal fun audioBoostGainMillibels(levelDb: Int): Int =
+    (levelDb * 1000).coerceIn(0, AUDIO_BOOST_MAX_MILLIBELS)
+
+internal fun audioBoostStatusFor(levelDb: Int, sessionId: Int): String = when {
+    levelDb == 0 -> "Off"
+    sessionId == C.AUDIO_SESSION_ID_UNSET || sessionId <= 0 -> "Unavailable: audio session not ready"
+    else -> "Active on decoded audio; passthrough may bypass boost"
+}
+
+internal const val AUDIO_BOOST_UNAVAILABLE_STATUS = "Unavailable on this audio output"
+
 internal enum class RemotePlaybackAction {
     TOGGLE_PLAY_PAUSE,
     PLAY,
@@ -703,7 +714,6 @@ fun PlayerScreen(
     }
     val audioBoostStore = remember(context) { AndroidAudioBoostStore(context) }
     var audioBoostLevel by remember { mutableStateOf(audioBoostStore.get()) }
-    var audioBoostStatus by remember(player) { mutableStateOf("Off") }
     val episodeShowTitle = remember(entry.entry.kind, entry.entry.showTitle) {
         entry.entry.showTitle?.trim()?.takeIf {
             entry.entry.kind == MediaKind.EPISODE && it.isNotEmpty()
@@ -738,6 +748,7 @@ fun PlayerScreen(
             ?: 0.0
         onPositionUpdate(positionSecs, durationSecs)
     }
+    var audioBoostStatus by remember(player) { mutableStateOf(audioBoostStatusFor(audioBoostLevel, player.audioSessionId)) }
     var isLoading by remember(sessionId) { mutableStateOf(player.playbackState != Player.STATE_READY) }
     var hasStartedPlayback by remember(sessionId) {
         // A preloaded next episode can already be READY when it is promoted,
@@ -1063,13 +1074,13 @@ fun PlayerScreen(
             }
             try {
                 enhancer = LoudnessEnhancer(sessionId).apply {
-                    setTargetGain((audioBoostLevel * 1000).coerceIn(0, AUDIO_BOOST_MAX_MILLIBELS))
+                    setTargetGain(audioBoostGainMillibels(audioBoostLevel))
                     enabled = true
                 }
-                audioBoostStatus = "Active on decoded audio; passthrough may bypass boost"
+                audioBoostStatus = audioBoostStatusFor(audioBoostLevel, sessionId)
                 android.util.Log.i("SwarmAudioBoost", "enabled level_db=$audioBoostLevel session_id=$sessionId")
             } catch (error: Exception) {
-                audioBoostStatus = "Unavailable on this audio output"
+                audioBoostStatus = AUDIO_BOOST_UNAVAILABLE_STATUS
                 android.util.Log.w("SwarmAudioBoost", "activation failed level_db=$audioBoostLevel session_id=$sessionId", error)
                 runCatching { enhancer?.release() }
                 enhancer = null
@@ -1225,7 +1236,6 @@ fun PlayerScreen(
             val positionSecs = positionOffsetSecs + player.currentPosition / 1000.0
             val durationSecs = player.duration.takeIf { it != C.TIME_UNSET }?.let { positionOffsetSecs + it / 1000.0 } ?: 0.0
             onPositionUpdate(positionSecs, durationSecs)
-            loudnessEnhancer?.release()
             playerPool.release(player)
         }
     }

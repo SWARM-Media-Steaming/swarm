@@ -3530,7 +3530,16 @@ pub fn corrected_episode_title(
         return None;
     }
     let show = show_title.unwrap_or_default().to_lowercase();
-    let is_crypt = show.contains("tales from the crypt") || show.contains("talesfromthecrypt");
+    // Match the series title as a complete normalized phrase. A substring
+    // check also catches the similarly named Tales from the Cryptkeeper.
+    let normalized_show: String = show
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect();
+    let is_crypt = normalized_show == "talesfromthecrypt"
+        || normalized_show
+            .strip_prefix("talesfromthecrypt")
+            .is_some_and(|suffix| suffix.starts_with("19") && suffix.len() == 4);
     if is_crypt && season == Some(6) {
         if let Some(ep) = episode {
             if (1..=15).contains(&ep) {

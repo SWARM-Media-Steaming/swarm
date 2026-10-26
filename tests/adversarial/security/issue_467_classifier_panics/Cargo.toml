@@ -1,0 +1,13 @@
+[workspace]
+
+[package]
+name = "adversarial-security-issue-467-classifier-panics"
+description = "Adversarial security regression tests for classifier panics on attacker-named folders."
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+swarm-core = { path = "../../../../crates/swarm-core" }
+swarm-media = { path = "../../../../crates/swarm-media" }

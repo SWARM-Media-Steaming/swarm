@@ -2219,6 +2219,40 @@
         "servers": []
       },
       "timeoutSeconds": 1800
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "tests/adversarial/security/issue_467_classifier_panics/Cargo.toml",
+        "--target-dir",
+        "target",
+        "--test",
+        "classifier_folder_panics",
+        "--",
+        "--nocapture"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-security-issue-467-classifier-panics",
+      "name": "Adversarial security: classifier must not panic on attacker-named season folders (issue #467)",
+      "origin": "adversarial-security",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "cargo"
+        ],
+        "files": [
+          "tests/adversarial/security/issue_467_classifier_panics/Cargo.toml",
+          "tests/adversarial/security/issue_467_classifier_panics/tests/classifier_folder_panics.rs",
+          "crates/swarm-media/src/classify.rs"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
     }
   ],
   "version": 1

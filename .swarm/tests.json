@@ -1806,16 +1806,15 @@
       "timeoutSeconds": 120
     },
     {
-      "id": "adversarial-issue-443-seek-coalescing",
-      "name": "Adversarial Issue 443 Seek Coalescing",
       "command": [
         "python3",
         "tests/adversarial/test_issue_443_skip_seek_coalescing.py"
       ],
-      "origin": "adversarial",
       "disruptive": false,
       "enabled": true,
-      "timeoutSeconds": 300,
+      "id": "adversarial-issue-443-seek-coalescing",
+      "name": "Adversarial Issue 443 Seek Coalescing",
+      "origin": "adversarial",
       "requirements": {
         "credentials": [],
         "devices": [],
@@ -1829,7 +1828,8 @@
         ],
         "mounts": [],
         "servers": []
-      }
+      },
+      "timeoutSeconds": 300
     },
     {
       "command": [
@@ -1894,6 +1894,41 @@
         "files": [
           "tests/adversarial/issue_465_titles/Cargo.toml",
           "tests/adversarial/issue_465_titles/tests/issue_465_tales_crypt_titles.rs",
+          "crates/swarm-media/src/store.rs"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "tests/adversarial/issue_465_scrape/Cargo.toml",
+        "--target-dir",
+        "target/adversarial-issue-465",
+        "--test",
+        "issue_465_scrape_and_library",
+        "--",
+        "--nocapture"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-465-scrape-and-library",
+      "name": "Adversarial: issue #465 TMDb season scrape and stored-library Whirlpool title",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "cargo"
+        ],
+        "files": [
+          "tests/adversarial/issue_465_scrape/Cargo.toml",
+          "tests/adversarial/issue_465_scrape/tests/issue_465_scrape_and_library.rs",
+          "crates/swarm-media/src/scrape/tmdb.rs",
           "crates/swarm-media/src/store.rs"
         ],
         "mounts": [],

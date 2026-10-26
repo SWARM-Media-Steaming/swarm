@@ -2185,6 +2185,40 @@
         "mounts": [],
         "servers": []
       }
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "tests/adversarial/issue_467_classifier/Cargo.toml",
+        "--target-dir",
+        "target/adversarial-issue-467",
+        "--test",
+        "issue_467_combined_season_folder",
+        "--",
+        "--nocapture"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-467-combined-season-folder",
+      "name": "Adversarial: issue #467 combined show and season folder classification",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "cargo"
+        ],
+        "files": [
+          "tests/adversarial/issue_467_classifier/Cargo.toml",
+          "tests/adversarial/issue_467_classifier/tests/issue_467_combined_season_folder.rs",
+          "crates/swarm-media/src/classify.rs"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
     }
   ],
   "version": 1

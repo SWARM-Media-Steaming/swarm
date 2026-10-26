@@ -1935,6 +1935,40 @@
         "servers": []
       },
       "timeoutSeconds": 1800
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "tests/adversarial/issue_465_adversarial/Cargo.toml",
+        "--target-dir",
+        "target/adversarial-issue-465",
+        "--test",
+        "issue_465_scope_boundaries",
+        "--",
+        "--nocapture"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-465-scope-boundaries",
+      "name": "Adversarial: issue #465 Whirlpool correction scope boundaries",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "cargo"
+        ],
+        "files": [
+          "tests/adversarial/issue_465_adversarial/Cargo.toml",
+          "tests/adversarial/issue_465_adversarial/tests/issue_465_scope_boundaries.rs",
+          "crates/swarm-media/src/store.rs"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
     }
   ],
   "version": 1

@@ -1,0 +1,14 @@
+[workspace]
+
+[package]
+name = "adversarial-issue-465-boundaries"
+description = "Adversarial boundary UAT for issue #465: the Whirlpool title correction must stay scoped to Tales from the Crypt only."
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+swarm-core = { path = "../../../crates/swarm-core" }
+swarm-media = { path = "../../../crates/swarm-media" }
+tokio = { version = "1", features = ["full"] }

@@ -1,0 +1,14 @@
+[workspace]
+
+[package]
+name = "adversarial-issue-465-scrape"
+description = "Adversarial UAT for issue #465: Tales from the Crypt S06E03 must be Whirlpool from the scraper and from already-stored library rows."
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+swarm-core = { path = "../../../crates/swarm-core" }
+swarm-media = { path = "../../../crates/swarm-media" }
+tokio = { version = "1", features = ["full", "test-util"] }

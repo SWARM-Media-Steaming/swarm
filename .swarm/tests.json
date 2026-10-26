@@ -1806,16 +1806,15 @@
       "timeoutSeconds": 120
     },
     {
-      "id": "adversarial-issue-443-seek-coalescing",
-      "name": "Adversarial Issue 443 Seek Coalescing",
       "command": [
         "python3",
         "tests/adversarial/test_issue_443_skip_seek_coalescing.py"
       ],
-      "origin": "adversarial",
       "disruptive": false,
       "enabled": true,
-      "timeoutSeconds": 300,
+      "id": "adversarial-issue-443-seek-coalescing",
+      "name": "Adversarial Issue 443 Seek Coalescing",
+      "origin": "adversarial",
       "requirements": {
         "credentials": [],
         "devices": [],
@@ -1829,7 +1828,8 @@
         ],
         "mounts": [],
         "servers": []
-      }
+      },
+      "timeoutSeconds": 300
     },
     {
       "command": [
@@ -1861,6 +1861,145 @@
           "apps/server/src/lan.rs",
           "apps/server/src/lib.rs",
           "apps/server/src/link.rs"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "tests/adversarial/issue_465_titles/Cargo.toml",
+        "--target-dir",
+        "target/adversarial-issue-465",
+        "--test",
+        "issue_465_tales_crypt_titles",
+        "--",
+        "--nocapture"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-465-tales-crypt-titles",
+      "name": "Adversarial: issue #465 Tales from the Crypt season 6 episode titles",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "cargo"
+        ],
+        "files": [
+          "tests/adversarial/issue_465_titles/Cargo.toml",
+          "tests/adversarial/issue_465_titles/tests/issue_465_tales_crypt_titles.rs",
+          "crates/swarm-media/src/store.rs"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "tests/adversarial/issue_465_scrape/Cargo.toml",
+        "--target-dir",
+        "target/adversarial-issue-465",
+        "--test",
+        "issue_465_scrape_and_library",
+        "--",
+        "--nocapture"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-465-scrape-and-library",
+      "name": "Adversarial: issue #465 TMDb season scrape and stored-library Whirlpool title",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "cargo"
+        ],
+        "files": [
+          "tests/adversarial/issue_465_scrape/Cargo.toml",
+          "tests/adversarial/issue_465_scrape/tests/issue_465_scrape_and_library.rs",
+          "crates/swarm-media/src/scrape/tmdb.rs",
+          "crates/swarm-media/src/store.rs"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "tests/adversarial/issue_465_adversarial/Cargo.toml",
+        "--target-dir",
+        "target/adversarial-issue-465",
+        "--test",
+        "issue_465_scope_boundaries",
+        "--",
+        "--nocapture"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-465-scope-boundaries",
+      "name": "Adversarial: issue #465 Whirlpool correction scope boundaries",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "cargo"
+        ],
+        "files": [
+          "tests/adversarial/issue_465_adversarial/Cargo.toml",
+          "tests/adversarial/issue_465_adversarial/tests/issue_465_scope_boundaries.rs",
+          "crates/swarm-media/src/store.rs"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "tests/adversarial/issue_465_heal_boundaries/Cargo.toml",
+        "--target-dir",
+        "target/adversarial-issue-465",
+        "--test",
+        "issue_465_heal_boundaries",
+        "--",
+        "--nocapture"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-465-heal-boundaries",
+      "name": "Adversarial: issue #465 season 6 correction across classifier, scraper, and persisted rows",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "cargo"
+        ],
+        "files": [
+          "tests/adversarial/issue_465_heal_boundaries/Cargo.toml",
+          "tests/adversarial/issue_465_heal_boundaries/tests/issue_465_heal_boundaries.rs",
+          "crates/swarm-media/src/classify.rs",
+          "crates/swarm-media/src/scrape/tmdb.rs",
+          "crates/swarm-media/src/store.rs"
         ],
         "mounts": [],
         "servers": []

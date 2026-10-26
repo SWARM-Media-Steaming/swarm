@@ -1066,12 +1066,14 @@ fun PlayerScreen(
     // Audio effect attachment is session-scoped. Rebuild it whenever the
     // selected level or ExoPlayer audio session changes (including track/sink
     // recreation); failures are reflected on screen and logged without secrets.
+    // Keep the last observed output encoding with the player so changing only
+    // the boost level does not forget the still-active AudioTrack configuration.
+    var sinkEncoding by remember(player) { mutableStateOf<Int?>(null) }
     DisposableEffect(player, audioBoostLevel) {
         var enhancer: LoudnessEnhancer? = null
         // Encoding the audio sink actually opened with. A compressed encoding means
         // bitstream passthrough, where PCM effects never see the samples; decoded
         // output is always linear PCM even when the source track is AC3/E-AC3/DTS.
-        var sinkEncoding: Int? = null
         fun attach(sessionId: Int) {
             enhancer?.let { old -> runCatching { old.release() } }
             enhancer = null

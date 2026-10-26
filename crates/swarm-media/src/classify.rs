@@ -1066,9 +1066,12 @@ fn parse_show_season_word_folder(name: &str) -> Option<(u32, &str)> {
     }
     let bytes = trimmed.as_bytes();
     // Specials variant: "<Show> - Specials" -> season 0
-    let lower = trimmed.to_lowercase();
-    if lower.ends_with("specials") {
-        let specials_start = lower.rfind("specials")?;
+    if bytes.len() >= b"specials".len()
+        && bytes[bytes.len() - b"specials".len()..].eq_ignore_ascii_case(b"specials")
+    {
+        // The suffix is ASCII, so its start is also a UTF-8 boundary in the
+        // original string, regardless of characters earlier in the folder.
+        let specials_start = bytes.len() - b"specials".len();
         // Need a separator before "specials"
         if specials_start == 0 {
             return None;
@@ -1098,7 +1101,7 @@ fn parse_show_season_word_folder(name: &str) -> Option<(u32, &str)> {
     if season_word_end < 6 {
         return None;
     }
-    if !trimmed[season_word_end - 6..season_word_end].eq_ignore_ascii_case("season") {
+    if !bytes[season_word_end - 6..season_word_end].eq_ignore_ascii_case(b"season") {
         return None;
     }
     let season_start = season_word_end - 6;

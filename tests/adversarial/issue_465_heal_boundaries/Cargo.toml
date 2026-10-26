@@ -1,0 +1,14 @@
+[workspace]
+
+[package]
+name = "adversarial-issue-465-heal-boundaries"
+description = "Adversarial UAT for issue #465: the S06E03 title correction must hold for real classifier output and every season 6 position."
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+swarm-core = { path = "../../../crates/swarm-core" }
+swarm-media = { path = "../../../crates/swarm-media" }
+tokio = { version = "1", features = ["full", "test-util"] }

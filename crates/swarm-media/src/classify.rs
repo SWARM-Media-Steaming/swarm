@@ -1015,6 +1015,7 @@ fn is_season_folder(name: &str) -> bool {
         || lower == "specials"
         || parse_season_suffix_folder(name).is_some()
         || parse_bare_season_folder(name).is_some()
+        || parse_show_season_word_folder(name).is_some()
 }
 
 /// A folder name ending in `" SNN"` (a space, a case-insensitive `S`, then
@@ -1044,6 +1045,77 @@ fn parse_season_suffix_folder(name: &str) -> Option<(u32, &str)> {
     let season: u32 = name[digit_start..end].parse().ok()?;
     let show_part = name[..s_pos].trim_end();
     (!show_part.is_empty()).then_some((season, show_part))
+}
+
+/// A folder of the form `"<Show Name> - Season N"` (or
+/// `"<Show Name> Season N"` without the dash) — a common manual-ripping
+/// layout where the show and season are combined into a single directory
+/// name (e.g. `"Tales from the Crypt - Season 6"`). The show name is the
+/// prefix before the trailing `"Season N"` and the season is the trailing
+/// number. Case-insensitive on `"season"`, requires 1-3 trailing digits,
+/// and leaves the `Specials` case (season 0) to the dedicated `"Specials"`
+/// branch — a `"<Show> - Specials"` folder is handled as a separate
+/// self-contained specials shape. Returns `(season, show_part)` on match.
+/// Deliberately conservative: the character immediately before `"season"`
+/// must not be alphanumeric, so a show whose name literally ends with
+/// `"...season"` without a separator cannot misfire.
+fn parse_show_season_word_folder(name: &str) -> Option<(u32, &str)> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let bytes = trimmed.as_bytes();
+    // Specials variant: "<Show> - Specials" -> season 0
+    let lower = trimmed.to_lowercase();
+    if lower.ends_with("specials") {
+        let specials_start = lower.rfind("specials")?;
+        // Need a separator before "specials"
+        if specials_start == 0 {
+            return None;
+        }
+        let before = bytes[specials_start - 1];
+        if before.is_ascii_alphanumeric() {
+            return None;
+        }
+        let show_part = trimmed[..specials_start].trim_end().trim_end_matches(|c| c == '-' || c == '_' || c == ' ').trim();
+        if show_part.is_empty() {
+            return None;
+        }
+        // Ensure not just "Specials" alone (already handled elsewhere)
+        return Some((0, show_part));
+    }
+    let mut digit_start = bytes.len();
+    while digit_start > 0 && bytes[digit_start - 1].is_ascii_digit() {
+        digit_start -= 1;
+    }
+    if digit_start == bytes.len() || bytes.len() - digit_start > 3 {
+        return None;
+    }
+    let mut season_word_end = digit_start;
+    while season_word_end > 0 && bytes[season_word_end - 1] == b' ' {
+        season_word_end -= 1;
+    }
+    if season_word_end < 6 {
+        return None;
+    }
+    if !trimmed[season_word_end - 6..season_word_end].eq_ignore_ascii_case("season") {
+        return None;
+    }
+    let season_start = season_word_end - 6;
+    if season_start > 0 {
+        let before = bytes[season_start - 1];
+        if before.is_ascii_alphanumeric() {
+            return None;
+        }
+    } else {
+        return None;
+    }
+    let season: u32 = trimmed[digit_start..].parse().ok()?;
+    let show_part = trimmed[..season_start].trim_end().trim_end_matches(|c| c == '-' || c == '_' || c == ' ').trim();
+    if show_part.is_empty() {
+        return None;
+    }
+    Some((season, show_part))
 }
 
 /// A folder whose entire name is just a case-insensitive `S` followed by 1-2
@@ -1090,6 +1162,14 @@ fn parse_bare_season_folder(name: &str) -> Option<u32> {
 fn find_ancestor_season(dirs: &[&str]) -> Option<(String, u32, Option<u32>)> {
     for (idx, dir) in dirs.iter().enumerate().rev() {
         if let Some((season, show_part)) = parse_season_suffix_folder(dir) {
+            let (stripped, year) = extract_year_and_strip(show_part);
+            let show_title = clean_title(&stripped);
+            if !show_title.is_empty() {
+                return Some((show_title, season, year));
+            }
+            continue;
+        }
+        if let Some((season, show_part)) = parse_show_season_word_folder(dir) {
             let (stripped, year) = extract_year_and_strip(show_part);
             let show_title = clean_title(&stripped);
             if !show_title.is_empty() {
@@ -2803,5 +2883,68 @@ mod tests {
         let entry = classify("movies/Whatever - Action Movie.mkv").unwrap();
         assert_eq!(entry.title, "Whatever - Action Movie");
         assert_eq!(entry.year, None);
+    }
+
+    // --- issue #467: combined "<Show> - Season N" folder with Episode marker ---
+    #[test]
+    fn dash_season_folder_with_episode_marker_classifies_to_correct_season() {
+        let entry = classify("Tales from the Crypt - Season 6/Episode 3.mkv").unwrap();
+        assert_eq!(entry.kind, MediaKind::Episode);
+        assert_eq!(entry.show_title.as_deref(), Some("Tales from the Crypt"));
+        assert_eq!(entry.season, Some(6));
+        assert_eq!(entry.episode, Some(3));
+    }
+
+    #[test]
+    fn dash_season_folder_variants_are_recognized() {
+        for (path, expected_season) in [
+            ("Tales from the Crypt - Season 06/Episode 3.mkv", 6),
+            ("Tales from the Crypt Season 6/Episode 3.mkv", 6),
+            ("Tales from the Crypt - season 6/Episode 3.mkv", 6),
+            ("Tales from the Crypt - Season 06/Episode 03.mkv", 6),
+        ] {
+            let entry = classify(path).unwrap();
+            assert_eq!(entry.season, Some(expected_season), "{path}");
+            assert_eq!(
+                entry.show_title.as_deref(),
+                Some("Tales from the Crypt"),
+                "{path}"
+            );
+            assert_eq!(entry.episode, Some(3), "{path}");
+        }
+    }
+
+    #[test]
+    fn dash_season_folder_with_sxxeyy_marker_uses_folder_season_for_show_title() {
+        let entry =
+            classify("Tales from the Crypt - Season 6/Tales from the Crypt S06E03.mkv").unwrap();
+        assert_eq!(entry.kind, MediaKind::Episode);
+        assert_eq!(entry.show_title.as_deref(), Some("Tales from the Crypt"));
+        assert_eq!(entry.season, Some(6));
+        assert_eq!(entry.episode, Some(3));
+    }
+
+    #[test]
+    fn dash_season_folder_does_not_mistake_a_movie_title_containing_season() {
+        let entry = classify("Movies/Season of the Witch (2011).mkv").unwrap();
+        assert_eq!(entry.kind, MediaKind::Movie);
+        assert_eq!(entry.title, "Season of the Witch");
+    }
+
+    #[test]
+    fn parse_show_season_word_folder_is_conservative_about_false_positives() {
+        assert_eq!(parse_show_season_word_folder("Season 6"), None);
+        assert_eq!(parse_show_season_word_folder("Specials"), None);
+        assert_eq!(parse_show_season_word_folder("MySeason 6"), None);
+        assert_eq!(parse_show_season_word_folder("Show - Season"), None);
+        assert_eq!(parse_show_season_word_folder(""), None);
+        assert_eq!(
+            parse_show_season_word_folder("Tales from the Crypt - Season 6"),
+            Some((6, "Tales from the Crypt"))
+        );
+        assert_eq!(
+            parse_show_season_word_folder("Show - Specials"),
+            Some((0, "Show"))
+        );
     }
 }

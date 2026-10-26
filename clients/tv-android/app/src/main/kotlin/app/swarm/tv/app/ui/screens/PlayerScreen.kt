@@ -101,7 +101,9 @@ import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.DecoderReuseEvaluation
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.common.util.Util
 import androidx.media3.exoplayer.analytics.AnalyticsListener
+import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.LoadEventInfo
 import androidx.media3.exoplayer.source.MediaLoadData
@@ -116,6 +118,7 @@ import androidx.tv.material3.Card
 import androidx.tv.material3.CardDefaults
 import app.swarm.tv.app.PausePlayerWhenAppBackgrounded
 import app.swarm.tv.app.data.AndroidAudioLanguagePreferenceStore
+import app.swarm.tv.app.data.AndroidAudioBoostStore
 import app.swarm.tv.app.data.episodeNumberLabel
 import app.swarm.tv.app.data.pauseRecommendationTitle
 import app.swarm.tv.app.data.PreparedEpisodePlayback
@@ -213,12 +216,23 @@ internal fun nextIntroOffer(
     return if (active == dismissed) current else active
 }
 
-// Real complaint from live use: even at max system/TV volume, some content isn't
-// loud enough. LoudnessEnhancer processes the decoded PCM before it reaches the
-// audio sink, so it can boost past what raising system volume alone can reach.
-// 1000 millibels (10dB) is a noticeable default lift chosen to stay clear of the
-// audible clipping/distortion louder passages start to show past ~15-20dB of gain.
-private const val AUDIO_BOOST_MILLIBELS = 1000
+private const val AUDIO_BOOST_MAX_MILLIBELS = 10_000
+
+// Bounds are checked before multiplying: a huge level would otherwise overflow Int and wrap to 0 mB.
+internal fun audioBoostGainMillibels(levelDb: Int): Int = when {
+    levelDb <= 0 -> 0
+    levelDb >= AUDIO_BOOST_MAX_MILLIBELS / 1000 -> AUDIO_BOOST_MAX_MILLIBELS
+    else -> levelDb * 1000
+}
+
+internal fun audioBoostStatusFor(levelDb: Int, sessionId: Int, passthrough: Boolean = false): String = when {
+    levelDb <= 0 -> "Off"
+    sessionId == C.AUDIO_SESSION_ID_UNSET || sessionId <= 0 -> "Unavailable: audio session not ready"
+    passthrough -> "Unavailable: passthrough audio cannot be boosted"
+    else -> "Active on decoded audio"
+}
+
+internal const val AUDIO_BOOST_UNAVAILABLE_STATUS = "Unavailable on this audio output"
 
 internal enum class RemotePlaybackAction {
     TOGGLE_PLAY_PAUSE,
@@ -514,6 +528,9 @@ private class VideoPlayerPool(context: Context) {
     private var activePlayer: ExoPlayer? = null
     private var preloadedSessionId: String? = null
     private var preloadedPlayer: ExoPlayer? = null
+    private val audioSinkEncodings = mutableMapOf<ExoPlayer, Int>()
+
+    fun audioSinkEncoding(player: ExoPlayer): Int? = audioSinkEncodings[player]
 
     fun activate(config: PlaybackPlayerConfig, startPaused: Boolean = false): ExoPlayer {
         // activeSessionId/activePlayer are always set together (see release()
@@ -563,10 +580,12 @@ private class VideoPlayerPool(context: Context) {
             preloadedPlayer = null
             preloadedSessionId = null
         }
+        audioSinkEncodings.remove(player)
         player.release()
     }
 
     fun releasePreloaded() {
+        preloadedPlayer?.let(audioSinkEncodings::remove)
         preloadedPlayer?.release()
         preloadedPlayer = null
         preloadedSessionId = null
@@ -615,6 +634,23 @@ private class VideoPlayerPool(context: Context) {
             .setMediaSourceFactory(serverOfflineMediaSourceFactory(appContext))
             .build()
             .apply {
+            // Register before initial preparation because this player may be preloaded
+            // and initialize its AudioTrack before PlayerScreen is composed.
+            addAnalyticsListener(object : AnalyticsListener {
+                override fun onAudioTrackInitialized(
+                    eventTime: AnalyticsListener.EventTime,
+                    config: AudioSink.AudioTrackConfig,
+                ) {
+                    audioSinkEncodings[this@apply] = config.encoding
+                }
+
+                override fun onAudioTrackReleased(
+                    eventTime: AnalyticsListener.EventTime,
+                    config: AudioSink.AudioTrackConfig,
+                ) {
+                    audioSinkEncodings.remove(this@apply)
+                }
+            })
             // Direct-play containers may expose several embedded audio tracks.
             // Prefer English when it is tagged, while Media3 naturally falls
             // back to the container default when no English track exists.
@@ -705,6 +741,8 @@ fun PlayerScreen(
     val audioLanguagePreferences = remember(context) {
         AndroidAudioLanguagePreferenceStore(context)
     }
+    val audioBoostStore = remember(context) { AndroidAudioBoostStore(context) }
+    var audioBoostLevel by remember { mutableStateOf(audioBoostStore.get()) }
     val episodeShowTitle = remember(entry.entry.kind, entry.entry.showTitle) {
         entry.entry.showTitle?.trim()?.takeIf {
             entry.entry.kind == MediaKind.EPISODE && it.isNotEmpty()
@@ -739,6 +777,7 @@ fun PlayerScreen(
             ?: 0.0
         onPositionUpdate(positionSecs, durationSecs)
     }
+    var audioBoostStatus by remember(player) { mutableStateOf("Unavailable: audio output not ready") }
     var isLoading by remember(sessionId) { mutableStateOf(player.playbackState != Player.STATE_READY) }
     var hasStartedPlayback by remember(sessionId) {
         // A preloaded next episode can already be READY when it is promoted,
@@ -1046,19 +1085,89 @@ fun PlayerScreen(
             reclaimVideoSurfaceFocus()
         }
     }
-    val loudnessEnhancer = remember(player) {
-        // player.audioSessionId is generated by ExoPlayer's audio sink at
-        // construction time, so it's already valid here, before prepare()/playback
-        // start. Guarded with runCatching: a small number of OEM audio HALs reject
-        // LoudnessEnhancer for a given session, and that's not worth failing
-        // playback over — it just means this specific device plays at unboosted
-        // volume.
-        runCatching {
-            LoudnessEnhancer(player.audioSessionId).apply {
-                setTargetGain(AUDIO_BOOST_MILLIBELS)
-                enabled = true
+    // Audio effect attachment is session-scoped. Rebuild it whenever the
+    // selected level or ExoPlayer audio session changes (including track/sink
+    // recreation); failures are reflected on screen and logged without secrets.
+    // Keep the last observed output encoding with the player so changing only
+    // the boost level does not forget the still-active AudioTrack configuration.
+    var sinkEncoding by remember(player) { mutableStateOf(playerPool.audioSinkEncoding(player)) }
+    DisposableEffect(player, audioBoostLevel) {
+        var enhancer: LoudnessEnhancer? = null
+        // Encoding the audio sink actually opened with. A compressed encoding means
+        // bitstream passthrough, where PCM effects never see the samples; decoded
+        // output is always linear PCM even when the source track is AC3/E-AC3/DTS.
+        fun attach(sessionId: Int) {
+            enhancer?.let { old -> runCatching { old.release() } }
+            enhancer = null
+            if (audioBoostLevel == 0) {
+                audioBoostStatus = "Off"
+                return
             }
-        }.getOrNull()
+            if (sessionId == C.AUDIO_SESSION_ID_UNSET || sessionId <= 0) {
+                audioBoostStatus = "Unavailable: audio session not ready"
+                return
+            }
+            val encoding = when (sinkEncoding) {
+                null -> {
+                    audioBoostStatus = "Unavailable: audio output not ready"
+                    android.util.Log.i("SwarmAudioBoost", "unavailable output=unknown level_db=$audioBoostLevel session_id=$sessionId")
+                    return
+                }
+                else -> sinkEncoding!!
+            }
+            val passthrough = !Util.isEncodingLinearPcm(encoding)
+            if (passthrough) {
+                audioBoostStatus = audioBoostStatusFor(audioBoostLevel, sessionId, passthrough = true)
+                android.util.Log.i("SwarmAudioBoost", "unavailable output=passthrough level_db=$audioBoostLevel session_id=$sessionId")
+                return
+            }
+            var candidate: LoudnessEnhancer? = null
+            try {
+                val created = LoudnessEnhancer(sessionId).apply {
+                    setTargetGain(audioBoostGainMillibels(audioBoostLevel))
+                    enabled = true
+                }
+                candidate = created
+                check(created.hasControl() && created.enabled) {
+                    "AudioEffect did not retain control or enablement"
+                }
+                enhancer = created
+                audioBoostStatus = audioBoostStatusFor(audioBoostLevel, sessionId, passthrough = false)
+                android.util.Log.i("SwarmAudioBoost", "enabled level_db=$audioBoostLevel session_id=$sessionId")
+            } catch (error: Exception) {
+                audioBoostStatus = AUDIO_BOOST_UNAVAILABLE_STATUS
+                android.util.Log.w("SwarmAudioBoost", "activation failed level_db=$audioBoostLevel session_id=$sessionId", error)
+                runCatching { enhancer?.release() }
+                runCatching { candidate?.release() }
+                enhancer = null
+            }
+        }
+        attach(player.audioSessionId)
+        val listener = object : Player.Listener {
+            override fun onAudioSessionIdChanged(audioSessionId: Int) = attach(audioSessionId)
+        }
+        val sinkListener = object : AnalyticsListener {
+            override fun onAudioTrackInitialized(eventTime: AnalyticsListener.EventTime, config: AudioSink.AudioTrackConfig) {
+                sinkEncoding = config.encoding
+                attach(player.audioSessionId)
+            }
+            override fun onAudioTrackReleased(eventTime: AnalyticsListener.EventTime, config: AudioSink.AudioTrackConfig) {
+                sinkEncoding = null
+                enhancer?.let { old -> runCatching { old.release() } }
+                enhancer = null
+                if (audioBoostLevel > 0) {
+                    audioBoostStatus = "Unavailable: audio output not ready"
+                    android.util.Log.i("SwarmAudioBoost", "unavailable output=transition level_db=$audioBoostLevel session_id=${player.audioSessionId}")
+                }
+            }
+        }
+        player.addListener(listener)
+        player.addAnalyticsListener(sinkListener)
+        onDispose {
+            player.removeListener(listener)
+            player.removeAnalyticsListener(sinkListener)
+            runCatching { enhancer?.release() }
+        }
     }
 
     // Flush the resume position on a heartbeat, not just on dispose: if the
@@ -1200,7 +1309,6 @@ fun PlayerScreen(
             val positionSecs = positionOffsetSecs + player.currentPosition / 1000.0
             val durationSecs = player.duration.takeIf { it != C.TIME_UNSET }?.let { positionOffsetSecs + it / 1000.0 } ?: 0.0
             onPositionUpdate(positionSecs, durationSecs)
-            loudnessEnhancer?.release()
             playerPool.release(player)
         }
     }
@@ -1363,6 +1471,12 @@ fun PlayerScreen(
                 recommendations = recommendations,
                 artworkUrl = artworkUrl,
                 audioTracks = trackAvailability.audioTracks,
+                audioBoostLevel = audioBoostLevel,
+                audioBoostStatus = audioBoostStatus,
+                onAudioBoostLevel = { level ->
+                    audioBoostLevel = level
+                    audioBoostStore.set(level)
+                },
                 subtitleTracks = trackAvailability.subtitleTracks,
                 hasNextEpisode = hasNext && entry.entry.kind == MediaKind.EPISODE,
                 onResume = player::play,
@@ -1606,6 +1720,9 @@ private fun PauseOverlay(
     artworkUrl: (MergedEntry) -> String?,
     audioTracks: List<TrackChoice>,
     subtitleTracks: List<TrackChoice>,
+    audioBoostLevel: Int,
+    audioBoostStatus: String,
+    onAudioBoostLevel: (Int) -> Unit,
     hasNextEpisode: Boolean,
     onResume: () -> Unit,
     onNextEpisode: () -> Unit,
@@ -1741,6 +1858,8 @@ private fun PauseOverlay(
                     }
                 }
                 Column(modifier = Modifier.width(285.dp)) {
+                    AudioBoostPicker(audioBoostLevel, audioBoostStatus, onAudioBoostLevel)
+                    Spacer(Modifier.height(18.dp))
                     TrackPickerBlock(
                         heading = "Audio language",
                         choices = audioTracks,
@@ -1789,6 +1908,19 @@ private fun PauseOverlay(
             )
         }
     }
+}
+
+@Composable
+private fun AudioBoostPicker(level: Int, status: String, onSelect: (Int) -> Unit) {
+    Text("Audio Boost", color = SwarmMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+    Spacer(Modifier.height(5.dp))
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        for (option in AndroidAudioBoostStore.LEVELS) {
+            SelectableChip(if (option == 0) "Off" else "+${option} dB", isSelected = option == level, onClick = { onSelect(option) })
+        }
+    }
+    Spacer(Modifier.height(4.dp))
+    Text(status, color = if (status.startsWith("Active")) SwarmAccent else SwarmMuted, fontSize = 11.sp, maxLines = 2)
 }
 
 @OptIn(ExperimentalLayoutApi::class)

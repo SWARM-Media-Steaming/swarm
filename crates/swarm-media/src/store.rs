@@ -3437,6 +3437,12 @@ fn remap_archived_artwork_path(
 
 impl From<EntryRow> for EntryRecord {
     fn from(row: EntryRow) -> Self {
+        let episode_title = corrected_episode_title(
+            row.show_title.as_deref(),
+            row.season.map(|n| n as u32),
+            row.episode.map(|n| n as u32),
+            row.episode_title.as_deref(),
+        );
         EntryRecord {
             entry_key: row.entry_key,
             relative_path: row.relative_path,
@@ -3463,7 +3469,7 @@ impl From<EntryRow> for EntryRecord {
             // Empty string is the "scraped, no match found" marker (see
             // set_scrape_not_found) — surface it as no display overlay.
             scraped_title: row.scraped_title.filter(|t| !t.is_empty()),
-            episode_title: row.episode_title.filter(|t| !t.is_empty()),
+            episode_title,
             genres: row
                 .genres_json
                 .as_deref()

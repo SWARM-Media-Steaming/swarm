@@ -1969,6 +1969,42 @@
         "servers": []
       },
       "timeoutSeconds": 1800
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "tests/adversarial/issue_465_heal_boundaries/Cargo.toml",
+        "--target-dir",
+        "target/adversarial-issue-465",
+        "--test",
+        "issue_465_heal_boundaries",
+        "--",
+        "--nocapture"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-465-heal-boundaries",
+      "name": "Adversarial: issue #465 season 6 correction across classifier, scraper, and persisted rows",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "cargo"
+        ],
+        "files": [
+          "tests/adversarial/issue_465_heal_boundaries/Cargo.toml",
+          "tests/adversarial/issue_465_heal_boundaries/tests/issue_465_heal_boundaries.rs",
+          "crates/swarm-media/src/classify.rs",
+          "crates/swarm-media/src/scrape/tmdb.rs",
+          "crates/swarm-media/src/store.rs"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
     }
   ],
   "version": 1

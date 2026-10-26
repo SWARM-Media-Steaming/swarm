@@ -1,0 +1,9 @@
+[package]
+name = "adversarial-issue-465-titles"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+swarm-media = { path = "../../../crates/swarm-media" }
+
+[workspace]

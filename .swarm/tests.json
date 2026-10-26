@@ -1806,15 +1806,16 @@
       "timeoutSeconds": 120
     },
     {
+      "id": "adversarial-issue-443-seek-coalescing",
+      "name": "Adversarial Issue 443 Seek Coalescing",
       "command": [
         "python3",
         "tests/adversarial/test_issue_443_skip_seek_coalescing.py"
       ],
+      "origin": "adversarial",
       "disruptive": false,
       "enabled": true,
-      "id": "adversarial-issue-443-seek-coalescing",
-      "name": "Adversarial Issue 443 Seek Coalescing",
-      "origin": "adversarial",
+      "timeoutSeconds": 300,
       "requirements": {
         "credentials": [],
         "devices": [],
@@ -1828,8 +1829,7 @@
         ],
         "mounts": [],
         "servers": []
-      },
-      "timeoutSeconds": 300
+      }
     },
     {
       "command": [
@@ -1866,6 +1866,83 @@
         "servers": []
       },
       "timeoutSeconds": 1800
+    },
+    {
+      "id": "adversarial-issue-466-audio-boost",
+      "name": "Adversarial issue 466 audio boost",
+      "command": [
+        "python3",
+        "tests/adversarial/test_issue_466_audio_boost.py"
+      ],
+      "origin": "adversarial",
+      "disruptive": false,
+      "enabled": true,
+      "timeoutSeconds": 600,
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "python3"
+        ],
+        "files": [
+          "tests/adversarial/test_issue_466_audio_boost.py"
+        ],
+        "mounts": [],
+        "servers": []
+      }
+    },
+    {
+      "id": "adversarial-issue-466-audio-boost-contract",
+      "name": "Adversarial issue 466 audio boost contract",
+      "command": [
+        "python3",
+        "tests/adversarial/test_issue_466_audio_boost_contract.py"
+      ],
+      "origin": "adversarial",
+      "disruptive": false,
+      "enabled": true,
+      "timeoutSeconds": 600,
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "python3",
+          "java"
+        ],
+        "files": [
+          "tests/adversarial/test_issue_466_audio_boost_contract.py",
+          "tests/adversarial/Issue466AudioBoostDriver.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/PlayerScreen.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/data/AndroidAudioBoostStore.kt"
+        ],
+        "mounts": [],
+        "servers": []
+      }
+    },
+    {
+      "id": "adversarial-issue-466-audio-boost-output-path",
+      "name": "Adversarial issue 466 audio boost output path",
+      "command": [
+        "python3",
+        "tests/adversarial/test_issue_466_audio_boost_output_path.py"
+      ],
+      "origin": "adversarial",
+      "disruptive": false,
+      "enabled": true,
+      "timeoutSeconds": 600,
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "python3"
+        ],
+        "files": [
+          "tests/adversarial/test_issue_466_audio_boost_output_path.py",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/PlayerScreen.kt"
+        ],
+        "mounts": [],
+        "servers": []
+      }
     },
     {
       "command": [
@@ -2005,6 +2082,109 @@
         "servers": []
       },
       "timeoutSeconds": 1800
+    },
+    {
+      "id": "adversarial-issue-466-audio-boost-sink-state",
+      "name": "Adversarial issue 466 audio boost sink state",
+      "command": [
+        "python3",
+        "tests/adversarial/test_issue_466_audio_boost_sink_state.py"
+      ],
+      "origin": "adversarial",
+      "disruptive": false,
+      "enabled": true,
+      "timeoutSeconds": 600,
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "python3"
+        ],
+        "files": [
+          "tests/adversarial/test_issue_466_audio_boost_sink_state.py",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/PlayerScreen.kt"
+        ],
+        "mounts": [],
+        "servers": []
+      }
+    },
+    {
+      "id": "adversarial-issue-466-audio-boost-level-change",
+      "name": "Adversarial issue 466 audio boost level change keeps sink state",
+      "command": [
+        "python3",
+        "tests/adversarial/test_issue_466_audio_boost_level_change.py"
+      ],
+      "origin": "adversarial",
+      "disruptive": false,
+      "enabled": true,
+      "timeoutSeconds": 600,
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "python3"
+        ],
+        "files": [
+          "tests/adversarial/test_issue_466_audio_boost_level_change.py",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/PlayerScreen.kt"
+        ],
+        "mounts": [],
+        "servers": []
+      }
+    },
+    {
+      "id": "adversarial-issue-466-preloaded-sink-observer",
+      "name": "Adversarial issue 466 preloaded episode sink observer is registered before prepare",
+      "command": [
+        "python3",
+        "tests/adversarial/test_issue_466_preloaded_sink_observer.py"
+      ],
+      "origin": "adversarial",
+      "disruptive": false,
+      "enabled": true,
+      "timeoutSeconds": 600,
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "python3"
+        ],
+        "files": [
+          "tests/adversarial/test_issue_466_preloaded_sink_observer.py",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/PlayerScreen.kt"
+        ],
+        "mounts": [],
+        "servers": []
+      }
+    },
+    {
+      "id": "adversarial-issue-466-audio-boost-persistence",
+      "name": "Adversarial issue 466 audio boost persistence across relaunch and corrupt preferences",
+      "command": [
+        "python3",
+        "tests/adversarial/test_issue_466_audio_boost_persistence.py"
+      ],
+      "origin": "adversarial",
+      "disruptive": false,
+      "enabled": true,
+      "timeoutSeconds": 600,
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "python3",
+          "java"
+        ],
+        "files": [
+          "tests/adversarial/test_issue_466_audio_boost_persistence.py",
+          "tests/adversarial/Issue466AudioBoostPersistenceDriver.kt",
+          "tests/adversarial/Issue466AndroidContextStub.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/data/AndroidAudioBoostStore.kt"
+        ],
+        "mounts": [],
+        "servers": []
+      }
     }
   ],
   "version": 1

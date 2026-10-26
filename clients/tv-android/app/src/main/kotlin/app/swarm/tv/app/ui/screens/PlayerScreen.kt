@@ -755,7 +755,7 @@ fun PlayerScreen(
             ?: 0.0
         onPositionUpdate(positionSecs, durationSecs)
     }
-    var audioBoostStatus by remember(player) { mutableStateOf(audioBoostStatusFor(audioBoostLevel, player.audioSessionId)) }
+    var audioBoostStatus by remember(player) { mutableStateOf("Unavailable: audio output not ready") }
     var isLoading by remember(sessionId) { mutableStateOf(player.playbackState != Player.STATE_READY) }
     var hasStartedPlayback by remember(sessionId) {
         // A preloaded next episode can already be READY when it is promoted,
@@ -1083,7 +1083,15 @@ fun PlayerScreen(
                 audioBoostStatus = "Unavailable: audio session not ready"
                 return
             }
-            val passthrough = sinkEncoding?.let { !Util.isEncodingLinearPcm(it) } == true
+            val encoding = when (sinkEncoding) {
+                null -> {
+                    audioBoostStatus = "Unavailable: audio output not ready"
+                    android.util.Log.i("SwarmAudioBoost", "unavailable output=unknown level_db=$audioBoostLevel session_id=$sessionId")
+                    return
+                }
+                else -> sinkEncoding!!
+            }
+            val passthrough = !Util.isEncodingLinearPcm(encoding)
             if (passthrough) {
                 audioBoostStatus = audioBoostStatusFor(audioBoostLevel, sessionId, passthrough = true)
                 android.util.Log.i("SwarmAudioBoost", "unavailable output=passthrough level_db=$audioBoostLevel session_id=$sessionId")
@@ -1121,7 +1129,12 @@ fun PlayerScreen(
             }
             override fun onAudioTrackReleased(eventTime: AnalyticsListener.EventTime, config: AudioSink.AudioTrackConfig) {
                 sinkEncoding = null
-                attach(player.audioSessionId)
+                enhancer?.let { old -> runCatching { old.release() } }
+                enhancer = null
+                if (audioBoostLevel > 0) {
+                    audioBoostStatus = "Unavailable: audio output not ready"
+                    android.util.Log.i("SwarmAudioBoost", "unavailable output=transition level_db=$audioBoostLevel session_id=${player.audioSessionId}")
+                }
             }
         }
         player.addListener(listener)

@@ -2132,6 +2132,31 @@
         "mounts": [],
         "servers": []
       }
+    },
+    {
+      "id": "adversarial-issue-466-preloaded-sink-observer",
+      "name": "Adversarial issue 466 preloaded episode sink observer is registered before prepare",
+      "command": [
+        "python3",
+        "tests/adversarial/test_issue_466_preloaded_sink_observer.py"
+      ],
+      "origin": "adversarial",
+      "disruptive": false,
+      "enabled": true,
+      "timeoutSeconds": 600,
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "python3"
+        ],
+        "files": [
+          "tests/adversarial/test_issue_466_preloaded_sink_observer.py",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/PlayerScreen.kt"
+        ],
+        "mounts": [],
+        "servers": []
+      }
     }
   ],
   "version": 1

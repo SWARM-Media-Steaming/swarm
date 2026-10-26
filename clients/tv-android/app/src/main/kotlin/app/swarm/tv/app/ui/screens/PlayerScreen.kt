@@ -528,6 +528,9 @@ private class VideoPlayerPool(context: Context) {
     private var activePlayer: ExoPlayer? = null
     private var preloadedSessionId: String? = null
     private var preloadedPlayer: ExoPlayer? = null
+    private val audioSinkEncodings = mutableMapOf<ExoPlayer, Int>()
+
+    fun audioSinkEncoding(player: ExoPlayer): Int? = audioSinkEncodings[player]
 
     fun activate(config: PlaybackPlayerConfig, startPaused: Boolean = false): ExoPlayer {
         // activeSessionId/activePlayer are always set together (see release()
@@ -577,10 +580,12 @@ private class VideoPlayerPool(context: Context) {
             preloadedPlayer = null
             preloadedSessionId = null
         }
+        audioSinkEncodings.remove(player)
         player.release()
     }
 
     fun releasePreloaded() {
+        preloadedPlayer?.let(audioSinkEncodings::remove)
         preloadedPlayer?.release()
         preloadedPlayer = null
         preloadedSessionId = null
@@ -629,6 +634,23 @@ private class VideoPlayerPool(context: Context) {
             .setMediaSourceFactory(serverOfflineMediaSourceFactory(appContext))
             .build()
             .apply {
+            // Register before initial preparation because this player may be preloaded
+            // and initialize its AudioTrack before PlayerScreen is composed.
+            addAnalyticsListener(object : AnalyticsListener {
+                override fun onAudioTrackInitialized(
+                    eventTime: AnalyticsListener.EventTime,
+                    config: AudioSink.AudioTrackConfig,
+                ) {
+                    audioSinkEncodings[this@apply] = config.encoding
+                }
+
+                override fun onAudioTrackReleased(
+                    eventTime: AnalyticsListener.EventTime,
+                    config: AudioSink.AudioTrackConfig,
+                ) {
+                    audioSinkEncodings.remove(this@apply)
+                }
+            })
             // Direct-play containers may expose several embedded audio tracks.
             // Prefer English when it is tagged, while Media3 naturally falls
             // back to the container default when no English track exists.
@@ -1068,7 +1090,7 @@ fun PlayerScreen(
     // recreation); failures are reflected on screen and logged without secrets.
     // Keep the last observed output encoding with the player so changing only
     // the boost level does not forget the still-active AudioTrack configuration.
-    var sinkEncoding by remember(player) { mutableStateOf<Int?>(null) }
+    var sinkEncoding by remember(player) { mutableStateOf(playerPool.audioSinkEncoding(player)) }
     DisposableEffect(player, audioBoostLevel) {
         var enhancer: LoudnessEnhancer? = null
         // Encoding the audio sink actually opened with. A compressed encoding means

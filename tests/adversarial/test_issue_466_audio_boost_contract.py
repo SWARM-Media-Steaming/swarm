@@ -73,7 +73,10 @@ def kotlin_compiler() -> list[str]:
 def extract_mapping_and_status() -> str:
     source = PLAYER_SCREEN.read_text()
     start = source.find("private const val AUDIO_BOOST_MAX_MILLIBELS")
-    end = source.find("private val PASSTHROUGH_AUDIO_MIME_TYPES")
+    # Bound the pure mapping/status declarations using the next stable
+    # declaration. Output-path detection intentionally belongs to the sink
+    # lifecycle below and must not require a source-codec MIME list here.
+    end = source.find("internal const val AUDIO_BOOST_UNAVAILABLE_STATUS")
     if start == -1 or end == -1 or end <= start:
         fail("could not locate audioBoostGainMillibels/audioBoostStatusFor in PlayerScreen.kt")
     block = source[start:end]

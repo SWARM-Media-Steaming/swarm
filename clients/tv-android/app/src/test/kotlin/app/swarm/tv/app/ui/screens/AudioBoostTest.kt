@@ -36,8 +36,8 @@ class AudioBoostTest {
     @Test
     fun `status is active on decoded audio otherwise`() {
         val status = audioBoostStatusFor(3, 42)
-        assertEquals("Active on decoded audio; passthrough may bypass boost", status)
-        assertEquals("Active on decoded audio; passthrough may bypass boost", audioBoostStatusFor(10, 99))
+        assertEquals("Active on decoded audio", status)
+        assertEquals("Active on decoded audio", audioBoostStatusFor(10, 99))
     }
 
     @Test

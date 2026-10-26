@@ -216,11 +216,15 @@ internal fun nextIntroOffer(
 
 private const val AUDIO_BOOST_MAX_MILLIBELS = 10_000
 
-internal fun audioBoostGainMillibels(levelDb: Int): Int =
-    (levelDb * 1000).coerceIn(0, AUDIO_BOOST_MAX_MILLIBELS)
+// Bounds are checked before multiplying: a huge level would otherwise overflow Int and wrap to 0 mB.
+internal fun audioBoostGainMillibels(levelDb: Int): Int = when {
+    levelDb <= 0 -> 0
+    levelDb >= AUDIO_BOOST_MAX_MILLIBELS / 1000 -> AUDIO_BOOST_MAX_MILLIBELS
+    else -> levelDb * 1000
+}
 
 internal fun audioBoostStatusFor(levelDb: Int, sessionId: Int, passthrough: Boolean = false): String = when {
-    levelDb == 0 -> "Off"
+    levelDb <= 0 -> "Off"
     sessionId == C.AUDIO_SESSION_ID_UNSET || sessionId <= 0 -> "Unavailable: audio session not ready"
     passthrough -> "Unavailable: passthrough audio cannot be boosted"
     else -> "Active on decoded audio"

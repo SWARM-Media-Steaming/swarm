@@ -219,10 +219,22 @@ private const val AUDIO_BOOST_MAX_MILLIBELS = 10_000
 internal fun audioBoostGainMillibels(levelDb: Int): Int =
     (levelDb * 1000).coerceIn(0, AUDIO_BOOST_MAX_MILLIBELS)
 
-internal fun audioBoostStatusFor(levelDb: Int, sessionId: Int): String = when {
+internal fun audioBoostStatusFor(levelDb: Int, sessionId: Int, passthrough: Boolean = false): String = when {
     levelDb == 0 -> "Off"
     sessionId == C.AUDIO_SESSION_ID_UNSET || sessionId <= 0 -> "Unavailable: audio session not ready"
-    else -> "Active on decoded audio; passthrough may bypass boost"
+    passthrough -> "Unavailable: passthrough audio cannot be boosted"
+    else -> "Active on decoded audio"
+}
+
+private val PASSTHROUGH_AUDIO_MIME_TYPES = setOf(
+    MimeTypes.AUDIO_AC3, MimeTypes.AUDIO_E_AC3, MimeTypes.AUDIO_E_AC3_JOC,
+    MimeTypes.AUDIO_DTS, MimeTypes.AUDIO_DTS_HD, MimeTypes.AUDIO_TRUEHD,
+)
+
+private fun hasSelectedPassthroughAudio(tracks: Tracks): Boolean = tracks.groups.any { group ->
+    group.type == C.TRACK_TYPE_AUDIO && (0 until group.length).any { index ->
+        group.isTrackSelected(index) && group.getTrackFormat(index).sampleMimeType in PASSTHROUGH_AUDIO_MIME_TYPES
+    }
 }
 
 internal const val AUDIO_BOOST_UNAVAILABLE_STATUS = "Unavailable on this audio output"
@@ -1072,23 +1084,37 @@ fun PlayerScreen(
                 audioBoostStatus = "Unavailable: audio session not ready"
                 return
             }
+            val passthrough = hasSelectedPassthroughAudio(player.currentTracks)
+            if (passthrough) {
+                audioBoostStatus = audioBoostStatusFor(audioBoostLevel, sessionId, passthrough = true)
+                android.util.Log.i("SwarmAudioBoost", "unavailable output=passthrough level_db=$audioBoostLevel session_id=$sessionId")
+                return
+            }
+            var candidate: LoudnessEnhancer? = null
             try {
-                enhancer = LoudnessEnhancer(sessionId).apply {
+                val created = LoudnessEnhancer(sessionId).apply {
                     setTargetGain(audioBoostGainMillibels(audioBoostLevel))
                     enabled = true
                 }
-                audioBoostStatus = audioBoostStatusFor(audioBoostLevel, sessionId)
+                candidate = created
+                check(created.hasControl() && created.enabled) {
+                    "AudioEffect did not retain control or enablement"
+                }
+                enhancer = created
+                audioBoostStatus = audioBoostStatusFor(audioBoostLevel, sessionId, passthrough = false)
                 android.util.Log.i("SwarmAudioBoost", "enabled level_db=$audioBoostLevel session_id=$sessionId")
             } catch (error: Exception) {
                 audioBoostStatus = AUDIO_BOOST_UNAVAILABLE_STATUS
                 android.util.Log.w("SwarmAudioBoost", "activation failed level_db=$audioBoostLevel session_id=$sessionId", error)
                 runCatching { enhancer?.release() }
+                runCatching { candidate?.release() }
                 enhancer = null
             }
         }
         attach(player.audioSessionId)
         val listener = object : Player.Listener {
             override fun onAudioSessionIdChanged(audioSessionId: Int) = attach(audioSessionId)
+            override fun onTracksChanged(tracks: Tracks) = attach(player.audioSessionId)
         }
         player.addListener(listener)
         onDispose {

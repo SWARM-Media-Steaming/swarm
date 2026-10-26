@@ -101,7 +101,9 @@ import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.DecoderReuseEvaluation
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.common.util.Util
 import androidx.media3.exoplayer.analytics.AnalyticsListener
+import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.LoadEventInfo
 import androidx.media3.exoplayer.source.MediaLoadData
@@ -228,17 +230,6 @@ internal fun audioBoostStatusFor(levelDb: Int, sessionId: Int, passthrough: Bool
     sessionId == C.AUDIO_SESSION_ID_UNSET || sessionId <= 0 -> "Unavailable: audio session not ready"
     passthrough -> "Unavailable: passthrough audio cannot be boosted"
     else -> "Active on decoded audio"
-}
-
-private val PASSTHROUGH_AUDIO_MIME_TYPES = setOf(
-    MimeTypes.AUDIO_AC3, MimeTypes.AUDIO_E_AC3, MimeTypes.AUDIO_E_AC3_JOC,
-    MimeTypes.AUDIO_DTS, MimeTypes.AUDIO_DTS_HD, MimeTypes.AUDIO_TRUEHD,
-)
-
-private fun hasSelectedPassthroughAudio(tracks: Tracks): Boolean = tracks.groups.any { group ->
-    group.type == C.TRACK_TYPE_AUDIO && (0 until group.length).any { index ->
-        group.isTrackSelected(index) && group.getTrackFormat(index).sampleMimeType in PASSTHROUGH_AUDIO_MIME_TYPES
-    }
 }
 
 internal const val AUDIO_BOOST_UNAVAILABLE_STATUS = "Unavailable on this audio output"
@@ -1077,6 +1068,10 @@ fun PlayerScreen(
     // recreation); failures are reflected on screen and logged without secrets.
     DisposableEffect(player, audioBoostLevel) {
         var enhancer: LoudnessEnhancer? = null
+        // Encoding the audio sink actually opened with. A compressed encoding means
+        // bitstream passthrough, where PCM effects never see the samples; decoded
+        // output is always linear PCM even when the source track is AC3/E-AC3/DTS.
+        var sinkEncoding: Int? = null
         fun attach(sessionId: Int) {
             enhancer?.let { old -> runCatching { old.release() } }
             enhancer = null
@@ -1088,7 +1083,7 @@ fun PlayerScreen(
                 audioBoostStatus = "Unavailable: audio session not ready"
                 return
             }
-            val passthrough = hasSelectedPassthroughAudio(player.currentTracks)
+            val passthrough = sinkEncoding?.let { !Util.isEncodingLinearPcm(it) } == true
             if (passthrough) {
                 audioBoostStatus = audioBoostStatusFor(audioBoostLevel, sessionId, passthrough = true)
                 android.util.Log.i("SwarmAudioBoost", "unavailable output=passthrough level_db=$audioBoostLevel session_id=$sessionId")
@@ -1118,11 +1113,22 @@ fun PlayerScreen(
         attach(player.audioSessionId)
         val listener = object : Player.Listener {
             override fun onAudioSessionIdChanged(audioSessionId: Int) = attach(audioSessionId)
-            override fun onTracksChanged(tracks: Tracks) = attach(player.audioSessionId)
+        }
+        val sinkListener = object : AnalyticsListener {
+            override fun onAudioTrackInitialized(eventTime: AnalyticsListener.EventTime, config: AudioSink.AudioTrackConfig) {
+                sinkEncoding = config.encoding
+                attach(player.audioSessionId)
+            }
+            override fun onAudioTrackReleased(eventTime: AnalyticsListener.EventTime, config: AudioSink.AudioTrackConfig) {
+                sinkEncoding = null
+                attach(player.audioSessionId)
+            }
         }
         player.addListener(listener)
+        player.addAnalyticsListener(sinkListener)
         onDispose {
             player.removeListener(listener)
+            player.removeAnalyticsListener(sinkListener)
             runCatching { enhancer?.release() }
         }
     }

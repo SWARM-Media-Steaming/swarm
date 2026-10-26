@@ -2082,6 +2082,31 @@
         "servers": []
       },
       "timeoutSeconds": 1800
+    },
+    {
+      "id": "adversarial-issue-466-audio-boost-sink-state",
+      "name": "Adversarial issue 466 audio boost sink state",
+      "command": [
+        "python3",
+        "tests/adversarial/test_issue_466_audio_boost_sink_state.py"
+      ],
+      "origin": "adversarial",
+      "disruptive": false,
+      "enabled": true,
+      "timeoutSeconds": 600,
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "python3"
+        ],
+        "files": [
+          "tests/adversarial/test_issue_466_audio_boost_sink_state.py",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/PlayerScreen.kt"
+        ],
+        "mounts": [],
+        "servers": []
+      }
     }
   ],
   "version": 1

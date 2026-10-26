@@ -1890,6 +1890,34 @@
         "mounts": [],
         "servers": []
       }
+    },
+    {
+      "id": "adversarial-issue-466-audio-boost-contract",
+      "name": "Adversarial issue 466 audio boost contract",
+      "command": [
+        "python3",
+        "tests/adversarial/test_issue_466_audio_boost_contract.py"
+      ],
+      "origin": "adversarial",
+      "disruptive": false,
+      "enabled": true,
+      "timeoutSeconds": 600,
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "python3",
+          "java"
+        ],
+        "files": [
+          "tests/adversarial/test_issue_466_audio_boost_contract.py",
+          "tests/adversarial/Issue466AudioBoostDriver.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/PlayerScreen.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/data/AndroidAudioBoostStore.kt"
+        ],
+        "mounts": [],
+        "servers": []
+      }
     }
   ],
   "version": 1

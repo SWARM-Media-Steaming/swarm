@@ -1,0 +1,13 @@
+[workspace]
+
+[package]
+name = "adversarial-issue-467-classifier"
+description = "Adversarial classifier UAT for combined show and season folders in issue #467."
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+swarm-core = { path = "../../../crates/swarm-core" }
+swarm-media = { path = "../../../crates/swarm-media" }

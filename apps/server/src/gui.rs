@@ -619,6 +619,17 @@ fn start_media_root_recovery(core: Arc<ServerCore>, settings_dir: PathBuf) {
                 }
             }
             if !recovered.is_empty() {
+                // Bring back titles hidden by the outage right away, so
+                // playback and the catalog recover while the full rescan
+                // below (which can take minutes on a large share) runs.
+                match core.restore_reachable_unavailable_entries().await {
+                    Ok(0) => {}
+                    Ok(restored) => tracing::info!(
+                        restored,
+                        "restored catalog entries that are readable again after SMB recovery"
+                    ),
+                    Err(error) => tracing::warn!(%error, "could not restore entries after SMB recovery"),
+                }
                 match core
                     .rescan_roots_by_label(&recovered, false, None)
                     .await

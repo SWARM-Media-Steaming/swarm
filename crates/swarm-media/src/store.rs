@@ -1244,6 +1244,16 @@ impl Library {
         }))
     }
 
+    /// Relative paths of every catalog row currently hidden as unavailable
+    /// (an outage latch or a confirmed-missing row). Used by the media-root
+    /// recovery path to bring back rows whose files read again without
+    /// waiting for a full rescan.
+    pub async fn unavailable_relative_paths(&self) -> sqlx::Result<Vec<String>> {
+        sqlx::query_scalar("SELECT relative_path FROM library_entries WHERE available = 0")
+            .fetch_all(&self.pool)
+            .await
+    }
+
     pub async fn restore_available_by_path(&self, relative_path: &str) -> sqlx::Result<bool> {
         let row: Option<(String,)> = sqlx::query_as(
             "SELECT entry_key FROM library_entries WHERE relative_path = ? AND available = 0",

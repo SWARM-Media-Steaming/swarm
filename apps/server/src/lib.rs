@@ -743,6 +743,36 @@ impl ServerCore {
         }
     }
 
+    /// Makes catalog rows hidden as unavailable (for example by an SMB outage
+    /// during playback) visible again as soon as their file reads again.
+    /// Only rows whose file is a readable regular file are restored, so this
+    /// never resurrects a genuinely removed title. It is a cheap, targeted
+    /// pass over the hidden rows only: a full rescan of a large share can
+    /// take minutes, and without this the title stays hidden until it
+    /// finishes. Returns how many rows were restored.
+    pub async fn restore_reachable_unavailable_entries(&self) -> sqlx::Result<usize> {
+        let paths = self.library.unavailable_relative_paths().await?;
+        if paths.is_empty() {
+            return Ok(0);
+        }
+        let roots = self.media_roots.clone();
+        let readable = tokio::task::spawn_blocking(move || {
+            paths
+                .into_iter()
+                .filter(|path| roots.resolve_existing(path).is_file())
+                .collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_default();
+        let mut restored = 0usize;
+        for path in readable {
+            if self.library.restore_available_by_path(&path).await? {
+                restored += 1;
+            }
+        }
+        Ok(restored)
+    }
+
     /// The current/last scan outcome — see [`ScanState`].
     pub fn scan_status(&self) -> ScanState {
         self.scan_status.borrow().clone()

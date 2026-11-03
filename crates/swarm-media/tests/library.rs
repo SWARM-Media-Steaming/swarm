@@ -2307,3 +2307,31 @@ async fn scan_registers_subtitle_sidecars_from_subs_folder_and_beside_media() {
         "an untouched sidecar survives the rescan"
     );
 }
+
+#[tokio::test]
+async fn unavailable_rows_are_listed_so_a_readable_file_can_be_restored_without_a_rescan() {
+    let fx = fixture("unavailable-listing").await;
+    let relative = "movies/Outage.2001.mkv";
+    write(&fx.root, relative, &[7u8; 8_192]);
+    write(&fx.root, "movies/Other.2002.mkv", &[8u8; 8_192]);
+    scan_root(&fx.library, &fx.root).await.unwrap();
+
+    // An outage hides the row immediately (the same latch playback sets).
+    fx.library.mark_missing_by_path(relative, 0).await.unwrap();
+    assert_eq!(fx.library.list().await.unwrap().len(), 1);
+    assert_eq!(
+        fx.library.unavailable_relative_paths().await.unwrap(),
+        vec![relative.to_string()]
+    );
+
+    // Once the file reads again, restoring that row brings it back at once,
+    // with no full rescan involved.
+    assert!(fx.library.restore_available_by_path(relative).await.unwrap());
+    assert_eq!(fx.library.list().await.unwrap().len(), 2);
+    assert!(fx
+        .library
+        .unavailable_relative_paths()
+        .await
+        .unwrap()
+        .is_empty());
+}

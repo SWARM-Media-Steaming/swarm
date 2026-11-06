@@ -37,7 +37,7 @@
 #   ./scripts/install_media_server.sh --uninstall  [--purge]
 #
 # Env vars (optional):
-#   SWARM_PEER_PORT        peer QUIC port (default 8544 — matches paired TVs)
+#   SWARM_PEER_PORT        peer QUIC port (default 8543 — matches paired TVs)
 #   SWARM_HTTP_MEDIA_PORT  HTTP media port (default 8546)
 #   SWARM_APP_DIR          where to install the .app (default: /Applications,
 #                          falling back to ~/Applications)
@@ -54,7 +54,7 @@ CMD_SRC="$REPO_ROOT/scripts/swarm-server"
 CMD_DST="$HOME/.local/bin/swarm-server"
 DATA_DIR="$HOME/Library/Application Support/$BUNDLE_ID"
 OLD_PLIST="$HOME/Library/LaunchAgents/$BUNDLE_ID.plist"   # from earlier versions
-PEER_PORT="${SWARM_PEER_PORT:-8544}"
+PEER_PORT="${SWARM_PEER_PORT:-8543}"
 HTTP_MEDIA_PORT="${SWARM_HTTP_MEDIA_PORT:-8546}"
 
 if [ "$(uname -s)" != "Darwin" ]; then

@@ -278,6 +278,18 @@ padded. Density buckets matter: `tv_banner.png` (640x360 = 320x180dp) lives in
 `<application>` and the launcher `<activity>`. After any change, assemble the APK and inspect the packaged icon rather
 than judging only the source PNG.
 
+Fire TV's "Your Apps & Channels" grid draws the sideloaded app's icon (not the
+banner) centered on a grey tile. It also saves that tile image per device, keyed
+to the package name, when the app is first installed, and never refreshes it.
+The saved image survives upgrades, versionCode bumps, reboots, `pm trim-caches`
+and even uninstall/reinstall. A TV that already has `app.swarm.tv` therefore
+keeps its old tile no matter what the APK ships, so it can't be used to verify
+an artwork change. To verify one on real hardware, temporarily build with a
+throwaway `applicationId` (e.g. `app.swarm.tv.tiletest`), install it next to the
+real app, check its tile, then uninstall it and revert the id. Tested
+2026-11-17: the #480 layout renders the full badge uncropped this way, while
+TVs installed before #480 keep the cropped tile.
+
 ## Client-error reporting: two related but distinct pipelines
 
 Both funnel into the same server-side pipeline (peer QUIC

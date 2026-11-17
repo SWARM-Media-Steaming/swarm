@@ -284,7 +284,11 @@ to the package name, when the app is first installed, and never refreshes it.
 The saved image survives upgrades, versionCode bumps, reboots, `pm trim-caches`
 and even uninstall/reinstall. A TV that already has `app.swarm.tv` therefore
 keeps its old tile no matter what the APK ships, so it can't be used to verify
-an artwork change. To verify one on real hardware, temporarily build with a
+an artwork change. To refresh an existing TV's tile: Settings → Applications →
+Manage Installed Applications → Appstore → Clear data → OK (Clear cache alone
+does not work; `pm clear`/`force-stop` are blocked over adb). The grid rebuilds
+from current APKs. Side effect: the apps-grid order and favorites row reset to
+defaults. Confirmed on the .245 stick 2026-11-17. To verify one on real hardware, temporarily build with a
 throwaway `applicationId` (e.g. `app.swarm.tv.tiletest`), install it next to the
 real app, check its tile, then uninstall it and revert the id. Tested
 2026-11-17: the #480 layout renders the full badge uncropped this way, while

@@ -55,6 +55,8 @@
         <activity
             android:name="app.swarm.tv.app.MainActivity"
             android:exported="true"
+            android:banner="@drawable/tv_banner"
+            android:icon="@drawable/ic_launcher"
             android:launchMode="singleTop"
             android:screenOrientation="landscape"
             android:theme="@style/Theme.SwarmTv">

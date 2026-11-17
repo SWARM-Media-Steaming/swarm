@@ -271,7 +271,11 @@ technically valid. Preserve the existing mascot artwork, scale it down, and
 center it on a transparent 512x512 canvas. The current launcher's nontransparent
 bounds are roughly 211x265px at `(149,117)`, which provides a tested safe zone.
 The wide `tv_banner` is a separate resource and should remain independently
-padded. After any change, assemble the APK and inspect the packaged icon rather
+padded. Density buckets matter: `tv_banner.png` (640x360 = 320x180dp) lives in
+`drawable-xhdpi` and `ic_launcher.png` in `drawable-xxxhdpi`; in plain
+`drawable/` Android treats them as mdpi and the Fire TV home tile shows them
+2-4x too large and cropped (#480). Banner and icon are set on both the
+`<application>` and the launcher `<activity>`. After any change, assemble the APK and inspect the packaged icon rather
 than judging only the source PNG.
 
 ## Client-error reporting: two related but distinct pipelines

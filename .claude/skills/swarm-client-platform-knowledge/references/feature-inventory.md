@@ -67,7 +67,7 @@ instructions and the same gap list in narrative form.
 | Session negotiation discipline (`/stop` on every teardown) | Complete | Complete | `PlaybackTask`'s `stop` operation fires on every exit path (Back, playback finished) in `PlayerScreen.teardown()` |
 | Capability profile sent with negotiation | Real device probe, union-with-baseline | Partial | `Swarm.Capability.Baseline()` is always the static baseline — no real `roDeviceInfo` decode probe yet. Safe by construction (under-advertising only costs an unnecessary server transcode) but not yet optimal |
 | Pause overlay (metadata, cast, recommendations) | Complete | Not implemented | `PlayerScreen` has OK-to-toggle-pause only, no overlay UI |
-| Skip intro / recap / credits markers | Complete | Not implemented | |
+| Skip intro / recap / credits markers | Complete | Not implemented | Movies also get a "Skip credits" button (#483) while inside a CREDITS marker with a known end before the media ends, seeking to the marker end so a post-credits scene plays. Episodes use the next-episode prompt instead. Roku has none of these markers yet. |
 | "Up next" continue overlay + countdown autoplay | Complete | Not implemented | On finish, `PlayerScreen` just tears down and pops back |
 | Next-episode preload | Complete | Not implemented | |
 | Buffering-triggered quality recovery | Complete | Not implemented | |

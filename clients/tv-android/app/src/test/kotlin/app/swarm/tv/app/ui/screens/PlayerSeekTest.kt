@@ -25,6 +25,27 @@ class PlayerSeekTest {
     }
 
     @Test
+    fun `post credits offer is movie only and targets the credits end`() {
+        val credits = SkipSegment(SkipSegmentKind.CREDITS, startMs = 6_000_000L, endMs = 6_300_000L)
+        val duration = 6_600_000L
+
+        assertEquals(credits, nextPostCreditsOffer(listOf(credits), 6_100_000L, duration, true, null, null))
+        assertEquals(null, nextPostCreditsOffer(listOf(credits), 6_100_000L, duration, false, null, null))
+        assertEquals(null, nextPostCreditsOffer(listOf(credits), 5_000_000L, duration, true, null, null))
+        assertEquals(null, nextPostCreditsOffer(listOf(credits), 6_100_000L, duration, true, null, credits))
+    }
+
+    @Test
+    fun `post credits offer is skipped when credits run to the end`() {
+        val toEnd = SkipSegment(SkipSegmentKind.CREDITS, startMs = 6_000_000L, endMs = 6_598_000L)
+        val openEnded = SkipSegment(SkipSegmentKind.CREDITS, startMs = 6_000_000L, endMs = null)
+
+        assertEquals(null, nextPostCreditsOffer(listOf(toEnd), 6_100_000L, 6_600_000L, true, null, null))
+        assertEquals(null, nextPostCreditsOffer(listOf(openEnded), 6_100_000L, 6_600_000L, true, null, null))
+        assertEquals(toEnd, nextPostCreditsOffer(listOf(toEnd), 6_100_000L, 0L, true, null, null))
+    }
+
+    @Test
     fun `intro may begin with episode but must have a skip target`() {
         val openingIntro = SkipSegment(SkipSegmentKind.INTRO, startMs = null, endMs = 15_000L)
         val openEndedIntro = SkipSegment(SkipSegmentKind.INTRO, startMs = 10_000L, endMs = null)

@@ -265,13 +265,17 @@ custom subtitle picker.
 
 ## Launcher artwork needs a TV-safe zone
 
-Fire TV applies its own icon mask and visual crop. A source mascot that fills
-most of a 512px square will look oversized even though the PNG dimensions are
-technically valid. Preserve the existing mascot artwork, scale it down, and
-center it on a transparent 512x512 canvas. The current launcher's nontransparent
-bounds are roughly 211x265px at `(149,117)`, which provides a tested safe zone.
-The wide `tv_banner` is a separate resource and should remain independently
-padded. Density buckets matter: `tv_banner.png` (640x360 = 320x180dp) lives in
+For a sideloaded app, Fire TV's "Your Apps & Channels" grid draws
+`ic_launcher` as a square that fills the height of a grey 16:9 tile; the grey
+shows on both sides. Any non-square icon is center-cropped to a square. So the
+icon is an opaque, full-bleed 512x512 square (no transparency, or the grey
+shows through and the art floats small): the gold hexagon bee logo stacked above
+a large "SWARM" wordmark on navy `(1,6,15)`, both cut from
+`swarm_hero_portrait.png`. Leave the tagline off; it's unreadable at tile size.
+Tested on a real Fire TV Stick on 2026-11-17 against the full hero, a 16:9
+wordmark (edges cropped) and a square wordmark with tagline (text too small).
+`tv_banner` uses the same logo and "SWARM" side by side, centered on the same
+navy. Density buckets matter: `tv_banner.png` (640x360 = 320x180dp) lives in
 `drawable-xhdpi` and `ic_launcher.png` in `drawable-xxxhdpi`; in plain
 `drawable/` Android treats them as mdpi and the Fire TV home tile shows them
 2-4x too large and cropped (#480). Banner and icon are set on both the

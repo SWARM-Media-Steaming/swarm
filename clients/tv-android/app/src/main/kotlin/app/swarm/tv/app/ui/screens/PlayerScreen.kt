@@ -2207,7 +2207,6 @@ internal fun localHlsTailSeekMs(
     if (!hlsWindowReachesMediaEnd(positionOffsetMs, availableDurationMs, fullDurationMs)) return null
     return relativeTargetMs.coerceAtMost(availableDurationMs)
 }
-
 /** Single-item timeline facade used by [FullDurationPlayer]. */
 private class FullDurationTimeline(
     private val delegate: Timeline,

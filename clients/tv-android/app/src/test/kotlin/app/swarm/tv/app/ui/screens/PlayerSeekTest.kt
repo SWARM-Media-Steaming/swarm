@@ -124,6 +124,7 @@ class PlayerSeekTest {
         // Session began at 100 min of a 110 min movie; the tail is generated
         // but one segment short of the probed duration.
         assertTrue(hlsWindowReachesMediaEnd(6_000_000L, 593_000L, 6_600_000L))
+        assertTrue(hlsWindowReachesMediaEnd(6_000_000L, 599_000L, 6_600_000L))
         assertTrue(hlsWindowReachesMediaEnd(0L, 6_600_000L, 6_600_000L))
         assertTrue(hlsWindowReachesMediaEnd(0L, 6_594_000L, 6_600_000L))
     }

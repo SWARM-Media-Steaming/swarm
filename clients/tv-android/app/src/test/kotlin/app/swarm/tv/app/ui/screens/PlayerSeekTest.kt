@@ -120,6 +120,20 @@ class PlayerSeekTest {
     }
 
     @Test
+    fun `generated HLS window that reaches the movie end serves tail seeks locally`() {
+        // Session began at 100 min of a 110 min movie; 10 min (minus rounding) generated.
+        assertTrue(hlsWindowReachesMediaEnd(6_000_000L, 599_000L, 6_600_000L))
+        assertTrue(hlsWindowReachesMediaEnd(0L, 6_600_000L, 6_600_000L))
+    }
+
+    @Test
+    fun `growing HLS window that has not reached the end still restarts`() {
+        assertFalse(hlsWindowReachesMediaEnd(0L, 60_000L, 6_600_000L))
+        assertFalse(hlsWindowReachesMediaEnd(0L, C.TIME_UNSET, 6_600_000L))
+        assertFalse(hlsWindowReachesMediaEnd(0L, 60_000L, null))
+    }
+
+    @Test
     fun `expired playback session 404 is recovered`() {
         assertTrue(
             shouldRecoverExpiredPlaybackSession(

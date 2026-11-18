@@ -216,6 +216,33 @@ internal fun nextIntroOffer(
     return if (active == dismissed) current else active
 }
 
+/** Slack below the media duration: a CREDITS marker whose end is within this
+ * of the true end has nothing after it worth skipping to. */
+internal const val POST_CREDITS_MIN_REMAINING_MS = 5_000L
+
+/**
+ * Next value for the movie-only "Skip credits" offer: while the playhead is in
+ * a CREDITS marker with a known end, offer a jump to that end, where a
+ * post-credits scene would begin. Returns null for episodes (they use the
+ * next-episode prompt instead) and when the marker ends at/after the end of
+ * the media ([durationMs] known), since there is no post-credits scene to
+ * reach. Returns [current] while the active marker is the dismissed one.
+ */
+internal fun nextPostCreditsOffer(
+    segments: List<SkipSegment>,
+    positionMs: Long,
+    durationMs: Long,
+    isMovie: Boolean,
+    current: SkipSegment?,
+    dismissed: SkipSegment?,
+): SkipSegment? {
+    if (!isMovie) return null
+    val active = activeSkipSegment(segments, positionMs, SkipSegmentKind.CREDITS) ?: return null
+    val end = active.endMs ?: return null
+    if (durationMs > 0L && end > durationMs - POST_CREDITS_MIN_REMAINING_MS) return null
+    return if (active == dismissed) current else active
+}
+
 private const val AUDIO_BOOST_MAX_MILLIBELS = 10_000
 
 // Bounds are checked before multiplying: a huge level would otherwise overflow Int and wrap to 0 mB.
@@ -793,6 +820,11 @@ fun PlayerScreen(
     var consumeSurfaceSelectKeyUp by remember(sessionId) { mutableStateOf(false) }
     var offeredIntro by remember(sessionId) { mutableStateOf<SkipSegment?>(null) }
     var dismissedIntro by remember(sessionId) { mutableStateOf<SkipSegment?>(null) }
+    // Movie "Skip credits" offer (#483): jumps to the end of the CREDITS
+    // marker, where a post-credits scene would start. Shares the Skip intro
+    // button slot, so the two are never shown together (intro wins).
+    var offeredPostCredits by remember(sessionId) { mutableStateOf<SkipSegment?>(null) }
+    var dismissedPostCredits by remember(sessionId) { mutableStateOf<SkipSegment?>(null) }
     // Credits-triggered "Play Next Episode" (#80): non-null while the active
     // continue prompt was popped because playback entered this CREDITS
     // segment, rather than from STATE_ENDED — see playbackBackAction and the
@@ -958,6 +990,14 @@ fun PlayerScreen(
                 current = offeredIntro,
                 dismissed = dismissedIntro,
             )
+            offeredPostCredits = nextPostCreditsOffer(
+                segments = entry.entry.skipSegments,
+                positionMs = controllerPlayer.currentPosition,
+                durationMs = controllerPlayer.duration.takeIf { it != C.TIME_UNSET } ?: 0L,
+                isMovie = entry.entry.kind == MediaKind.MOVIE,
+                current = offeredPostCredits,
+                dismissed = dismissedPostCredits,
+            )
             // Popped the moment playback enters a CREDITS marker, instead of
             // waiting for STATE_ENDED (#80). Guarded on segmentsVisible so it
             // never fires while some other overlay (pause, an already-shown
@@ -996,6 +1036,15 @@ fun PlayerScreen(
             offeredIntro = null
         }
     }
+    LaunchedEffect(offeredPostCredits, isLoading) {
+        val segment = offeredPostCredits ?: return@LaunchedEffect
+        if (isLoading) return@LaunchedEffect
+        delay(SKIP_INTRO_OFFER_MS)
+        if (offeredPostCredits == segment) {
+            dismissedPostCredits = segment
+            offeredPostCredits = null
+        }
+    }
     val playerView = remember(context) {
         PlayerView(context).apply {
             useController = true
@@ -1027,7 +1076,7 @@ fun PlayerScreen(
     // the video surface every time the controller hides while playback (not a
     // Compose overlay) should own the remote (#154).
     val overlayOwnsFocus by rememberUpdatedState(
-        showPauseOverlay || showContinuePrompt || offeredIntro != null,
+        showPauseOverlay || showContinuePrompt || offeredIntro != null || offeredPostCredits != null,
     )
     DisposableEffect(playerView) {
         val listener = PlayerView.ControllerVisibilityListener { visibility ->
@@ -1071,8 +1120,8 @@ fun PlayerScreen(
         },
     )
     val skipIntroFocusRequester = remember(sessionId) { FocusRequester() }
-    LaunchedEffect(sessionId, playerView, showPauseOverlay, showContinuePrompt, offeredIntro) {
-        if (offeredIntro != null && !showPauseOverlay && !showContinuePrompt) {
+    LaunchedEffect(sessionId, playerView, showPauseOverlay, showContinuePrompt, offeredIntro, offeredPostCredits) {
+        if ((offeredIntro != null || offeredPostCredits != null) && !showPauseOverlay && !showContinuePrompt) {
             skipIntroFocusRequester.requestFocus()
         } else if (!showPauseOverlay && !showContinuePrompt) {
             // PlayerView is deliberately reused across episode handoffs. Its
@@ -1340,7 +1389,7 @@ fun PlayerScreen(
                     controlsVisible = playerView.isControllerFullyVisible,
                     // The "Skip intro" button owns focus while it is offered,
                     // so let its key events reach it instead of pausing (#94).
-                    surfaceButtonFocused = offeredIntro != null,
+                    surfaceButtonFocused = offeredIntro != null || offeredPostCredits != null,
                 )
                 if (surfaceAction != null) {
                     if (event.action == KeyEvent.ACTION_DOWN) {
@@ -1506,6 +1555,25 @@ fun PlayerScreen(
                     .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(4.dp))
                     .padding(horizontal = 10.dp, vertical = 5.dp),
             )
+        }
+
+        if (offeredIntro == null) {
+            offeredPostCredits?.takeIf { !showPauseOverlay && !showContinuePrompt }?.let { segment ->
+                Button(
+                    onClick = {
+                        dismissedPostCredits = segment
+                        offeredPostCredits = null
+                        controllerPlayer.seekTo(checkNotNull(segment.endMs))
+                    },
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 42.dp, bottom = 54.dp)
+                        .focusRequester(skipIntroFocusRequester),
+                    colors = swarmActionButtonColors(),
+                ) {
+                    Text("Skip credits  ⏭", color = Color(0xFF04263A), fontWeight = FontWeight.Bold)
+                }
+            }
         }
 
         offeredIntro?.takeIf { !showPauseOverlay && !showContinuePrompt }?.let { segment ->

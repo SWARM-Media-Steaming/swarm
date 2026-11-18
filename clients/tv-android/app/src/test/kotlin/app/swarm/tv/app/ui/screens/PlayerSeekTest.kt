@@ -193,6 +193,40 @@ class PlayerSeekTest {
     }
 
     @Test
+    fun `tail seek is served locally for every segment length and session offset`() {
+        val full = 6_600_000L
+        for (gap in listOf(2_000L, 4_000L, 6_000L)) {
+            for (offset in listOf(0L, 3_000_000L, 6_000_000L)) {
+                val available = full - offset - gap
+                for (target in listOf(available + 1L, available + 1_000L, full - offset)) {
+                    assertEquals(
+                        available,
+                        localHlsTailSeekMs(target, available, offset, full),
+                        "gap=$gap offset=$offset target=$target",
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `tail seek never clamps targets inside or before the window or with unknown durations`() {
+        val full = 6_600_000L
+        // Inside the window and exactly at its edge: no clamp, no restart.
+        assertEquals(null, localHlsTailSeekMs(30_000L, 60_000L, 0L, full))
+        assertEquals(null, localHlsTailSeekMs(598_000L, 598_000L, 6_000_000L, full))
+        // Before the session start always needs an earlier session.
+        assertEquals(null, localHlsTailSeekMs(0L, 598_000L, 6_000_000L, full))
+        assertEquals(null, localHlsTailSeekMs(-1L, 598_000L, 6_000_000L, full))
+        // A window that stops mid-movie must still restart.
+        assertEquals(null, localHlsTailSeekMs(5_000_000L, 1_000_000L, 0L, full))
+        assertEquals(null, localHlsTailSeekMs(6_500_000L, 60_000L, 3_000_000L, full))
+        // Unknown or empty durations cannot prove the window reaches the end.
+        assertEquals(null, localHlsTailSeekMs(600_000L, 598_000L, 6_000_000L, null))
+        assertEquals(null, localHlsTailSeekMs(600_000L, 0L, 6_000_000L, full))
+    }
+
+    @Test
     fun `expired playback session 404 is recovered`() {
         assertTrue(
             shouldRecoverExpiredPlaybackSession(

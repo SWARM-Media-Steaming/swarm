@@ -2116,16 +2116,22 @@ private class FullDurationPlayer(
         val outsideAvailableWindow = shouldRestartHlsPlaybackForSeek(relativeTarget, availableDuration)
 
         // The generated window already runs to the end of the movie, so a seek
-        // that lands at/after its edge (a skip near the credits clamps to the
-        // full duration, which can sit a hair past the transcoded length) needs
-        // no new transcode. Restarting here tore down a healthy session — the
-        // freeze plus "server has gone offline / reconnected" toasts when
-        // fast-forwarding toward post-credit scenes (#484).
-        if (restartOutsideAvailableWindow && outsideAvailableWindow && relativeTarget > 0L &&
-            hlsWindowReachesMediaEnd(positionOffsetMs, availableDuration, fullDurationMs)
-        ) {
-            super.seekTo(mediaItemIndex, relativeTarget.coerceAtMost(availableDuration))
-            return
+        // that lands at/after its edge (fast-forward or Skip credits clamps to
+        // the probed duration, which can sit a segment past the transcoded
+        // length) needs no new transcode. Restarting here tore down a healthy
+        // session — the freeze plus "server has gone offline / reconnected"
+        // toasts when fast-forwarding toward post-credit scenes (#484).
+        if (restartOutsideAvailableWindow) {
+            val localTail = localHlsTailSeekMs(
+                relativeTarget,
+                availableDuration,
+                positionOffsetMs,
+                fullDurationMs,
+            )
+            if (localTail != null) {
+                super.seekTo(mediaItemIndex, localTail)
+                return
+            }
         }
 
         if (restartOutsideAvailableWindow && outsideAvailableWindow) {
@@ -2166,9 +2172,12 @@ internal fun shouldRestartHlsPlaybackForSeek(relativeTargetMs: Long, availableDu
     relativeTargetMs < 0L || availableDurationMs == C.TIME_UNSET || relativeTargetMs > availableDurationMs
 
 /** How close the generated HLS window's end may be to the media's full
- * duration and still count as having reached it: the probed duration and the
- * summed segment lengths of a finished transcode differ by up to a segment. */
-internal const val HLS_WINDOW_END_TOLERANCE_MS = 3_000L
+ * duration and still count as having reached it. Segment length is 2, 4, or
+ * 6 seconds; the probed duration and the summed segment lengths of a finished
+ * (or still-closing) transcode differ by up to one segment, plus a little
+ * timestamp rounding. Three seconds is shorter than the default 4-second
+ * segment, so a seek onto the post-credit tail still restarted the session. */
+internal const val HLS_WINDOW_END_TOLERANCE_MS = 7_000L
 
 /** True when a session that began at [positionOffsetMs] and currently exposes
  * [availableDurationMs] of media already covers the movie through its end, so
@@ -2183,6 +2192,21 @@ internal fun hlsWindowReachesMediaEnd(
         availableDurationMs > 0L &&
         positionOffsetMs + availableDurationMs >= fullDurationMs - HLS_WINDOW_END_TOLERANCE_MS
 
+/** In-window position for a seek that would otherwise restart HLS, or null
+ * when a new session is still required. The returned position is clamped to
+ * the generated window so Media3 does not treat the probe-vs-playlist gap as
+ * a seek past the end of the media. */
+internal fun localHlsTailSeekMs(
+    relativeTargetMs: Long,
+    availableDurationMs: Long,
+    positionOffsetMs: Long,
+    fullDurationMs: Long?,
+): Long? {
+    if (relativeTargetMs <= 0L) return null
+    if (!shouldRestartHlsPlaybackForSeek(relativeTargetMs, availableDurationMs)) return null
+    if (!hlsWindowReachesMediaEnd(positionOffsetMs, availableDurationMs, fullDurationMs)) return null
+    return relativeTargetMs.coerceAtMost(availableDurationMs)
+}
 /** Single-item timeline facade used by [FullDurationPlayer]. */
 private class FullDurationTimeline(
     private val delegate: Timeline,

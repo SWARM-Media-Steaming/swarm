@@ -2253,6 +2253,33 @@
         "servers": []
       },
       "timeoutSeconds": 1800
+    },
+    {
+      "command": [
+        "python3",
+        "tests/adversarial/test_issue_484_hls_tail_seek.py"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-484-hls-tail-seek",
+      "name": "Adversarial: issue 484 HLS tail seek served locally",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "python3",
+          "java"
+        ],
+        "files": [
+          "tests/adversarial/test_issue_484_hls_tail_seek.py",
+          "tests/adversarial/Issue484HlsTailSeekDriver.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/PlayerScreen.kt"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1800
     }
   ],
   "version": 1

@@ -2115,6 +2115,19 @@ private class FullDurationPlayer(
         val relativeTarget = target - positionOffsetMs
         val outsideAvailableWindow = shouldRestartHlsPlaybackForSeek(relativeTarget, availableDuration)
 
+        // The generated window already runs to the end of the movie, so a seek
+        // that lands at/after its edge (a skip near the credits clamps to the
+        // full duration, which can sit a hair past the transcoded length) needs
+        // no new transcode. Restarting here tore down a healthy session — the
+        // freeze plus "server has gone offline / reconnected" toasts when
+        // fast-forwarding toward post-credit scenes (#484).
+        if (restartOutsideAvailableWindow && outsideAvailableWindow && relativeTarget > 0L &&
+            hlsWindowReachesMediaEnd(positionOffsetMs, availableDuration, fullDurationMs)
+        ) {
+            super.seekTo(mediaItemIndex, relativeTarget.coerceAtMost(availableDuration))
+            return
+        }
+
         if (restartOutsideAvailableWindow && outsideAvailableWindow) {
             if (!restartRequested) {
                 restartRequested = true
@@ -2151,6 +2164,24 @@ private class FullDurationPlayer(
 
 internal fun shouldRestartHlsPlaybackForSeek(relativeTargetMs: Long, availableDurationMs: Long): Boolean =
     relativeTargetMs < 0L || availableDurationMs == C.TIME_UNSET || relativeTargetMs > availableDurationMs
+
+/** How close the generated HLS window's end may be to the media's full
+ * duration and still count as having reached it: the probed duration and the
+ * summed segment lengths of a finished transcode differ by up to a segment. */
+internal const val HLS_WINDOW_END_TOLERANCE_MS = 3_000L
+
+/** True when a session that began at [positionOffsetMs] and currently exposes
+ * [availableDurationMs] of media already covers the movie through its end, so
+ * seeks into the tail can be served locally instead of by a new session. */
+internal fun hlsWindowReachesMediaEnd(
+    positionOffsetMs: Long,
+    availableDurationMs: Long,
+    fullDurationMs: Long?,
+): Boolean =
+    fullDurationMs != null &&
+        availableDurationMs != C.TIME_UNSET &&
+        availableDurationMs > 0L &&
+        positionOffsetMs + availableDurationMs >= fullDurationMs - HLS_WINDOW_END_TOLERANCE_MS
 
 /** Single-item timeline facade used by [FullDurationPlayer]. */
 private class FullDurationTimeline(

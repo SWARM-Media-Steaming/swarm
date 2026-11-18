@@ -120,6 +120,78 @@ class PlayerSeekTest {
     }
 
     @Test
+    fun `generated HLS window that reaches the movie end serves tail seeks locally`() {
+        // Session began at 100 min of a 110 min movie; the tail is generated
+        // but one segment short of the probed duration.
+        assertTrue(hlsWindowReachesMediaEnd(6_000_000L, 593_000L, 6_600_000L))
+        assertTrue(hlsWindowReachesMediaEnd(0L, 6_600_000L, 6_600_000L))
+        assertTrue(hlsWindowReachesMediaEnd(0L, 6_594_000L, 6_600_000L))
+    }
+
+    @Test
+    fun `growing HLS window that has not reached the end still restarts`() {
+        assertFalse(hlsWindowReachesMediaEnd(0L, 60_000L, 6_600_000L))
+        assertFalse(hlsWindowReachesMediaEnd(0L, 6_590_000L, 6_600_000L))
+        assertFalse(hlsWindowReachesMediaEnd(0L, C.TIME_UNSET, 6_600_000L))
+        assertFalse(hlsWindowReachesMediaEnd(0L, 60_000L, null))
+    }
+
+    @Test
+    fun `seek past a finished tail clamps inside the generated window`() {
+        // Fast-forward to the probed end sits 6s past a playlist that already
+        // covers the movie. Clamping avoids a session restart (#484).
+        assertEquals(
+            6_594_000L,
+            localHlsTailSeekMs(
+                relativeTargetMs = 6_600_000L,
+                availableDurationMs = 6_594_000L,
+                positionOffsetMs = 0L,
+                fullDurationMs = 6_600_000L,
+            ),
+        )
+        assertEquals(
+            599_000L,
+            localHlsTailSeekMs(
+                relativeTargetMs = 605_000L,
+                availableDurationMs = 599_000L,
+                positionOffsetMs = 6_000_000L,
+                fullDurationMs = 6_600_000L,
+            ),
+        )
+    }
+
+    @Test
+    fun `seek beyond a window that is still growing does not clamp`() {
+        assertEquals(
+            null,
+            localHlsTailSeekMs(
+                relativeTargetMs = 90_000L,
+                availableDurationMs = 60_000L,
+                positionOffsetMs = 0L,
+                fullDurationMs = 6_600_000L,
+            ),
+        )
+        assertEquals(
+            null,
+            localHlsTailSeekMs(
+                relativeTargetMs = -1L,
+                availableDurationMs = 6_600_000L,
+                positionOffsetMs = 30_000L,
+                fullDurationMs = 6_600_000L,
+            ),
+        )
+        assertEquals(
+            null,
+            localHlsTailSeekMs(
+                relativeTargetMs = 45_000L,
+                availableDurationMs = C.TIME_UNSET,
+                positionOffsetMs = 0L,
+                fullDurationMs = 6_600_000L,
+            ),
+        )
+    }
+
+    @Test
     fun `expired playback session 404 is recovered`() {
         assertTrue(
             shouldRecoverExpiredPlaybackSession(

@@ -124,13 +124,58 @@ internal fun scrubPreviewBucketMs(positionMs: Long): Long {
 /** Scene previews are decoded straight from the stream, which only works for
  * a single progressive file (direct play). An HLS URL is a growing playlist
  * that MediaMetadataRetriever cannot open, so HLS scrubbing shows the
- * timeline bar without a picture. Only plain http(s) stream URLs qualify —
- * never a file/content URI. */
-internal fun supportsScrubPreview(playbackMode: PlaybackMode, url: String): Boolean {
-    if (playbackMode != PlaybackMode.DIRECT) return false
-    val scheme = runCatching { URI(url).scheme }.getOrNull()?.lowercase(Locale.ROOT)
-    return scheme == "http" || scheme == "https"
+ * timeline bar without a picture.
+ *
+ * The retriever opens its own HTTP connection outside Media3, so it is only
+ * ever pointed at the app's own peer loopback proxy (see
+ * [isLoopbackProxyStreamUrl]); any other URL — a remote host, https, a
+ * file/content URI, or a crafted authority — gets the bar without a picture
+ * rather than a second, unsupervised fetch (#508). */
+internal fun supportsScrubPreview(playbackMode: PlaybackMode, url: String): Boolean =
+    playbackMode == PlaybackMode.DIRECT && isLoopbackProxyStreamUrl(url)
+
+/** True only for the exact shape PeerLoopbackProxy.urlFor hands out:
+ * `http://127.0.0.1:<port>/<serverId>/<path>` with no user-info, no fragment,
+ * a real port, and a path that names a server and an asset. */
+internal fun isLoopbackProxyStreamUrl(url: String): Boolean {
+    val uri = runCatching { URI(url) }.getOrNull() ?: return false
+    if (!uri.isAbsolute || uri.isOpaque) return false
+    if (uri.scheme != "http") return false
+    if (uri.rawUserInfo != null || uri.rawFragment != null) return false
+    // URI.host is null for a registry-based authority it could not parse as
+    // host[:port]; compare the raw authority too so nothing but the literal
+    // loopback address and its port can slip through.
+    if (uri.host != SCRUB_PREVIEW_LOOPBACK_HOST) return false
+    if (uri.port !in 1..65_535) return false
+    if (uri.rawAuthority != "$SCRUB_PREVIEW_LOOPBACK_HOST:${uri.port}") return false
+    val path = uri.rawPath ?: return false
+    val segments = path.removePrefix("/").split('/')
+    return path.startsWith("/") && segments.size >= 2 && segments.all { it.isNotEmpty() && it != "." && it != ".." }
 }
+
+private const val SCRUB_PREVIEW_LOOPBACK_HOST = "127.0.0.1"
+
+/** Largest source frame (in pixels) the pre-Android-8.1 fallback will decode
+ * at full size before scaling. Below API 27 there is no scaled decode, so a
+ * 4K or crafted-dimension stream would allocate a full-size bitmap per
+ * preview (~33 MB for 3840x2160) on a memory-limited TV; above 1080p the
+ * preview is skipped instead (#508). */
+internal const val SCRUB_PREVIEW_MAX_FULL_FRAME_PIXELS = 1920L * 1088L
+
+/** Whether a full-size frame of the reported video dimensions is small enough
+ * to decode for a preview. Unknown, malformed, or non-positive dimensions are
+ * refused — the retriever's metadata comes straight from the stream. */
+internal fun scrubPreviewFullFrameAllowed(width: String?, height: String?): Boolean {
+    val w = width?.trim()?.toLongOrNull() ?: return false
+    val h = height?.trim()?.toLongOrNull() ?: return false
+    if (w <= 0L || h <= 0L || w > 16_384L || h > 16_384L) return false
+    return w * h <= SCRUB_PREVIEW_MAX_FULL_FRAME_PIXELS
+}
+
+/** Microseconds for a preview request, clamped so a runaway target (unknown
+ * duration, held fast-forward) can never overflow the retriever's time. */
+internal fun scrubPreviewTimeUs(positionMs: Long): Long =
+    positionMs.coerceIn(0L, Long.MAX_VALUE / 1000L) * 1000L
 
 /**
  * Decodes small preview frames from a direct-play stream for the scrub
@@ -172,7 +217,7 @@ internal class ScrubPreviewFrames(private val url: String) : Closeable {
 
     private fun decode(positionMs: Long): Bitmap? {
         val source = openRetriever() ?: return null
-        val timeUs = positionMs * 1000L
+        val timeUs = scrubPreviewTimeUs(positionMs)
         return runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
                 source.getScaledFrameAtTime(
@@ -181,7 +226,12 @@ internal class ScrubPreviewFrames(private val url: String) : Closeable {
                     SCRUB_PREVIEW_WIDTH_PX,
                     SCRUB_PREVIEW_HEIGHT_PX,
                 )
-            } else {
+            } else if (
+                scrubPreviewFullFrameAllowed(
+                    source.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH),
+                    source.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT),
+                )
+            ) {
                 source.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)?.let { full ->
                     val scaled = Bitmap.createScaledBitmap(
                         full,
@@ -192,6 +242,8 @@ internal class ScrubPreviewFrames(private val url: String) : Closeable {
                     if (scaled !== full) full.recycle()
                     scaled
                 }
+            } else {
+                null
             }
         }.getOrNull()
     }
@@ -199,6 +251,12 @@ internal class ScrubPreviewFrames(private val url: String) : Closeable {
     private fun openRetriever(): MediaMetadataRetriever? {
         retriever?.let { return it }
         if (unavailable) return null
+        // Defence in depth: the constructor-time gate in PlayerScreen already
+        // requires this, but the retriever must never open anything else.
+        if (!isLoopbackProxyStreamUrl(url)) {
+            unavailable = true
+            return null
+        }
         val opened = MediaMetadataRetriever()
         return runCatching {
             opened.setDataSource(url, emptyMap())

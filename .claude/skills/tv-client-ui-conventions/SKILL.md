@@ -189,8 +189,16 @@ then Unnumbered. Right: the highlighted season's episodes as rows of a
 "Extras" header (`EPISODE_ITEM_PREFIX` on every row).
 
 - Focusing a season row swaps the right pane immediately; Center or
-  Right moves into the episodes. Both lists use `focusRestorer()` so
-  Left/Right return to the row the user left from.
+  Right moves into the episodes. Both lists use `focusRestorer(fallback)`
+  so Left/Right return to the row the user left from — and the fallback
+  matters: a bare `focusRestorer()` on a list with no saved child falls
+  back to 2D geometric search, which skips Episode 1 (the season rows sit
+  lower than it) and lands Left on Season 1 after returning from the
+  player. The episode list falls back to `firstEpisodeRequester` (list
+  only composed when the season is non-empty); the season list falls
+  back to `highlightedSeasonRequester`, and its `LazyListState` opens
+  scrolled to the active season so that row is composed even when the
+  screen mounts straight into the episode pane.
 - `UiState.ShowSeasons.selectedSeason` is non-null exactly while focus is
   in the episode pane (the panes' `onFocusChanged` keep it in sync), so
   Back from episodes returns focus to the season list, Back again leaves

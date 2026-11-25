@@ -122,7 +122,13 @@ fun SeasonScreen(
     var episodePaneFocused by remember { mutableStateOf(false) }
     val highlightedSeasonRequester = remember { FocusRequester() }
     val firstEpisodeRequester = remember { FocusRequester() }
-    val seasonListState = rememberLazyListState()
+    // Open the season list already scrolled to the active season — also when
+    // returning from the player straight into the episode pane — so that row
+    // is composed and on screen for D-pad Left to land on.
+    val seasonListState = rememberLazyListState(
+        initialFirstVisibleItemIndex = displayed?.let { d -> seasons.indexOfFirst { seasonKey(it) == seasonKey(d) } }
+            ?.coerceAtLeast(0) ?: 0,
+    )
 
     BackHandler { if (selectedSeason != null) onSelectSeason(null) else onBack() }
 
@@ -132,10 +138,11 @@ fun SeasonScreen(
     // is left alone so the selection never yanks focus off a row.
     LaunchedEffect(inEpisodes, show.show) {
         if (seasons.isEmpty()) return@LaunchedEffect
-        if (!inEpisodes) {
-            val index = seasons.indexOfFirst { seasonKey(it) == seasonKey(displayed ?: seasons.first()) }
-            if (index >= 0 && !seasonPaneFocused) seasonListState.scrollToItem(index)
-        }
+        // Keep the active season row visible in both panes' states so Left
+        // from the episodes (focusRestorer fallback) always has it to land on.
+        val index = seasons.indexOfFirst { seasonKey(it) == seasonKey(displayed ?: seasons.first()) }
+        val rowVisible = seasonListState.layoutInfo.visibleItemsInfo.any { it.index == index }
+        if (index >= 0 && !seasonPaneFocused && !rowVisible) seasonListState.scrollToItem(index)
         repeat(SEASON_SCREEN_FOCUS_ATTEMPTS) {
             withFrameNanos {}
             if (inEpisodes && episodePaneFocused) return@LaunchedEffect
@@ -252,9 +259,12 @@ private fun SeasonPane(
         LazyColumn(
             state = listState,
             verticalArrangement = Arrangement.spacedBy(6.dp),
-            // Left/Right back into the list lands on the season it was left
-            // from, not whichever row happens to sit level with the episode.
-            modifier = Modifier.fillMaxWidth().weight(1f).focusRestorer(),
+            // Left back into the list lands on the season it was left from —
+            // or, on a fresh mount (e.g. back from the player), the season
+            // whose episodes are showing — never whichever row happens to sit
+            // level with the episode.
+            modifier = Modifier.fillMaxWidth().weight(1f)
+                .focusRestorer(if (displayed != null) highlightedSeasonRequester else FocusRequester.Default),
             contentPadding = PaddingValues(vertical = 4.dp),
         ) {
             itemsIndexed(
@@ -344,13 +354,17 @@ private fun EpisodePane(
         Spacer(Modifier.height(12.dp))
         // A fresh list per season: switching seasons always starts at the
         // top instead of inheriting the previous season's scroll offset.
-        key(seasonKey(season)) {
+        // An empty season has nothing to focus, so no list (and no fallback
+        // requester left unattached) is composed for it.
+        if (episodes.isNotEmpty() || extras.isNotEmpty()) key(seasonKey(season)) {
             LazyColumn(
                 state = rememberLazyListState(),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 // Re-entering from the season list returns to the episode
-                // the user left from rather than the nearest one.
-                modifier = Modifier.fillMaxWidth().weight(1f).focusRestorer(),
+                // the user left from; first entry into a season always lands
+                // on its first episode, not whichever row sits level with the
+                // highlighted season.
+                modifier = Modifier.fillMaxWidth().weight(1f).focusRestorer(firstEpisodeRequester),
                 contentPadding = PaddingValues(vertical = 4.dp),
             ) {
                 itemsIndexed(

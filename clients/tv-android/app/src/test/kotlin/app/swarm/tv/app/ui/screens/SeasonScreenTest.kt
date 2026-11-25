@@ -94,4 +94,44 @@ class SeasonScreenTest {
 
         assertEquals("s1e2", resumeEpisode(show, states)?.entry?.fingerprint)
     }
+
+    @Test
+    fun `season pane lists real seasons first then specials then unnumbered`() {
+        val ordered = seasonPaneOrder(
+            listOf(
+                SeasonGroup(0, listOf(episode("sp", 0, 1))),
+                SeasonGroup(2, listOf(s2e1)),
+                SeasonGroup(null, listOf(episode("nn", 0, 1))),
+                SeasonGroup(1, listOf(s1e1)),
+            ),
+        )
+        assertEquals(listOf(1, 2, 0, null), ordered.map { it.season })
+    }
+
+    @Test
+    fun `screen opens on the first real season when nothing is in progress`() {
+        val withSpecials = show.copy(seasons = listOf(SeasonGroup(0, listOf(episode("sp", 0, 1)))) + show.seasons)
+        assertEquals(1, defaultSeason(withSpecials, emptyMap())?.season)
+    }
+
+    @Test
+    fun `screen opens on the season holding the episode in progress`() {
+        val states = mapOf("s2e1" to inProgress(10L))
+        assertEquals(2, defaultSeason(show, states)?.season)
+    }
+
+    @Test
+    fun `no default season for a show without seasons`() {
+        assertNull(defaultSeason(show.copy(seasons = emptyList()), emptyMap()))
+    }
+
+    @Test
+    fun `episode duration labels`() {
+        assertNull(episodeDurationLabel(null))
+        assertNull(episodeDurationLabel(0.0))
+        assertNull(episodeDurationLabel(Double.NaN))
+        assertEquals("<1m", episodeDurationLabel(30.0))
+        assertEquals("37m", episodeDurationLabel(37 * 60.0 + 20))
+        assertEquals("1h 05m", episodeDurationLabel(65 * 60.0))
+    }
 }

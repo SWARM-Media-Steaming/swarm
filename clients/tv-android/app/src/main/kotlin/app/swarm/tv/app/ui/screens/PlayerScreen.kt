@@ -68,6 +68,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -76,6 +77,8 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
@@ -153,6 +156,7 @@ import java.net.SocketException
 import java.net.SocketTimeoutException
 import java.util.Locale
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 
 private const val CONTINUE_COUNTDOWN_SECS = 8
 private const val SERVER_OFFLINE_RETRY_DELAY_MS = 2_000L
@@ -168,11 +172,14 @@ private const val BUFFERING_VIDEO_BITRATE_PERCENT = 80L
 // delay. Cancelled the moment the player leaves its loading state.
 internal const val BUFFERING_NOTIFICATION_DELAY_MS = 3_000L
 
-/** D-pad left/right rewind/fast-forward step. Android's own key-repeat
- * mechanism redelivers ACTION_DOWN with an incrementing repeatCount while a
- * hardware button stays held, so consuming every one of those (not just the
- * first) is what makes holding the button keep seeking. */
-internal const val PLAYBACK_SEEK_STEP_MS = 60_000L
+/** Rewind/fast-forward step for D-pad left/right, the remote's dedicated
+ * transport keys, and the native controller's buttons — 15 seconds, like
+ * mainstream streaming apps (#498). Android's own key-repeat mechanism
+ * redelivers ACTION_DOWN with an incrementing repeatCount while a hardware
+ * button stays held, so applying those repeats (paced by
+ * [SCRUB_REPEAT_INTERVAL_MS]) is what makes holding the button keep
+ * scrubbing in 15-second increments. */
+internal const val PLAYBACK_SEEK_STEP_MS = 15_000L
 
 /** How long a burst of skip presses must go quiet before it commits a real
  * Player.seekTo (see [coalescedSeekTargetMs]). Short enough that a single,
@@ -484,8 +491,17 @@ internal fun isServerOfflineLoadError(error: IOException): Boolean =
  * loads — falsely tripping the "server has gone offline" banner (#443). The
  * caller commits [pendingTargetMs] with a real seekTo only once presses stop
  * arriving for [SEEK_COALESCE_QUIET_MS]. */
-internal fun coalescedSeekTargetMs(pendingTargetMs: Long?, currentPositionMs: Long, deltaMs: Long): Long =
-    ((pendingTargetMs ?: currentPositionMs) + deltaMs).coerceAtLeast(0L)
+internal fun coalescedSeekTargetMs(
+    pendingTargetMs: Long?,
+    currentPositionMs: Long,
+    deltaMs: Long,
+    // Known media duration; holding fast-forward stops at the end instead of
+    // piling up an unreachable target the timeline bar cannot show.
+    durationMs: Long? = null,
+): Long {
+    val target = ((pendingTargetMs ?: currentPositionMs) + deltaMs).coerceAtLeast(0L)
+    return if (durationMs != null && durationMs > 0L) target.coerceAtMost(durationMs) else target
+}
 
 /** Delays an offline report until a retryable load failure actually exhausts
  * the player's buffer. A single timed-out prefetch can recover without the
@@ -666,6 +682,10 @@ private class VideoPlayerPool(context: Context) {
             .setTrackSelector(trackSelector)
             .setLoadControl(loadControl)
             .setMediaSourceFactory(serverOfflineMediaSourceFactory(appContext))
+            // The native controller's rewind/fast-forward buttons use the
+            // same 15-second step as the remote (#498).
+            .setSeekBackIncrementMs(PLAYBACK_SEEK_STEP_MS)
+            .setSeekForwardIncrementMs(PLAYBACK_SEEK_STEP_MS)
             .build()
             .apply {
             // Register before initial preparation because this player may be preloaded
@@ -823,6 +843,18 @@ fun PlayerScreen(
     // coalescedSeekTargetMs and its LaunchedEffect below (#443).
     var pendingSeekTargetMs by remember(sessionId) { mutableStateOf<Long?>(null) }
     var seekRequestGeneration by remember(sessionId) { mutableStateOf(0L) }
+    // Scrub feedback (#498): the timeline bar stays up while a rewind/
+    // fast-forward burst is pending and briefly after it commits.
+    var scrubOverlayVisible by remember(sessionId) { mutableStateOf(false) }
+    var scrubPositionMs by remember(sessionId) { mutableStateOf(0L) }
+    var lastSeekStepEventTimeMs by remember(sessionId) { mutableStateOf<Long?>(null) }
+    var scrubPreview by remember(sessionId) { mutableStateOf<ImageBitmap?>(null) }
+    val scrubPreviewFrames = remember(sessionId, url, playbackMode) {
+        if (supportsScrubPreview(playbackMode, url)) ScrubPreviewFrames(url) else null
+    }
+    DisposableEffect(scrubPreviewFrames) {
+        onDispose { scrubPreviewFrames?.close() }
+    }
     var showPauseOverlay by remember(sessionId) { mutableStateOf(!player.playWhenReady) }
     var consumeSurfaceSelectKeyUp by remember(sessionId) { mutableStateOf(false) }
     var offeredIntro by remember(sessionId) { mutableStateOf<SkipSegment?>(null) }
@@ -978,6 +1010,37 @@ fun PlayerScreen(
         delay(SEEK_COALESCE_QUIET_MS)
         pendingSeekTargetMs = null
         controllerPlayer.seekTo(target)
+        delay(SCRUB_BAR_LINGER_MS)
+        scrubOverlayVisible = false
+    }
+    // Rewind/fast-forward steps (#498): 15 seconds per press, and per paced
+    // key-repeat while the button is held. seekStepAccepted applies that
+    // pacing; queueSeekTarget moves the coalesced target and the scrub
+    // overlay, and the real seek commits in the effect above.
+    fun seekStepAccepted(event: KeyEvent): Boolean {
+        if (!shouldApplySeekStep(event.repeatCount, event.eventTime, lastSeekStepEventTimeMs)) return false
+        lastSeekStepEventTimeMs = event.eventTime
+        return true
+    }
+    fun knownDurationMs(): Long? = controllerPlayer.duration.takeIf { it != C.TIME_UNSET && it > 0L }
+    fun queueSeekTarget(target: Long) {
+        pendingSeekTargetMs = target
+        scrubPositionMs = target
+        scrubOverlayVisible = true
+        seekRequestGeneration += 1L
+    }
+    // Decodes a scene preview for the latest scrub target. collectLatest
+    // drops targets the viewer has already scrubbed past, so a held button
+    // shows the most recent frame the decoder could keep up with.
+    LaunchedEffect(scrubPreviewFrames) {
+        val frames = scrubPreviewFrames ?: return@LaunchedEffect
+        snapshotFlow { pendingSeekTargetMs }.collectLatest { target ->
+            if (target == null) {
+                scrubPreview = null
+                return@collectLatest
+            }
+            frames.frameAt(target)?.let { scrubPreview = it.asImageBitmap() }
+        }
     }
     // Media3 has no continuous playhead callback, so sample the lightweight
     // in-process position while video is running. The offer appears at most
@@ -1401,21 +1464,25 @@ fun PlayerScreen(
                 if (surfaceAction != null) {
                     if (event.action == KeyEvent.ACTION_DOWN) {
                         when (surfaceAction) {
-                            RemotePlaybackAction.SEEK_FORWARD -> {
-                                pendingSeekTargetMs = coalescedSeekTargetMs(
-                                    pendingSeekTargetMs,
-                                    controllerPlayer.currentPosition,
-                                    PLAYBACK_SEEK_STEP_MS,
+                            RemotePlaybackAction.SEEK_FORWARD -> if (seekStepAccepted(event)) {
+                                queueSeekTarget(
+                                    coalescedSeekTargetMs(
+                                        pendingSeekTargetMs,
+                                        controllerPlayer.currentPosition,
+                                        PLAYBACK_SEEK_STEP_MS,
+                                        knownDurationMs(),
+                                    ),
                                 )
-                                seekRequestGeneration += 1L
                             }
-                            RemotePlaybackAction.SEEK_BACK -> {
-                                pendingSeekTargetMs = coalescedSeekTargetMs(
-                                    pendingSeekTargetMs,
-                                    controllerPlayer.currentPosition,
-                                    -PLAYBACK_SEEK_STEP_MS,
+                            RemotePlaybackAction.SEEK_BACK -> if (seekStepAccepted(event)) {
+                                queueSeekTarget(
+                                    coalescedSeekTargetMs(
+                                        pendingSeekTargetMs,
+                                        controllerPlayer.currentPosition,
+                                        -PLAYBACK_SEEK_STEP_MS,
+                                        knownDurationMs(),
+                                    ),
                                 )
-                                seekRequestGeneration += 1L
                             }
                             RemotePlaybackAction.PAUSE -> {
                                 consumeSurfaceSelectKeyUp = true
@@ -1434,21 +1501,25 @@ fun PlayerScreen(
                         }
                         RemotePlaybackAction.PLAY -> player.play()
                         RemotePlaybackAction.PAUSE -> player.pause()
-                        RemotePlaybackAction.SEEK_FORWARD -> {
-                            pendingSeekTargetMs = coalescedSeekTargetMs(
-                                pendingSeekTargetMs,
-                                controllerPlayer.currentPosition,
-                                controllerPlayer.seekForwardIncrement,
+                        RemotePlaybackAction.SEEK_FORWARD -> if (seekStepAccepted(event)) {
+                            queueSeekTarget(
+                                coalescedSeekTargetMs(
+                                    pendingSeekTargetMs,
+                                    controllerPlayer.currentPosition,
+                                    PLAYBACK_SEEK_STEP_MS,
+                                    knownDurationMs(),
+                                ),
                             )
-                            seekRequestGeneration += 1L
                         }
-                        RemotePlaybackAction.SEEK_BACK -> {
-                            pendingSeekTargetMs = coalescedSeekTargetMs(
-                                pendingSeekTargetMs,
-                                controllerPlayer.currentPosition,
-                                -controllerPlayer.seekBackIncrement,
+                        RemotePlaybackAction.SEEK_BACK -> if (seekStepAccepted(event)) {
+                            queueSeekTarget(
+                                coalescedSeekTargetMs(
+                                    pendingSeekTargetMs,
+                                    controllerPlayer.currentPosition,
+                                    -PLAYBACK_SEEK_STEP_MS,
+                                    knownDurationMs(),
+                                ),
                             )
-                            seekRequestGeneration += 1L
                         }
                         RemotePlaybackAction.SHOW_CONTROLS -> {
                             if (!showPauseOverlay && !showContinuePrompt) {
@@ -1547,6 +1618,17 @@ fun PlayerScreen(
                 },
                 onSelectSubtitleTrack = { choice -> selectSubtitleTrack(player, choice) },
                 onReportProblem = onReportProblem,
+            )
+        }
+
+        if (scrubOverlayVisible && !showPauseOverlay && !showContinuePrompt) {
+            SeekScrubOverlay(
+                positionMs = scrubPositionMs,
+                durationMs = controllerPlayer.duration.takeIf { it != C.TIME_UNSET && it > 0L },
+                // The frame is only meaningful before the jump commits; after
+                // it, the real video is already showing that scene.
+                preview = scrubPreview?.takeIf { pendingSeekTargetMs != null },
+                modifier = Modifier.align(Alignment.BottomCenter),
             )
         }
 

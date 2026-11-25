@@ -110,6 +110,8 @@ object UatTestTags {
     const val PAUSE_REPORT_PROBLEM_BUTTON = "uat_pause_report_problem_button"
     const val PAUSE_AUDIO_OPTION_PREFIX = "uat_pause_audio_option_"
     const val PAUSE_SUBTITLE_OPTION_PREFIX = "uat_pause_subtitle_option_"
+    const val PAUSE_AUDIO_BOOST_PICKER = "uat_pause_audio_boost_picker"
+    const val PAUSE_AUDIO_BOOST_OPTION_PREFIX = "uat_pause_audio_boost_option_"
     const val CONTINUE_OVERLAY = "uat_continue_overlay"
     const val CONTINUE_PLAY_NOW_BUTTON = "uat_continue_play_now_button"
     const val CONTINUE_CANCEL_BUTTON = "uat_continue_cancel_button"

@@ -76,15 +76,19 @@ class ContinuePlaybackLifecycleUatTest : UatTestBase() {
     fun testPlaybackReleaseAcknowledgedAndTrackChoicesWork() {
         val releasesBefore = openMovieWithTrackChoicesAndPause()
 
+        // Each picker is a dropdown (issue #497): open it, then pick an option.
+        selectTagWithDpad(UatTestTags.PAUSE_AUDIO_TRACK_PICKER)
         val audioOptions = composeTestRule.allTagsStartingWith(UatTestTags.PAUSE_AUDIO_OPTION_PREFIX)
-        val subtitleOptions = composeTestRule.allTagsStartingWith(UatTestTags.PAUSE_SUBTITLE_OPTION_PREFIX)
         assertTrue("playback should expose at least one audio choice", audioOptions.isNotEmpty())
-        assertTrue("subtitle picker should expose Off plus a real subtitle track", subtitleOptions.size >= 2)
         selectTagWithDpad(audioOptions.last())
         waitForTag(UatTestTags.PAUSE_LABEL)
+        selectTagWithDpad(UatTestTags.PAUSE_SUBTITLE_TRACK_PICKER)
+        val subtitleOptions = composeTestRule.allTagsStartingWith(UatTestTags.PAUSE_SUBTITLE_OPTION_PREFIX)
+        assertTrue("subtitle picker should expose Off plus a real subtitle track", subtitleOptions.size >= 2)
         selectTagWithDpad(subtitleOptions[1])
         waitForTag(UatTestTags.PAUSE_LABEL)
-        selectTagWithDpad(subtitleOptions.first()) // Off
+        selectTagWithDpad(UatTestTags.PAUSE_SUBTITLE_TRACK_PICKER)
+        selectTagWithDpad(UatTestTags.PAUSE_SUBTITLE_OPTION_PREFIX + 0) // Off
 
         pressBack()
         waitForTag(UatTestTags.MOVIE_DETAIL_ARTWORK)
@@ -156,8 +160,14 @@ class ContinuePlaybackLifecycleUatTest : UatTestBase() {
                 pressSelect()
                 waitForTag(UatTestTags.PAUSE_LABEL)
 
+                // Track dropdowns (issue #497) only list options while open;
+                // opening both is harmless and they collapse on selection.
+                selectTagWithDpad(UatTestTags.PAUSE_AUDIO_TRACK_PICKER)
                 val hasAudio = composeTestRule.allTagsStartingWith(UatTestTags.PAUSE_AUDIO_OPTION_PREFIX).isNotEmpty()
+                pressBack() // collapse the audio dropdown
+                selectTagWithDpad(UatTestTags.PAUSE_SUBTITLE_TRACK_PICKER)
                 val hasSubtitles = composeTestRule.allTagsStartingWith(UatTestTags.PAUSE_SUBTITLE_OPTION_PREFIX).size >= 2
+                pressBack() // collapse the subtitle dropdown
                 if (hasAudio && hasSubtitles) releases else null
             }.getOrNull()
             if (releasesBefore != null) return releasesBefore

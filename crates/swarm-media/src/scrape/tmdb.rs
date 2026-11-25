@@ -17,6 +17,23 @@ pub enum TmdbError {
     Unavailable(String),
 }
 
+/// TMDb's two video catalogs — see [`TmdbClient::search_and_fetch_any`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TmdbMediaType {
+    Movie,
+    Tv,
+}
+
+impl TmdbMediaType {
+    /// The path segment TMDb uses in its own URLs (`/movie/<id>`, `/tv/<id>`).
+    pub fn url_segment(self) -> &'static str {
+        match self {
+            TmdbMediaType::Movie => "movie",
+            TmdbMediaType::Tv => "tv",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ScrapedVideo {
     /// TMDB's stable movie/show id. TV episode scraping uses the show id to
@@ -219,6 +236,37 @@ impl TmdbClient {
     pub async fn search_and_fetch_tv(&self, title: &str) -> Result<ScrapedVideo, TmdbError> {
         let id = self.search(title, "tv", None).await?;
         self.details_by_id(id, "tv").await
+    }
+
+    /// Searches `prefer`'s catalog first and, only when that has no match
+    /// at all, the other one — returning which catalog matched. Issue #494:
+    /// an AI-identified TV show whose file sat in a Movies library (so the
+    /// entry was classified as a movie) was only ever searched as a movie
+    /// and failed with "no TMDb match" even though the title was right. A
+    /// TMDb outage (`Unavailable`) is returned immediately rather than being
+    /// masked by the second search.
+    pub async fn search_and_fetch_any(
+        &self,
+        title: &str,
+        year: Option<u32>,
+        prefer: TmdbMediaType,
+    ) -> Result<(ScrapedVideo, TmdbMediaType), TmdbError> {
+        let order = match prefer {
+            TmdbMediaType::Movie => [TmdbMediaType::Movie, TmdbMediaType::Tv],
+            TmdbMediaType::Tv => [TmdbMediaType::Tv, TmdbMediaType::Movie],
+        };
+        for media_type in order {
+            let found = match media_type {
+                TmdbMediaType::Movie => self.search_and_fetch_movie(title, year).await,
+                TmdbMediaType::Tv => self.search_and_fetch_tv(title).await,
+            };
+            match found {
+                Ok(video) => return Ok((video, media_type)),
+                Err(TmdbError::NotFound) => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Err(TmdbError::NotFound)
     }
 
     /// Looks up a bare title with no year hint and returns TMDb's release
@@ -977,6 +1025,73 @@ mod tests {
         let client = TmdbClient::with_base_urls("key", &base, &base);
         assert!(matches!(
             client.search_and_fetch_movie("Nope", None).await,
+            Err(TmdbError::NotFound)
+        ));
+    }
+
+    #[tokio::test]
+    async fn search_and_fetch_any_falls_back_to_tv_when_the_movie_search_is_empty() {
+        // Issue #494: "The Falcon and the Winter Soldier" filed under a
+        // Movies library was only searched as a movie -> "no TMDb match".
+        let router = Router::new()
+            .route("/search/movie", get(|| async { Json(json!({"results": []})) }))
+            .route(
+                "/search/tv",
+                get(|| async {
+                    Json(json!({"results": [{"id": 88396, "name": "The Falcon and the Winter Soldier"}]}))
+                }),
+            )
+            .route(
+                "/tv/88396",
+                get(|| async { Json(json!({"name": "The Falcon and the Winter Soldier"})) }),
+            );
+        let base = spawn_mock(router).await;
+        let client = TmdbClient::with_base_urls("key", &base, &base);
+        let (video, media_type) = client
+            .search_and_fetch_any("The Falcon and The Winter Soldier", Some(2021), TmdbMediaType::Movie)
+            .await
+            .unwrap();
+        assert_eq!(media_type, TmdbMediaType::Tv);
+        assert_eq!(video.tmdb_id, 88396);
+        assert_eq!(video.title, "The Falcon and the Winter Soldier");
+    }
+
+    #[tokio::test]
+    async fn search_and_fetch_any_prefers_the_requested_catalog() {
+        let router = Router::new()
+            .route("/search/tv", get(|| async { Json(json!({"results": [{"id": 7, "name": "Dune"}]})) }))
+            .route("/tv/7", get(|| async { Json(json!({"name": "Dune"})) }))
+            .route("/search/movie", get(|| async { Json(json!({"results": [{"id": 8, "title": "Dune"}]})) }))
+            .route("/movie/8", get(|| async { Json(json!({"title": "Dune"})) }));
+        let base = spawn_mock(router).await;
+        let client = TmdbClient::with_base_urls("key", &base, &base);
+        let (video, media_type) = client
+            .search_and_fetch_any("Dune", None, TmdbMediaType::Tv)
+            .await
+            .unwrap();
+        assert_eq!((video.tmdb_id, media_type), (7, TmdbMediaType::Tv));
+    }
+
+    #[tokio::test]
+    async fn search_and_fetch_any_does_not_mask_an_outage_and_reports_no_match_in_either() {
+        let outage = Router::new().route(
+            "/search/movie",
+            get(|| async { (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "boom") }),
+        );
+        let base = spawn_mock(outage).await;
+        let client = TmdbClient::with_base_urls("key", &base, &base);
+        assert!(matches!(
+            client.search_and_fetch_any("X", None, TmdbMediaType::Movie).await,
+            Err(TmdbError::Unavailable(_))
+        ));
+
+        let empty = Router::new()
+            .route("/search/movie", get(|| async { Json(json!({"results": []})) }))
+            .route("/search/tv", get(|| async { Json(json!({"results": []})) }));
+        let base = spawn_mock(empty).await;
+        let client = TmdbClient::with_base_urls("key", &base, &base);
+        assert!(matches!(
+            client.search_and_fetch_any("Nope", None, TmdbMediaType::Movie).await,
             Err(TmdbError::NotFound)
         ));
     }

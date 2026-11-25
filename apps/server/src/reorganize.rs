@@ -2431,6 +2431,188 @@ fn remove_empty_directory_trees(root: &Path, directory: &Path) -> bool {
     }
 }
 
+// ---- Scan & scrape assist renames (issue #494) ------------------------------
+//
+// The AI tab's scan assist identifies an unmatched file (AI guess confirmed
+// against TMDb) and can then propose renaming it — and, through the
+// canonical path, its show/season/movie folders — to the Plex-compatible
+// layout the rest of this module already produces. These helpers never touch
+// the disk: they build an ordinary `ReorgPlan` that goes through the same
+// review → approve → journaled apply → undo flow as a cleanup scan.
+
+/// A confident identity for one file, for [`plan_assist_renames`].
+#[derive(Debug, Clone)]
+pub struct AssistRename {
+    /// Path relative to the *source* root, forward-slashed.
+    pub from: String,
+    /// `MediaKind::Movie` or `MediaKind::Episode`; see [`movie_identity`]
+    /// and [`episode_identity`].
+    pub identity: Classified,
+}
+
+fn blank_identity(kind: MediaKind, title: String) -> Classified {
+    Classified {
+        kind,
+        title,
+        artist: None,
+        album: None,
+        track_number: None,
+        disc_number: None,
+        show_title: None,
+        season: None,
+        episode: None,
+        year: None,
+        episode_end: None,
+        plex_guid: None,
+        edition: None,
+        extra_kind: None,
+        extra_title: None,
+        extra_parent_title: None,
+        extra_parent_dir: None,
+        extra_relative_path: None,
+        extra_category_path: None,
+    }
+}
+
+pub fn movie_identity(title: &str, year: Option<u32>) -> Classified {
+    let mut identity = blank_identity(MediaKind::Movie, title.to_string());
+    identity.year = year;
+    identity
+}
+
+pub fn episode_identity(show: &str, season: u32, episode: u32) -> Classified {
+    let mut identity = blank_identity(MediaKind::Episode, show.to_string());
+    identity.show_title = Some(show.to_string());
+    identity.season = Some(season);
+    identity.episode = Some(episode);
+    identity
+}
+
+/// Every segment must be an ordinary, non-hidden name: titles come from
+/// AI/TMDb text, so a title such as `..` must never become a path that
+/// escapes the media root or lands in a hidden folder.
+fn is_safe_relative_target(path: &str) -> bool {
+    !path.is_empty()
+        && path.split('/').all(|segment| {
+            let trimmed = segment.trim();
+            !trimmed.is_empty()
+                && !trimmed.starts_with('.')
+                && trimmed == segment
+                && !segment.chars().any(char::is_control)
+        })
+}
+
+/// The canonical path `identity` should live at, for a file currently at
+/// `from` (only its extension is used). `None` when the file is not a
+/// video, the identity is incomplete, the result would be unsafe, or the
+/// file is already there.
+pub fn assist_rename_target(from: &str, identity: &Classified) -> Option<String> {
+    let (ext, is_audio) = classify::media_extension(from)?;
+    if is_audio {
+        return None;
+    }
+    match identity.kind {
+        MediaKind::Movie if !identity.title.trim().is_empty() => {}
+        MediaKind::Episode
+            if identity.show_title.as_deref().is_some_and(|show| !show.trim().is_empty())
+                && identity.season.is_some()
+                && identity.episode.is_some() => {}
+        _ => return None,
+    }
+    let target = canonical_video_path(identity, ext);
+    (is_safe_relative_target(&target) && target != from).then_some(target)
+}
+
+/// Builds a reviewable plan renaming each `renames` file (plus its subtitle
+/// sidecars) to its canonical path. `destination` is `Some((label, path))`
+/// when the files belong in a different configured root (a TV episode
+/// sitting in a Movies library, say); `None` renames within `source_root`.
+/// Same collision rules as a cleanup scan: a different movie already at the
+/// target is a conflict, a byte-identical file is a duplicate, and nothing
+/// is ever overwritten.
+pub async fn plan_assist_renames(
+    root_label: &str,
+    source_root: &Path,
+    destination: Option<(&str, &Path)>,
+    renames: &[AssistRename],
+) -> ReorgPlan {
+    let mut items = Vec::new();
+    let mut planned_targets = HashSet::new();
+    for rename in renames {
+        let Some(canonical) = assist_rename_target(&rename.from, &rename.identity) else {
+            continue;
+        };
+        let is_movie = rename.identity.kind == MediaKind::Movie;
+        let (to, kind, target_root_label, conflict) = match destination {
+            Some((label, destination_root)) if is_movie => {
+                resolve_cross_root_movie_destination(
+                    source_root, destination_root, label, &rename.from, &canonical, "video", &mut planned_targets,
+                )
+                .await
+            }
+            Some((label, destination_root)) => {
+                resolve_cross_root_destination(
+                    source_root, destination_root, label, &rename.from, &canonical, "video", &mut planned_targets,
+                )
+                .await
+            }
+            None => {
+                let (to, kind, conflict) = if is_movie {
+                    resolve_movie_destination(source_root, &rename.from, &canonical, "video", &mut planned_targets).await
+                } else {
+                    resolve_destination(source_root, &rename.from, &canonical, "video", &mut planned_targets).await
+                };
+                (to, kind, None, conflict)
+            }
+        };
+        let video_has_conflict = conflict.is_some();
+        items.push(ReorgItem {
+            from: rename.from.clone(),
+            to: to.clone(),
+            destination_root_label: target_root_label.clone(),
+            kind,
+            ai_assisted: true,
+            year_source: None,
+            conflict,
+        });
+        if video_has_conflict || kind == "duplicate" {
+            continue;
+        }
+        for (sub_from, sub_to) in find_sidecar_moves(source_root, &rename.from, &to) {
+            let (to, kind, sidecar_root_label, conflict) = match (destination, target_root_label.is_some()) {
+                (Some((label, destination_root)), true) => {
+                    resolve_cross_root_destination(
+                        source_root, destination_root, label, &sub_from, &sub_to, "subtitle", &mut planned_targets,
+                    )
+                    .await
+                }
+                _ => {
+                    let (to, kind, conflict) =
+                        resolve_destination(source_root, &sub_from, &sub_to, "subtitle", &mut planned_targets).await;
+                    (to, kind, None, conflict)
+                }
+            };
+            items.push(ReorgItem {
+                from: sub_from,
+                to,
+                destination_root_label: sidecar_root_label,
+                kind,
+                ai_assisted: true,
+                year_source: None,
+                conflict,
+            });
+        }
+    }
+    ReorgPlan {
+        root_label: root_label.to_string(),
+        ai_assisted_count: items.iter().filter(|item| item.kind == "video").count() as u32,
+        conflict_count: items.iter().filter(|item| item.conflict.is_some()).count() as u32,
+        duplicate_count: items.iter().filter(|item| item.kind == "duplicate").count() as u32,
+        items,
+        ..Default::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2440,6 +2622,122 @@ mod tests {
         let path = root.join(relative);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, contents).unwrap();
+    }
+
+    // --- scan & scrape assist renames (issue #494) ---
+
+    #[test]
+    fn assist_rename_target_builds_show_season_and_episode_names() {
+        let identity = episode_identity("The Falcon and the Winter Soldier", 1, 3);
+        assert_eq!(
+            assist_rename_target("falcon.winter.soldier/fws.s01e03.1080p.mkv", &identity).as_deref(),
+            Some("The Falcon and the Winter Soldier/Season 01/The Falcon and the Winter Soldier - S01E03.mkv")
+        );
+        let movie = movie_identity("Inception", Some(2010));
+        assert_eq!(
+            assist_rename_target("inception.2010.1080p/inception.mkv", &movie).as_deref(),
+            Some("Inception (2010)/Inception (2010).mkv")
+        );
+    }
+
+    #[test]
+    fn assist_rename_target_is_none_when_already_canonical_or_not_a_video() {
+        let movie = movie_identity("Inception", Some(2010));
+        assert_eq!(assist_rename_target("Inception (2010)/Inception (2010).mkv", &movie), None);
+        assert_eq!(assist_rename_target("Artist/Album/01 Track.flac", &movie), None);
+        assert_eq!(assist_rename_target("notes.txt", &movie), None);
+    }
+
+    #[test]
+    fn assist_rename_target_rejects_titles_that_would_escape_or_hide() {
+        // Titles come from AI/TMDb text: never a path outside the root or a
+        // hidden folder, however the title is spelled.
+        for title in ["..", ".", " .. ", ".hidden", "../../etc", "a\nb"] {
+            let movie = movie_identity(title, None);
+            let show = episode_identity(title, 1, 1);
+            for identity in [movie, show] {
+                if let Some(target) = assist_rename_target("x/file.mkv", &identity) {
+                    assert!(
+                        target.split('/').all(|segment| segment != ".." && !segment.starts_with('.')),
+                        "unsafe target {target:?} for {title:?}"
+                    );
+                    assert!(!target.contains('\n'));
+                }
+            }
+        }
+        assert_eq!(assist_rename_target("x/file.mkv", &movie_identity("..", None)), None);
+    }
+
+    #[tokio::test]
+    async fn plan_assist_renames_moves_video_and_subtitles_and_never_overwrites() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(root, "fws/fws.s01e01.mkv", "one");
+        write(root, "fws/fws.s01e01.en.srt", "subs");
+        write(root, "fws/fws.s01e02.mkv", "two");
+        // A different file already sits where episode 2 would go.
+        write(
+            root,
+            "The Falcon and the Winter Soldier/Season 01/The Falcon and the Winter Soldier - S01E02.mkv",
+            "different",
+        );
+        let renames = vec![
+            AssistRename {
+                from: "fws/fws.s01e01.mkv".into(),
+                identity: episode_identity("The Falcon and the Winter Soldier", 1, 1),
+            },
+            AssistRename {
+                from: "fws/fws.s01e02.mkv".into(),
+                identity: episode_identity("The Falcon and the Winter Soldier", 1, 2),
+            },
+        ];
+        let plan = plan_assist_renames("Shows", root, None, &renames).await;
+        assert_eq!(plan.root_label, "Shows");
+        assert!(plan.items.iter().all(|item| item.ai_assisted && item.destination_root_label.is_none()));
+        let first = plan.items.iter().find(|item| item.from == "fws/fws.s01e01.mkv").unwrap();
+        assert_eq!(
+            first.to,
+            "The Falcon and the Winter Soldier/Season 01/The Falcon and the Winter Soldier - S01E01.mkv"
+        );
+        assert!(first.conflict.is_none());
+        let sub = plan.items.iter().find(|item| item.from == "fws/fws.s01e01.en.srt").unwrap();
+        assert_eq!(
+            sub.to,
+            "The Falcon and the Winter Soldier/Season 01/The Falcon and the Winter Soldier - S01E01.en.srt"
+        );
+        let second = plan.items.iter().find(|item| item.from == "fws/fws.s01e02.mkv").unwrap();
+        assert_ne!(
+            second.to,
+            "The Falcon and the Winter Soldier/Season 01/The Falcon and the Winter Soldier - S01E02.mkv",
+            "an occupied destination must never be targeted"
+        );
+        // Nothing on disk changed while planning.
+        assert!(root.join("fws/fws.s01e01.mkv").exists());
+    }
+
+    #[tokio::test]
+    async fn plan_assist_renames_targets_the_destination_library_for_a_misfiled_show() {
+        let dir = tempfile::tempdir().unwrap();
+        let movies = dir.path().join("movies");
+        let shows = dir.path().join("shows");
+        write(&movies, "Falcon Winter Soldier/episode1.mkv", "one");
+        fs::create_dir_all(&shows).unwrap();
+        let renames = vec![AssistRename {
+            from: "Falcon Winter Soldier/episode1.mkv".into(),
+            identity: episode_identity("The Falcon and the Winter Soldier", 1, 1),
+        }];
+        let plan = plan_assist_renames("Movies", &movies, Some(("Shows", shows.as_path())), &renames).await;
+        assert_eq!(plan.items.len(), 1);
+        assert_eq!(plan.items[0].destination_root_label.as_deref(), Some("Shows"));
+        let outcome = apply_plan_with_roots(
+            &movies,
+            &HashMap::from([("Shows".to_string(), shows.clone())]),
+            &plan.items,
+        );
+        assert_eq!(outcome.applied, 1);
+        assert!(shows
+            .join("The Falcon and the Winter Soldier/Season 01/The Falcon and the Winter Soldier - S01E01.mkv")
+            .exists());
     }
 
     /// Writes the smallest valid FLAC lofty will parse — a `STREAMINFO`

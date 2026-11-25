@@ -19,6 +19,8 @@ use crate::{
     add_media_root, ai_reorganize_scan, ai_scrape_assist, approve_ai_reorg_plan, get_settings,
     list_ai_reorg_plans, list_reorg_plan_items, list_scrape_issues, reject_ai_reorg_plan,
     run_scrape_assist_now, set_ai_provider_api_key, set_ai_provider_enabled,
+    ai_scrape_assist_all, apply_scrape_assist_suggestions, list_scrape_assist_suggestions,
+    plan_scrape_assist_renames, set_tmdb_api_key,
     set_ai_provider_model, test_ai_provider,
 };
 use tauri::Manager;
@@ -128,6 +130,43 @@ async fn run_scrape_assist_now_refuses_to_run_without_an_enabled_ai_provider() {
         .await
         .expect_err("scan assist should refuse to run with no provider enabled");
     assert!(error.contains("Enable"));
+}
+
+#[tokio::test]
+async fn ai_scrape_assist_all_refuses_to_run_without_an_enabled_ai_provider() {
+    // Issue #494: the batch "Ask AI for all" has the same gate as the
+    // per-row "Ask AI".
+    let test_app = test_app();
+    let app = test_app.handle();
+
+    let error = ai_scrape_assist_all(app.clone(), app.state(), None)
+        .await
+        .expect_err("batch scan assist should refuse to run with no provider enabled");
+    assert!(error.contains("Enable"));
+}
+
+#[tokio::test]
+async fn scrape_assist_apply_and_rename_only_act_on_stored_ai_suggestions() {
+    // Issue #494: the frontend only ever sends entry keys; with no stored
+    // suggestion there is nothing to apply and nothing to rename, and no
+    // reorganize plan is created.
+    let (test_app, _root_dir) = test_app_with_media_root().await;
+    let app = test_app.handle();
+    set_tmdb_api_key(app.clone(), "test-key".to_string()).await.expect("save TMDb key");
+
+    assert!(list_scrape_assist_suggestions(app.state()).await.unwrap().is_empty());
+
+    let outcome = apply_scrape_assist_suggestions(app.clone(), app.state(), vec!["0123abcd".to_string()])
+        .await
+        .expect("apply should report per-entry outcomes");
+    assert_eq!(outcome.applied, 0);
+    assert_eq!(outcome.skipped, 1);
+
+    let error = plan_scrape_assist_renames(app.clone(), app.state(), vec!["0123abcd".to_string()])
+        .await
+        .expect_err("no stored rename suggestion means no plan");
+    assert!(error.contains("ask AI first"));
+    assert!(list_ai_reorg_plans(app.state()).await.unwrap().is_empty());
 }
 
 #[tokio::test]

@@ -219,7 +219,7 @@ const INFO_TOPICS = {
   },
   "scan-scrape-assist": {
     icon: "bi-search-heart-fill", title: "Scan & scrape assist",
-    body: "When a scrape can't find a confident TMDb match, AI suggests a cleaner title from the filename and retries the lookup. \"Scan and update library\" resolves what it can automatically as part of every scan — no per-item approval. Use \"Check now\" to resolve currently-known issues on demand without a full rescan; anything still unresolved stays listed below, grouped by Movies/Shows/Music, for manual review.",
+    body: "Titles the last scan couldn't match on TMDb are listed in one table with their type (movie, TV episode, music). Filter by type or search, then click \"Ask AI for all\": AI identifies every listed file in one go, and each answer is checked against TMDb's movie and TV catalogs. \"Apply\" / \"Apply all matches\" fixes the metadata. AI also proposes a clean name for the file and its movie, show, and season folders — \"Rename\" / \"Review renames\" turns those into a plan on the Reorganize media tab, where nothing moves until you approve it (and you can undo it). A TV episode filed under Movies (or the reverse) is flagged and fixed by the rename. \"Auto-fix all\" asks AI and applies every same-type match without per-item review; renames are never automatic.",
   },
   "reorganize-media": {
     icon: "bi-folder-symlink-fill", title: "Reorganize media",

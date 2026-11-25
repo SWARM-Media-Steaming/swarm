@@ -371,3 +371,17 @@ public entry points for two different triggers:
 Add a third entry point the same way (a new private call into
 `reportClientError` with a distinct `message`) rather than overloading
 either existing function with a new meaning.
+
+## Pause overlay pickers and recommendation focus (#497)
+
+- Audio Boost, Audio language, and Subtitles on the pause overlay are
+  `PauseDropdown`s, not rows of chips: one full-width button showing the
+  current value; OK expands the options inline beneath it with focus on the
+  current choice; choosing an option or pressing Back collapses it and
+  returns focus to the button. Use the same dropdown for any new multi-value
+  pause setting. Option test tags (`*_OPTION_PREFIX + index`) only exist
+  while the dropdown is open — UAT tests must select the picker tag first.
+- "More like this" posters must make focus unmistakable on the dark scrim:
+  thick `SwarmAccent` focused border, accent glow, 1.12x lift, unfocused
+  posters dimmed, and `LazyRow` content padding so the lift is not clipped.
+  A scale change alone is not visible enough.

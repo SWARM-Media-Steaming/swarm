@@ -115,7 +115,13 @@ import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy.LoadErrorInfo
 import androidx.media3.ui.PlayerView
 import androidx.tv.material3.Button
 import androidx.tv.material3.Card
+import androidx.tv.material3.Border
 import androidx.tv.material3.CardDefaults
+import androidx.tv.material3.Glow
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.graphicsLayer
 import app.swarm.tv.app.PausePlayerWhenAppBackgrounded
 import app.swarm.tv.app.data.AndroidAudioLanguagePreferenceStore
 import app.swarm.tv.app.data.AndroidAudioBoostStore
@@ -128,6 +134,7 @@ import app.swarm.tv.app.ui.components.SelectableChip
 import app.swarm.tv.app.ui.components.ProblemReportPicker
 import app.swarm.tv.app.ui.components.swarmActionButtonColors
 import app.swarm.tv.app.ui.theme.SwarmAccent
+import app.swarm.tv.app.ui.theme.SwarmBorder
 import app.swarm.tv.app.ui.theme.SwarmAccentHot
 import app.swarm.tv.app.ui.theme.SwarmMuted
 import app.swarm.tv.app.ui.theme.SwarmSurface
@@ -1953,8 +1960,10 @@ private fun PauseOverlay(
                 Text("More like this", color = SwarmText, fontSize = 17.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(8.dp))
                 LazyRow(
-                    modifier = Modifier.fillMaxWidth().height(162.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.fillMaxWidth().height(186.dp),
+                    // Room for the focused card's lift and border so it isn't clipped.
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
                 ) {
                     items(recommendations, key = { it.fingerprint }) { recommendation ->
                         PauseRecommendationCard(
@@ -1980,18 +1989,19 @@ private fun PauseOverlay(
 
 @Composable
 private fun AudioBoostPicker(level: Int, status: String, onSelect: (Int) -> Unit) {
-    Text("Audio Boost", color = SwarmMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-    Spacer(Modifier.height(5.dp))
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        for (option in AndroidAudioBoostStore.LEVELS) {
-            SelectableChip(if (option == 0) "Off" else "+${option} dB", isSelected = option == level, onClick = { onSelect(option) })
-        }
-    }
+    val levels = AndroidAudioBoostStore.LEVELS
+    PauseDropdown(
+        heading = "Audio Boost",
+        options = levels.map { option -> (if (option == 0) "Off" else "+${option} dB") to (option == level) },
+        emptyLabel = "Off",
+        onSelect = { index -> onSelect(levels[index]) },
+        testTag = UatTestTags.PAUSE_AUDIO_BOOST_PICKER,
+        optionTagPrefix = UatTestTags.PAUSE_AUDIO_BOOST_OPTION_PREFIX,
+    )
     Spacer(Modifier.height(4.dp))
     Text(status, color = if (status.startsWith("Active")) SwarmAccent else SwarmMuted, fontSize = 11.sp, maxLines = 2)
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun TrackPickerBlock(
     heading: String,
@@ -2001,24 +2011,77 @@ private fun TrackPickerBlock(
     testTag: String? = null,
     optionTagPrefix: String? = null,
 ) {
+    PauseDropdown(
+        heading = heading,
+        options = choices.map { it.label to it.isSelected },
+        emptyLabel = emptyLabel,
+        onSelect = { index -> choices.getOrNull(index)?.let(onSelect) },
+        testTag = testTag,
+        optionTagPrefix = optionTagPrefix,
+    )
+}
+
+/**
+ * A D-pad dropdown for the pause overlay (issue #497): one button showing the
+ * current value; pressing it expands the full option list inline beneath it
+ * (tv-material3 has no popup menu, and an inline list keeps focus traversal
+ * predictable). Choosing an option, or Back, collapses it and returns focus
+ * to the button. [testTag] tags the button; options are tagged
+ * `optionTagPrefix + index` and only exist while the list is open.
+ */
+@Composable
+private fun PauseDropdown(
+    heading: String,
+    options: List<Pair<String, Boolean>>,
+    emptyLabel: String,
+    onSelect: (Int) -> Unit,
+    testTag: String? = null,
+    optionTagPrefix: String? = null,
+) {
     Text(heading, color = SwarmMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
     Spacer(Modifier.height(5.dp))
-    if (choices.isEmpty()) {
+    if (options.isEmpty()) {
         Text(emptyLabel, color = SwarmText, fontSize = 13.sp, modifier = if (testTag != null) Modifier.testTag(testTag) else Modifier)
         return
     }
-    FlowRow(
-        modifier = if (testTag != null) Modifier.testTag(testTag) else Modifier,
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        for ((index, choice) in choices.withIndex()) {
-            SelectableChip(
-                choice.label,
-                isSelected = choice.isSelected,
-                onClick = { onSelect(choice) },
-                modifier = if (optionTagPrefix != null) Modifier.testTag(optionTagPrefix + index) else Modifier,
-            )
+    var expanded by remember { mutableStateOf(false) }
+    val buttonFocus = remember { FocusRequester() }
+    val selectedFocus = remember { FocusRequester() }
+    val selectedIndex = options.indexOfFirst { it.second }.takeIf { it >= 0 } ?: 0
+    BackHandler(enabled = expanded) {
+        expanded = false
+        runCatching { buttonFocus.requestFocus() }
+    }
+    LaunchedEffect(expanded) {
+        if (expanded) runCatching { selectedFocus.requestFocus() }
+    }
+    SelectableChip(
+        "${options.getOrNull(selectedIndex)?.first ?: emptyLabel}  ${if (expanded) "\u25B4" else "\u25BE"}",
+        isSelected = false,
+        onClick = { expanded = !expanded },
+        focusRequester = buttonFocus,
+        modifier = Modifier.fillMaxWidth().then(if (testTag != null) Modifier.testTag(testTag) else Modifier),
+    )
+    if (expanded) {
+        Spacer(Modifier.height(4.dp))
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(start = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            for ((index, option) in options.withIndex()) {
+                SelectableChip(
+                    (if (option.second) "\u2713 " else "") + option.first,
+                    isSelected = option.second,
+                    onClick = {
+                        onSelect(index)
+                        expanded = false
+                        runCatching { buttonFocus.requestFocus() }
+                    },
+                    focusRequester = if (index == selectedIndex) selectedFocus else null,
+                    modifier = Modifier.fillMaxWidth()
+                        .then(if (optionTagPrefix != null) Modifier.testTag(optionTagPrefix + index) else Modifier),
+                )
+            }
         }
     }
 }
@@ -2032,11 +2095,22 @@ private fun TrackPickerBlock(
  * does everywhere else artwork is shown without a caption. */
 @Composable
 private fun PauseRecommendationCard(entry: MergedEntry, artworkUrl: String?, onClick: () -> Unit) {
+    var focused by remember { mutableStateOf(false) }
     Card(
         onClick = onClick,
         colors = CardDefaults.colors(containerColor = SwarmSurface),
-        scale = CardDefaults.scale(scale = 1f, focusedScale = 1.06f, pressedScale = 0.98f),
-        modifier = Modifier.width(108.dp),
+        // Issue #497: a 1.06x scale alone was invisible on the dark pause
+        // scrim, so the focused poster also gets a thick accent border, a
+        // stronger lift, and the unfocused ones are dimmed.
+        scale = CardDefaults.scale(scale = 1f, focusedScale = 1.12f, pressedScale = 1.02f),
+        border = CardDefaults.border(
+            border = Border(BorderStroke(1.dp, SwarmBorder.copy(alpha = 0.6f)), shape = RoundedCornerShape(6.dp)),
+            focusedBorder = Border(BorderStroke(3.dp, SwarmAccent), shape = RoundedCornerShape(6.dp)),
+            pressedBorder = Border(BorderStroke(3.dp, SwarmAccentHot), shape = RoundedCornerShape(6.dp)),
+        ),
+        glow = CardDefaults.glow(focusedGlow = Glow(elevationColor = SwarmAccent, elevation = 12.dp)),
+        shape = CardDefaults.shape(RoundedCornerShape(6.dp)),
+        modifier = Modifier.width(108.dp).onFocusChanged { focused = it.hasFocus }.graphicsLayer { alpha = if (focused) 1f else 0.72f },
     ) {
         ArtworkImage(
             label = pauseRecommendationTitle(entry),

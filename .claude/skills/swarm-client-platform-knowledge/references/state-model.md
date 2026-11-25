@@ -84,6 +84,9 @@ modal, a testing-mode banner (debug builds).
 - Season/episode-list "Resume" button is independent of the capped Continue-Watching row —
   it always resolves the single most-recently-touched unfinished episode *within that
   show*, even if a chronologically later episode in the same show was already watched.
+  Pressing it starts playback immediately from the saved position (a plain play, not the
+  paused Continue-Watching start) — the viewer already pressed Resume once, so never make
+  them press a second Resume on the preparing cover or pause overlay (#496).
 
 ## Kid mode
 

@@ -181,7 +181,8 @@ alpha stops to reuse.
 `SeasonScreen` is one screen with two panes, not a season grid that
 drills into an episode grid. Left (~300dp): poster, show title
 (`SEASON_SCREEN_SHOW_TITLE`), year/season-count line, Resume/Watchlist
-buttons, then a `LazyColumn` of season rows (`SEASON_CARD_PREFIX`) in
+buttons (Resume plays the unfinished episode immediately via `onPlay`, never
+`onPlayPaused` — one press, no second Resume cover, #496), then a `LazyColumn` of season rows (`SEASON_CARD_PREFIX`) in
 `seasonPaneOrder` — real seasons ascending, then Specials (season 0),
 then Unnumbered. Right: the highlighted season's episodes as rows of a
 16:9 thumbnail (with an accent watch-progress bar) beside label

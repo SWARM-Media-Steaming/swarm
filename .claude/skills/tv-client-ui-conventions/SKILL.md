@@ -279,6 +279,24 @@ screen does not accidentally create another ExoPlayer or leave an abandoned
 transcode alive. Every close, skip, cancellation, and runtime error path must
 release the previous player before negotiating another stream.
 
+## Rewind/fast-forward scrubbing (#498)
+
+Every rewind/fast-forward input — D-pad left/right on the bare playing
+surface, the remote's dedicated transport keys, and Media3's native
+controller buttons — moves by `PLAYBACK_SEEK_STEP_MS` (15 s). Holding a
+button keeps stepping 15 s per key-repeat, paced by
+`SCRUB_REPEAT_INTERVAL_MS` so Android's ~50 ms repeat cannot fly through a
+whole movie. Every step must still go through `coalescedSeekTargetMs` and
+the single quiet-window commit (#443) — never call `seekTo` per press.
+
+While a burst is pending, `PlayerScrub.kt`'s `SeekScrubOverlay` shows the
+target on a bottom timeline bar (elapsed / remaining) and lingers
+`SCRUB_BAR_LINGER_MS` after the commit. For direct-play streams,
+`ScrubPreviewFrames` decodes a small scene thumbnail at the target on one
+background thread (`MediaMetadataRetriever`, closest keyframe); HLS has no
+single file to decode from, so it shows the bar and time bubble without a
+picture. Preview failures must stay silent — the bar works either way.
+
 ## Keep the TV awake only during active playback
 
 Use the activity window's `FLAG_KEEP_SCREEN_ON`, driven centrally from the

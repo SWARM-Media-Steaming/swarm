@@ -297,6 +297,17 @@ background thread (`MediaMetadataRetriever`, closest keyframe); HLS has no
 single file to decode from, so it shows the bar and time bubble without a
 picture. Preview failures must stay silent — the bar works either way.
 
+The retriever opens its own HTTP connection outside Media3, so it may only
+ever be pointed at the app's own peer loopback proxy (#508):
+`isLoopbackProxyStreamUrl` accepts nothing but
+`http://127.0.0.1:<port>/<serverId>/<path>` (no user-info, fragment,
+`localhost`/IPv6/alternate-loopback spellings, or `.`/`..` segments), and
+`ScrubPreviewFrames` re-checks it before opening. Don't widen that to other
+hosts or https. Below API 27 there is no scaled decode, so the fallback
+decodes full frames only when the stream reports dimensions at or under
+1080p (`scrubPreviewFullFrameAllowed`); larger or unknown sizes get no
+picture rather than a ~33 MB bitmap per preview on a low-memory Fire TV.
+
 ## Keep the TV awake only during active playback
 
 Use the activity window's `FLAG_KEEP_SCREEN_ON`, driven centrally from the

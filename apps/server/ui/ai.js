@@ -125,121 +125,319 @@ function renderAiProviders(settings, tools) {
   if (refreshBtn) refreshBtn.addEventListener("click", () => refreshAi(true));
 }
 
+// ---- AI tab: section tabs (issue #494) -----------------------------------------
+//
+// The AI page used to stack providers, scan assist, reorganize, and MCP in
+// one long column. Each is now a section behind the #aiSectionTabs pill row:
+// panels carry `data-ai-section="<name>"`, buttons carry
+// `data-ai-section-target="<name>"`, and only the active section is shown.
+let aiActiveSection = "providers";
+
+function showAiSection(name) {
+  aiActiveSection = name;
+  document.querySelectorAll("#aiSectionTabs [data-ai-section-target]").forEach(btn => {
+    const active = btn.dataset.aiSectionTarget === name;
+    btn.classList.toggle("tab-active", active);
+    btn.setAttribute("aria-selected", String(active));
+  });
+  document.querySelectorAll("#tabPanel-ai [data-ai-section]").forEach(panel => {
+    panel.classList.toggle("d-none", panel.dataset.aiSection !== name);
+  });
+}
+
+document.querySelectorAll("#aiSectionTabs [data-ai-section-target]").forEach(btn => {
+  btn.addEventListener("click", () => showAiSection(btn.dataset.aiSectionTarget));
+});
+
 // ---- AI tab: scan & scrape assist -------------------------------------------
 //
 // Offers AI help only for entries the last `run_scrape` (or library
 // maintenance) pass actually failed to match — see `list_scrape_issues` in
 // gui.rs, backed by `AppState::last_scrape_issues` (in-memory, current
-// session only). Applying a suggestion reuses the existing `rescrape_entry`
-// command with the AI-confirmed TMDb id, exactly like a manual "fix match"
-// would — this feature only ever proposes, the user always clicks Apply.
+// session only).
 //
-// No enable toggle (issue #296): this is always on, gated only by an
-// enabled+ready AI provider (see the "Enabled AI tools" panel above) and
-// the "Ask AI"/"Check now" click itself. Issues render as a grid grouped by
-// `issue.kind` (movie/episode/track) instead of one jumbled list.
+// Issue #494: findings render as one compact, fixed-height table with a
+// Type column, filtered by a type tab row and a search box, instead of one
+// card per finding. "Ask AI for all" identifies every finding in batched AI
+// requests (`ai_scrape_assist_all`), not one request per row. Each
+// suggestion is confirmed on TMDb (movie and TV catalogs both, so a show
+// filed under Movies still matches) and carries:
+//   - a metadata match, applied through `apply_scrape_assist_suggestions`
+//     (the same rescrape path as a manual TMDb URL fix), and
+//   - a canonical rename (movie/show/season folders and file name), turned
+//     into an ordinary reviewable reorganize plan by
+//     `plan_scrape_assist_renames` — nothing is moved until that plan is
+//     approved on the Reorganize media tab, and it can be undone there.
+// Suggestions live server-side (keyed by entry key); this page only ever
+// sends entry keys back, never paths or TMDb ids of its own. Nothing is
+// applied without a click: "Auto-fix all" is the explicit opt-in to apply
+// every same-type match in one go (renames are never automatic).
 
-const SCRAPE_ASSIST_GROUPS = [
+const SCRAPE_ASSIST_TYPES = [
+  { kind: "all", label: "All" },
   { kind: "movie", label: "Movies" },
   { kind: "episode", label: "Shows" },
   { kind: "track", label: "Music" },
 ];
+const SCRAPE_ASSIST_TYPE_LABELS = { movie: "Movie", episode: "TV episode", track: "Music track" };
 
-function renderScrapeAssistIssues(issues) {
-  const wrap = document.getElementById("scrapeAssistWrap");
-  wrap.classList.toggle("d-none", issues.length === 0);
-  const groups = document.getElementById("scrapeAssistGroups");
-  groups.innerHTML = SCRAPE_ASSIST_GROUPS
-    .map(group => {
-      const groupIssues = issues.filter(issue => issue.kind === group.kind);
-      if (groupIssues.length === 0) return "";
-      const cards = groupIssues
-        .map(
-          issue => `
-      <div class="scrape-assist-card service-card" data-entry-key="${esc(issue.entry_key)}">
-        <div class="scrape-assist-card-title">${esc(issue.title)}</div>
-        <div class="scrape-assist-card-reason">${esc(issue.reason)}</div>
-        <button class="secondary-button compact ask-ai-btn"><i class="bi bi-stars"></i>Ask AI</button>
-        <div class="ai-suggestion muted"></div>
-      </div>`
-        )
-        .join("");
-      return `
-    <div class="scrape-assist-group">
-      <h3 class="review-heading">${esc(group.label)} <span class="muted">(${groupIssues.length})</span></h3>
-      <div class="scrape-assist-grid">${cards}</div>
-    </div>`;
+let scrapeAssistIssues = [];
+let scrapeAssistSuggestions = {}; // entry_key -> suggestion
+let scrapeAssistErrors = {}; // entry_key -> last AI/TMDb error text
+let scrapeAssistPending = new Set(); // entry keys with an AI request in flight
+let scrapeAssistType = "all";
+let scrapeAssistQuery = "";
+let scrapeAssistBusy = false;
+let scrapeAssistProgressToast = null;
+
+function visibleScrapeAssistIssues() {
+  const query = scrapeAssistQuery.trim().toLowerCase();
+  return scrapeAssistIssues.filter(issue => {
+    if (scrapeAssistType !== "all" && issue.kind !== scrapeAssistType) return false;
+    if (!query) return true;
+    const suggestion = scrapeAssistSuggestions[issue.entry_key];
+    return [issue.title, issue.reason, suggestion?.current_path, suggestion?.tmdb_title, suggestion?.rename_to]
+      .some(text => String(text || "").toLowerCase().includes(query));
+  });
+}
+
+function renderScrapeAssistTypeTabs() {
+  const wrap = document.getElementById("scrapeAssistTypeTabs");
+  const tabs = SCRAPE_ASSIST_TYPES.filter(
+    type => type.kind === "all" || scrapeAssistIssues.some(issue => issue.kind === type.kind)
+  );
+  if (!tabs.some(type => type.kind === scrapeAssistType)) scrapeAssistType = "all";
+  wrap.innerHTML = tabs
+    .map(type => {
+      const count = type.kind === "all"
+        ? scrapeAssistIssues.length
+        : scrapeAssistIssues.filter(issue => issue.kind === type.kind).length;
+      const active = type.kind === scrapeAssistType;
+      return `<button type="button" class="pill-tab${active ? " tab-active" : ""}" data-kind="${esc(type.kind)}" role="tab" aria-selected="${active}">${esc(type.label)} <span class="muted">(${count})</span></button>`;
     })
     .join("");
-
-  groups.querySelectorAll(".ask-ai-btn").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      const card = btn.closest(".scrape-assist-card");
-      const entryKey = card.dataset.entryKey;
-      const suggestionBox = card.querySelector(".ai-suggestion");
-      btn.disabled = true;
-      suggestionBox.textContent = "Asking AI…";
-      const progressToast = showToast("Asking AI for a media match…", "progress", { duration: 0 });
-      try {
-        const suggestion = await invoke("ai_scrape_assist", { entryKey });
-        suggestionBox.innerHTML = `Suggested: <strong>${esc(suggestion.tmdb_title)}</strong>${
-          suggestion.suggested_year ? ` (${esc(String(suggestion.suggested_year))})` : ""
-        } <button class="secondary-button compact apply-ai-suggestion-btn"><i class="bi bi-check-lg"></i>Apply</button>`;
-        suggestionBox.querySelector(".apply-ai-suggestion-btn").addEventListener("click", async () => {
-          try {
-            await invoke("rescrape_entry", { entryKey, tmdbUrl: suggestion.tmdb_url });
-            showToast("Applied.", "success");
-            await refreshAi();
-            await refreshLibrary();
-          } catch (err) {
-            showToast(String(err), "error");
-          }
-        });
-      } catch (err) {
-        suggestionBox.textContent = String(err);
-        showToast(String(err), "error");
-      } finally {
-        btn.disabled = false;
-        dismissToast(progressToast);
-      }
+  wrap.querySelectorAll(".pill-tab").forEach(btn => {
+    btn.addEventListener("click", () => {
+      scrapeAssistType = btn.dataset.kind;
+      renderScrapeAssist();
     });
   });
 }
 
-async function refreshScanAssist(settings) {
-  const status = document.getElementById("aiScanAssistStatus");
-  const hasProvider = settings.ai_providers.some(p => providerReady(settings, p.id));
-  status.textContent = "No enabled AI tool is signed in with at least 10% usage remaining.";
-  status.classList.toggle("d-none", hasProvider);
+function scrapeAssistSuggestionCell(issue) {
+  if (scrapeAssistPending.has(issue.entry_key)) return '<span class="muted">Asking AI…</span>';
+  const suggestion = scrapeAssistSuggestions[issue.entry_key];
+  if (!suggestion) {
+    const error = scrapeAssistErrors[issue.entry_key];
+    return error ? `<span class="scrape-assist-warn">${esc(error)}</span>` : '<span class="muted">—</span>';
+  }
+  const year = suggestion.suggested_year ? ` (${esc(String(suggestion.suggested_year))})` : "";
+  const kind = suggestion.media_type === "tv" ? "TV show" : "Movie";
+  const mismatch = suggestion.kind_mismatch
+    ? `<br><span class="scrape-assist-warn"><i class="bi bi-exclamation-triangle-fill"></i> Actually a ${kind.toLowerCase()} — rename to fix</span>`
+    : "";
+  return `<strong>${esc(suggestion.tmdb_title)}</strong>${year} <span class="muted">· ${kind}</span>${mismatch}`;
+}
 
-  let issues = [];
+function scrapeAssistRenameCell(issue) {
+  const suggestion = scrapeAssistSuggestions[issue.entry_key];
+  if (!suggestion) return '<span class="muted">—</span>';
+  if (!suggestion.rename_to) return `<span class="muted">${esc(suggestion.rename_note || "—")}</span>`;
+  return `<span class="mono">${esc(suggestion.rename_root_label)}/${esc(suggestion.rename_to)}</span>`;
+}
+
+function renderScrapeAssist() {
+  const wrap = document.getElementById("scrapeAssistWrap");
+  const empty = document.getElementById("scrapeAssistEmpty");
+  const tabCount = document.getElementById("aiScrapeTabCount");
+  wrap.classList.toggle("d-none", scrapeAssistIssues.length === 0);
+  empty.classList.toggle("d-none", scrapeAssistIssues.length > 0);
+  tabCount.textContent = scrapeAssistIssues.length ? `(${scrapeAssistIssues.length})` : "";
+  renderScrapeAssistTypeTabs();
+
+  const rows = visibleScrapeAssistIssues();
+  const tbody = document.getElementById("scrapeAssistRows");
+  tbody.innerHTML = rows.length
+    ? rows
+        .map(issue => {
+          const suggestion = scrapeAssistSuggestions[issue.entry_key];
+          const pending = scrapeAssistPending.has(issue.entry_key) || scrapeAssistBusy;
+          const isTrack = issue.kind === "track";
+          const path = suggestion?.current_path;
+          return `
+      <tr data-entry-key="${esc(issue.entry_key)}">
+        <td><span class="scrape-assist-type scrape-assist-type-${esc(issue.kind)}">${esc(SCRAPE_ASSIST_TYPE_LABELS[issue.kind] || issue.kind)}</span></td>
+        <td><span class="scrape-assist-title">${esc(issue.title)}</span>${path ? `<span class="scrape-assist-path mono muted" title="${esc(path)}">${esc(path)}</span>` : ""}</td>
+        <td class="scrape-assist-reason">${esc(issue.reason)}</td>
+        <td>${scrapeAssistSuggestionCell(issue)}</td>
+        <td class="scrape-assist-rename">${scrapeAssistRenameCell(issue)}</td>
+        <td class="scrape-assist-actions">
+          <button class="secondary-button compact scrape-assist-ask" ${pending || isTrack ? "disabled" : ""} title="${isTrack ? "AI assist only helps with movies and TV episodes" : "Ask AI about this file"}"><i class="bi bi-stars"></i>${suggestion ? "Re-ask" : "Ask AI"}</button>
+          <button class="secondary-button compact scrape-assist-apply" ${suggestion?.can_apply_metadata && !pending ? "" : "disabled"} title="Apply the TMDb match"><i class="bi bi-check-lg"></i>Apply</button>
+          <button class="secondary-button compact scrape-assist-rename-btn" ${suggestion?.rename_to && !pending ? "" : "disabled"} title="Review this rename on the Reorganize media tab"><i class="bi bi-pencil-square"></i>Rename</button>
+        </td>
+      </tr>`;
+        })
+        .join("")
+    : `<tr><td colspan="6" class="muted">No findings match this filter.</td></tr>`;
+
+  const withSuggestion = rows.filter(issue => scrapeAssistSuggestions[issue.entry_key]);
+  const applicable = withSuggestion.filter(issue => scrapeAssistSuggestions[issue.entry_key].can_apply_metadata);
+  const renamable = withSuggestion.filter(issue => scrapeAssistSuggestions[issue.entry_key].rename_to);
+  const askable = rows.filter(issue => issue.kind !== "track");
+  document.getElementById("askAiAllBtn").disabled = scrapeAssistBusy || askable.length === 0;
+  document.getElementById("applyAllSuggestionsBtn").disabled = scrapeAssistBusy || applicable.length === 0;
+  document.getElementById("planAllRenamesBtn").disabled = scrapeAssistBusy || renamable.length === 0;
+  document.getElementById("runScrapeAssistNowBtn").disabled = scrapeAssistBusy || scrapeAssistIssues.length === 0;
+  document.getElementById("scrapeAssistSummary").textContent =
+    `Showing ${rows.length} of ${scrapeAssistIssues.length} finding(s) · ${withSuggestion.length} with an AI suggestion · ${applicable.length} ready to apply · ${renamable.length} rename(s) suggested`;
+}
+
+function storeScrapeAssistResults(results) {
+  for (const result of results) {
+    if (result.suggestion) {
+      scrapeAssistSuggestions[result.entry_key] = result.suggestion;
+      delete scrapeAssistErrors[result.entry_key];
+    } else {
+      delete scrapeAssistSuggestions[result.entry_key];
+      scrapeAssistErrors[result.entry_key] = result.error || "AI could not identify this file.";
+    }
+  }
+}
+
+// Wraps a scan-assist action so only one runs at a time and every row's
+// buttons reflect that while it does.
+async function runScrapeAssistAction(message, action) {
+  if (scrapeAssistBusy) return;
+  scrapeAssistBusy = true;
+  renderScrapeAssist();
+  const progressToast = showToast(message, "progress", { duration: 0 });
+  scrapeAssistProgressToast = progressToast;
   try {
-    issues = await invoke("list_scrape_issues");
+    await action();
+  } catch (err) {
+    showToast(String(err), "error");
+  } finally {
+    scrapeAssistBusy = false;
+    scrapeAssistProgressToast = null;
+    dismissToast(progressToast);
+    renderScrapeAssist();
+  }
+}
+
+listen("ai-scrape-assist-progress", ({ payload }) => {
+  const messageEl = scrapeAssistProgressToast?.querySelector(".toast-message");
+  if (messageEl) messageEl.textContent = `Asking AI… ${payload.processed} of ${payload.total} file(s) identified`;
+});
+
+async function askAiForEntries(entryKeys) {
+  const results = await invoke("ai_scrape_assist_all", { entryKeys });
+  storeScrapeAssistResults(results);
+  const found = results.filter(result => result.suggestion).length;
+  showToast(`AI identified ${found} of ${results.length} file(s).`, found ? "success" : "warning");
+}
+
+async function applyScrapeAssistSuggestions(entryKeys) {
+  const outcome = await invoke("apply_scrape_assist_suggestions", { entryKeys });
+  const message = `Applied ${outcome.applied} match(es)${outcome.skipped ? `, ${outcome.skipped} skipped` : ""}.`;
+  showToast(outcome.errors.length ? `${message} ${outcome.errors[0]}` : message, outcome.errors.length ? "warning" : "success");
+  await refreshScanAssist();
+  await refreshLibrary();
+}
+
+async function planScrapeAssistRenames(entryKeys) {
+  const plans = await invoke("plan_scrape_assist_renames", { entryKeys });
+  const moves = plans.reduce((total, plan) => total + plan.item_count, 0);
+  showToast(`Rename plan ready: ${moves} file(s) to review on the Reorganize media tab.`, "success");
+  const settings = await invoke("get_settings");
+  await refreshReorganize(settings);
+  showAiSection("reorganize");
+}
+
+document.getElementById("scrapeAssistRows").addEventListener("click", event => {
+  const btn = event.target.closest("button");
+  const row = btn?.closest("tr[data-entry-key]");
+  if (!btn || !row || btn.disabled) return;
+  const entryKey = row.dataset.entryKey;
+  if (btn.classList.contains("scrape-assist-ask")) {
+    scrapeAssistPending.add(entryKey);
+    renderScrapeAssist();
+    invoke("ai_scrape_assist", { entryKey })
+      .then(suggestion => storeScrapeAssistResults([{ entry_key: entryKey, suggestion }]))
+      .catch(err => {
+        storeScrapeAssistResults([{ entry_key: entryKey, suggestion: null, error: String(err) }]);
+        showToast(String(err), "error");
+      })
+      .finally(() => {
+        scrapeAssistPending.delete(entryKey);
+        renderScrapeAssist();
+      });
+  } else if (btn.classList.contains("scrape-assist-apply")) {
+    runScrapeAssistAction("Applying the TMDb match…", () => applyScrapeAssistSuggestions([entryKey]));
+  } else if (btn.classList.contains("scrape-assist-rename-btn")) {
+    runScrapeAssistAction("Preparing the rename for review…", () => planScrapeAssistRenames([entryKey]));
+  }
+});
+
+document.getElementById("askAiAllBtn").addEventListener("click", () => {
+  const entryKeys = visibleScrapeAssistIssues()
+    .filter(issue => issue.kind !== "track")
+    .map(issue => issue.entry_key);
+  runScrapeAssistAction(`Asking AI to identify ${entryKeys.length} file(s) at once…`, () => askAiForEntries(entryKeys));
+});
+
+document.getElementById("applyAllSuggestionsBtn").addEventListener("click", () => {
+  const entryKeys = visibleScrapeAssistIssues()
+    .filter(issue => scrapeAssistSuggestions[issue.entry_key]?.can_apply_metadata)
+    .map(issue => issue.entry_key);
+  runScrapeAssistAction(`Applying ${entryKeys.length} TMDb match(es)…`, () => applyScrapeAssistSuggestions(entryKeys));
+});
+
+document.getElementById("planAllRenamesBtn").addEventListener("click", () => {
+  const entryKeys = visibleScrapeAssistIssues()
+    .filter(issue => scrapeAssistSuggestions[issue.entry_key]?.rename_to)
+    .map(issue => issue.entry_key);
+  runScrapeAssistAction("Preparing renames for review…", () => planScrapeAssistRenames(entryKeys));
+});
+
+document.getElementById("scrapeAssistSearchInput").addEventListener("input", event => {
+  scrapeAssistQuery = event.target.value;
+  renderScrapeAssist();
+});
+
+async function refreshScanAssist(settings) {
+  if (settings) {
+    const status = document.getElementById("aiScanAssistStatus");
+    const hasProvider = settings.ai_providers.some(p => providerReady(settings, p.id));
+    status.textContent = "No enabled AI tool is signed in with at least 10% usage remaining.";
+    status.classList.toggle("d-none", hasProvider);
+  }
+
+  try {
+    scrapeAssistIssues = await invoke("list_scrape_issues");
+    const suggestions = await invoke("list_scrape_assist_suggestions");
+    const open = new Set(scrapeAssistIssues.map(issue => issue.entry_key));
+    scrapeAssistSuggestions = Object.fromEntries(suggestions.map(s => [s.entry_key, s]));
+    for (const key of Object.keys(scrapeAssistErrors)) {
+      if (!open.has(key)) delete scrapeAssistErrors[key];
+    }
   } catch (err) {
     showToast(String(err), "error");
   }
-  renderScrapeAssistIssues(issues);
+  renderScrapeAssist();
 }
 
-document.getElementById("runScrapeAssistNowBtn").addEventListener("click", async () => {
-  const btn = document.getElementById("runScrapeAssistNowBtn");
-  btn.disabled = true;
-  const progressToast = showToast("Asking AI to resolve unmatched titles…", "progress", { duration: 0 });
-  try {
+document.getElementById("runScrapeAssistNowBtn").addEventListener("click", () => {
+  runScrapeAssistAction("Asking AI to resolve and apply every unmatched title…", async () => {
     const outcome = await invoke("run_scrape_assist_now");
     if (outcome.attempted === 0) {
       showToast("Nothing to check — run a library scan first.", "success");
     } else {
-      showToast(`Resolved ${outcome.resolved} of ${outcome.attempted}.`, "success");
+      showToast(`Resolved ${outcome.resolved} of ${outcome.attempted}. Anything left needs a rename or manual review.`, "success");
     }
-    await refreshAi();
+    await refreshScanAssist();
     await refreshLibrary();
-  } catch (err) {
-    showToast(String(err), "error");
-  } finally {
-    btn.disabled = false;
-    dismissToast(progressToast);
-  }
+  });
 });
 
 // ---- AI tab: reorganize media ------------------------------------------------

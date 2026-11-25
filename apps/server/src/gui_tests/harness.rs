@@ -64,6 +64,7 @@ pub fn test_app() -> TestApp {
             test_data_dir: Some(data_dir.path().to_path_buf()),
             test_bind_override: Some((bind, http_media_bind, http_media_tls_bind)),
             last_scrape_issues: tokio::sync::Mutex::new(Vec::new()),
+            scrape_assist_suggestions: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             reorg_plans: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             next_reorg_plan_id: std::sync::atomic::AtomicU64::new(1),
         })

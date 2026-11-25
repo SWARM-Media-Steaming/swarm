@@ -58,12 +58,16 @@ text or font weight, not by breaking this three-color sequence with a fourth ad-
   whatever's behind the overlay for as long as it's showing, and always pair this with the
   overlay handling the physical Back key itself (see below).
 - **Two distinct card-focus idioms coexist by design**, not by accident: shelf rows /
-  quick-access rows / season / episode cards deliberately **do not grow on focus** (only a
+  quick-access rows / season / episode rows deliberately **do not grow on focus** (only a
   very slight press-shrink) — focus there is signalled by container/border color instead.
   Full grids (Browse-All screens) and a few specific rows (pause-screen recommendations,
   server rows) **do** grow on focus. Reproduce this split rather than picking one style for
   everything; it was a deliberate, live-tuned decision (see `CatalogCard` vs.
   `MovieShelfScreen`'s grid cards in the Fire TV source for the concrete before/after).
+- **A show is browsed on one two-pane screen** (#495): seasons (then Specials/extras) listed
+  on the left, the highlighted season's episodes as thumbnail + title + synopsis rows on the
+  right. Moving focus over a season swaps the episode list without a click; Back from the
+  episodes returns to the season list, Back again leaves the show.
   A Browse-All full grid also shows the originating shelf or genre name at the top of the
   page (same muted, black-weight heading as the Movies/Shows/Music catalog shelves) so the
   selected category remains visible after leaving the row that opened it (#353). The title

@@ -261,7 +261,7 @@ sealed class UiState {
     ) : UiState()
     /** Shows: Shows row or a genre sub-shelf -> here (grouped) -> [ShowSeasons]. [title] is the originating shelf name shown at the top of the grid (#353). [scopedToGenre] keeps a live catalog delta on that genre even when the name collides with "Shows". */
     data class ShowShelf(val catalog: Catalog, val shows: List<ShowGroup>, val title: String, val scopedToGenre: Boolean = false) : UiState()
-    /** One show's seasons; [SeasonScreen] handles the season-list<->episode-grid sub-navigation locally.
+    /** One show's seasons; [SeasonScreen] shows them as a two-pane season list + episode list (#495). [selectedSeason] is non-null while focus is in the episode pane.
      * [genreScope] is inherited from a genre Browse All shelf so catalog
      * deltas do not introduce episodes outside that genre. */
     data class ShowSeasons(

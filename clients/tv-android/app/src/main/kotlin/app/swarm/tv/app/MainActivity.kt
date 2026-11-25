@@ -1137,6 +1137,7 @@ private fun SwarmApp(
                     isWatchlisted = WatchlistKeys.show(state.show) in watchlistKeys,
                     onToggleWatchlist = { onToggleShowWatchlist(state.show) },
                     onResume = resumeTarget?.let { episode -> { onPlayPaused(episode) } },
+                    watchStates = watchStates,
                 )
             }
             is UiState.Player ->

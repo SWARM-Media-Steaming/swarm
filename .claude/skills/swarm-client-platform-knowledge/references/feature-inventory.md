@@ -54,7 +54,7 @@ instructions and the same gap list in narrative form.
 | Catalog cache (offline/warm-start paint) | Complete (files) | Not implemented | Every catalog visit is a fresh network fetch |
 | Hover/browse preview playback | Complete | Not implemented | |
 | Movie detail screen | Complete | Partial | `MovieDetailScreen`: poster, title, year, genres, Play/Like/Watchlist. No backdrop, cast, overview, or report-a-problem |
-| Show → season → episode navigation | Complete | Not implemented | See "plays first episode directly" above |
+| Show → season → episode navigation | Complete | Not implemented | Fire TV (#495): one two-pane screen — seasons then Specials listed on the left, the highlighted season's episodes (thumbnail, progress, title, overview, duration) on the right; focusing a season swaps the episode list. A future Roku screen must use the same two-pane layout. See "plays first episode directly" above |
 | Artist → album → track navigation | Complete | Not implemented | See "plays first track directly" above |
 
 ## Playback

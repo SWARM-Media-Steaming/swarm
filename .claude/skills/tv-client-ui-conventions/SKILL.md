@@ -176,6 +176,31 @@ legible regardless of the backdrop art's own brightness — see
 `MovieDetailScreen`'s `Brush.horizontalGradient` scrim for the exact
 alpha stops to reuse.
 
+## Show screen: two-pane season list + episode list (#495)
+
+`SeasonScreen` is one screen with two panes, not a season grid that
+drills into an episode grid. Left (~300dp): poster, show title
+(`SEASON_SCREEN_SHOW_TITLE`), year/season-count line, Resume/Watchlist
+buttons, then a `LazyColumn` of season rows (`SEASON_CARD_PREFIX`) in
+`seasonPaneOrder` — real seasons ascending, then Specials (season 0),
+then Unnumbered. Right: the highlighted season's episodes as rows of a
+16:9 thumbnail (with an accent watch-progress bar) beside label
+("Episode N · 37m"), title and a 3-line overview; extras follow under an
+"Extras" header (`EPISODE_ITEM_PREFIX` on every row).
+
+- Focusing a season row swaps the right pane immediately; Center or
+  Right moves into the episodes. Both lists use `focusRestorer()` so
+  Left/Right return to the row the user left from.
+- `UiState.ShowSeasons.selectedSeason` is non-null exactly while focus is
+  in the episode pane (the panes' `onFocusChanged` keep it in sync), so
+  Back from episodes returns focus to the season list, Back again leaves
+  the screen, and returning from the player re-focuses the episode pane.
+- The screen opens on `defaultSeason`: the season holding the in-progress
+  episode, else the first real season.
+- Focus placement never re-requests focus inside a pane that already
+  holds it — otherwise syncing `selectedSeason` would yank focus off the
+  episode the user just D-padded onto.
+
 ## Catalog category tiles: no section label
 
 `CatalogScreen`'s first-row category strip (`CategoryRow`) is only the

@@ -12,8 +12,8 @@ import org.junit.Test
  * Issue #152: a show that was watched and stopped offers a Resume button on
  * its season list, next to Watchlist, independent of the capped Continue
  * Watching row. Starts an episode, leaves it partway, and verifies the
- * button appears on the season list and resumes that episode paused
- * (Continue-Watching style).
+ * button appears on the season list and resumes that episode playing
+ * straight away — no second, paused Resume screen (#496).
  */
 class SeasonListResumeUatTest : UatTestBase() {
 
@@ -59,18 +59,22 @@ class SeasonListResumeUatTest : UatTestBase() {
             waitForTag(UatTestTags.SEASON_SCREEN_RESUME_BUTTON)
             composeTestRule.onNodeWithTag(UatTestTags.SEASON_SCREEN_RESUME_BUTTON).assertIsDisplayed()
 
-            // Resume opens an episode straight into its paused overlay,
-            // exactly like a Continue Watching tap.
+            // Resume plays the episode immediately (#496): it must not stop
+            // on the preparing cover's Resume button or the paused overlay.
             val savedBeforeResume = runBlocking { watchStateStore.all() }
             selectTagWithDpad(UatTestTags.SEASON_SCREEN_RESUME_BUTTON)
-            waitForTag(UatTestTags.PAUSE_LABEL, timeoutMs = 20_000)
+            waitForTag(UatTestTags.PLAYER_SURFACE, timeoutMs = 20_000)
+            assertTrue(
+                "season Resume must not ask for a second Resume press",
+                composeTestRule.allTagsStartingWith(UatTestTags.PREPARING_PLAYBACK_RESUME_BUTTON).isEmpty() &&
+                    composeTestRule.allTagsStartingWith(UatTestTags.PAUSE_LABEL).isEmpty(),
+            )
             assertFalse(
                 "resuming must not discard the saved watch position",
                 runBlocking { watchStateStore.all() }.isEmpty() && savedBeforeResume.isNotEmpty(),
             )
 
-            selectTagWithDpad(UatTestTags.PAUSE_RESUME_BUTTON)
-            waitForTagGone(UatTestTags.PAUSE_LABEL)
+            focusTag(UatTestTags.PLAYER_SURFACE)
             Thread.sleep(1_000)
             exitPlaybackTo(UatTestTags.SEASON_SCREEN_SHOW_TITLE)
         } finally {

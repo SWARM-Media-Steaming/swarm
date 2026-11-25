@@ -98,8 +98,9 @@ fun SeasonScreen(
     isWatchlisted: Boolean,
     onToggleWatchlist: () -> Unit,
     /** Non-null when this show has an episode that was started but not
-     * finished — see the season pane's Resume button (#152). Resumes that
-     * episode from its saved position, Continue-Watching style. */
+     * finished — see the season pane's Resume button (#152). Plays that
+     * episode immediately from its saved position; it does not open the
+     * paused Resume cover, since the viewer already pressed Resume (#496). */
     onResume: (() -> Unit)? = null,
     /** Saved per-episode progress: drives each episode thumbnail's progress
      * bar and which season the screen opens on. */

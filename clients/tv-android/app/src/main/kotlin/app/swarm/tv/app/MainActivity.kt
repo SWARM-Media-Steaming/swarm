@@ -1122,7 +1122,9 @@ private fun SwarmApp(
                 // The most recently started-but-unfinished episode of this
                 // show, if any — surfaces a Resume button on the season list
                 // even when the show has aged out of the 6-item Continue
-                // Watching row (#152).
+                // Watching row (#152). Pressing it starts playback straight
+                // from the saved position — no second, paused Resume cover
+                // (#496): the viewer already chose Resume on this screen.
                 val resumeTarget = remember(state.show, watchStates) {
                     resumeEpisode(state.show, watchStates)
                 }
@@ -1136,7 +1138,7 @@ private fun SwarmApp(
                     onSelectSeason = onSelectShowSeason,
                     isWatchlisted = WatchlistKeys.show(state.show) in watchlistKeys,
                     onToggleWatchlist = { onToggleShowWatchlist(state.show) },
-                    onResume = resumeTarget?.let { episode -> { onPlayPaused(episode) } },
+                    onResume = resumeTarget?.let { episode -> { onPlay(episode) } },
                     watchStates = watchStates,
                 )
             }

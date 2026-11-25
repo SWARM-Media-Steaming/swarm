@@ -363,21 +363,45 @@
   </section>
 
   <section id="tabPanel-ai" class="view d-none">
-    <div class="panel">
+    <div id="aiSectionTabs" class="row pill-tabs ai-section-tabs" role="tablist" aria-label="AI tools sections">
+      <button type="button" class="pill-tab tab-active" data-ai-section-target="providers" role="tab" aria-selected="true"><i class="bi bi-stars"></i>AI tools</button>
+      <button type="button" class="pill-tab" data-ai-section-target="scrape" role="tab" aria-selected="false"><i class="bi bi-search-heart-fill"></i>Scan &amp; scrape assist <span id="aiScrapeTabCount" class="muted"></span></button>
+      <button type="button" class="pill-tab" data-ai-section-target="reorganize" role="tab" aria-selected="false"><i class="bi bi-folder-symlink-fill"></i>Reorganize media</button>
+      <button type="button" class="pill-tab" data-ai-section-target="mcp" role="tab" aria-selected="false"><i class="bi bi-hdd-network-fill"></i>MCP Server</button>
+    </div>
+    <div class="panel" data-ai-section="providers" role="tabpanel">
       <p class="eyebrow">PROVIDERS</p>
       <h2 class="info-trigger" data-info="enabled-ai-tools" tabindex="0" role="button"><i class="bi bi-stars heading-icon"></i>Enabled AI tools <i class="bi bi-info-circle info-affordance"></i></h2>
       <div id="aiProvidersList"></div>
     </div>
-    <div class="panel">
-      <div class="card-head"><h2 class="info-trigger" data-info="scan-scrape-assist" tabindex="0" role="button"><i class="bi bi-search-heart-fill heading-icon"></i>Scan &amp; scrape assist <i class="bi bi-info-circle info-affordance"></i></h2>
-        <button id="runScrapeAssistNowBtn" class="secondary-button"><i class="bi bi-stars"></i>Check now</button>
+    <div class="panel d-none" id="scrapeAssistPanel" data-ai-section="scrape" role="tabpanel">
+      <div class="card-head row scrape-assist-head">
+        <h2 class="info-trigger grow" data-info="scan-scrape-assist" tabindex="0" role="button"><i class="bi bi-search-heart-fill heading-icon"></i>Scan &amp; scrape assist <i class="bi bi-info-circle info-affordance"></i></h2>
+        <button id="askAiAllBtn" class="primary-button compact"><i class="bi bi-stars"></i>Ask AI for all</button>
+        <button id="applyAllSuggestionsBtn" class="secondary-button compact" disabled><i class="bi bi-check2-all"></i>Apply all matches</button>
+        <button id="planAllRenamesBtn" class="secondary-button compact" disabled><i class="bi bi-pencil-square"></i>Review renames</button>
+        <button id="runScrapeAssistNowBtn" class="secondary-button compact" title="Ask AI and apply every same-type match automatically"><i class="bi bi-lightning-charge"></i>Auto-fix all</button>
       </div>
       <p id="aiScanAssistStatus" class="note error d-none"></p>
+      <p id="scrapeAssistEmpty" class="muted">Nothing to review — every scanned title matched. Unmatched titles from the next library scan show up here.</p>
       <div id="scrapeAssistWrap" class="d-none">
-        <div id="scrapeAssistGroups"></div>
+        <div class="row scrape-assist-toolbar">
+          <div id="scrapeAssistTypeTabs" class="row pill-tabs" role="tablist" aria-label="Filter findings by asset type"></div>
+          <div class="search-input-wrap">
+            <i class="bi bi-search search-input-icon"></i>
+            <input id="scrapeAssistSearchInput" class="search-input" placeholder="Search titles or paths…" aria-label="Search findings">
+          </div>
+        </div>
+        <div class="table-scroll scrape-assist-table-wrap">
+          <table class="scrape-assist-table">
+            <thead><tr><th>Type</th><th>Title / file</th><th>Problem</th><th>AI suggestion</th><th>Rename to</th><th class="scrape-assist-actions-col">Actions</th></tr></thead>
+            <tbody id="scrapeAssistRows"></tbody>
+          </table>
+        </div>
+        <p id="scrapeAssistSummary" class="muted count-label" aria-live="polite"></p>
       </div>
     </div>
-    <div class="panel" id="aiReorganizePanel">
+    <div class="panel d-none" id="aiReorganizePanel" data-ai-section="reorganize" role="tabpanel">
       <div class="card-head"><h2 class="info-trigger" data-info="reorganize-media" tabindex="0" role="button"><i class="bi bi-folder-symlink-fill heading-icon"></i>Reorganize media <i class="bi bi-info-circle info-affordance"></i></h2></div>
       <div id="aiReorganizeScanWrap" class="row action-row">
         <span id="aiReorganizeRootsSummary" class="note grow">Scans every configured Movies, Shows, and Music library.</span>
@@ -394,7 +418,7 @@
       </div>
       <div id="aiReorgPlansList"></div>
     </div>
-    <div class="panel">
+    <div class="panel d-none" data-ai-section="mcp" role="tabpanel">
       <div class="card-head"><h2 class="info-trigger" data-info="mcp-server" tabindex="0" role="button"><i class="bi bi-hdd-network-fill heading-icon"></i>MCP Server <i class="bi bi-info-circle info-affordance"></i></h2></div>
       <div class="row token-row">
         <input id="mcpAccessTokenInput" class="mono" readonly placeholder="Create an access token first">
@@ -403,7 +427,7 @@
       </div>
       <p id="mcpStatus" class="note"></p>
     </div>
-    <div class="panel" id="mcpConfigCard">
+    <div class="panel d-none" id="mcpConfigCard" data-ai-section="mcp" role="tabpanel">
       <h2><i class="bi bi-plug-fill heading-icon"></i>Connect an AI tool</h2>
       <p class="muted">Add this Streamable HTTP server to your AI tool's MCP configuration. Replace the LAN IP, keep the bearer token private, then restart the AI tool.</p>
       <pre id="mcpConfigSnippet" class="mono code-block"></pre>

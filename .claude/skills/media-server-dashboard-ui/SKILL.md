@@ -188,6 +188,16 @@ Kotlin side too rather than letting one app silently drift off-palette.
   `tabPanel-`/`tabBtn-` markup, and adding the
   `if (name === "...") refresh...()` dispatch line. `about` is the one
   tab with no dispatch line — its content is static, nothing to refresh.
+- Sections *inside* a tab use the `.pill-tabs`/`.pill-tab` row (same
+  component as the Reorganize media `.reorg-category-tab` filter), not a
+  long vertical stack of panels. The AI tab is the reference (issue #494):
+  `#aiSectionTabs` buttons carry `data-ai-section-target="<name>"`, panels
+  carry `data-ai-section="<name>"`, and `showAiSection(name)` in `ai.js`
+  shows one at a time. A list that can grow with the library (scan-assist
+  findings, reorganize items) is a fixed-height table with a sticky header
+  that scrolls inside itself (`.scrape-assist-table-wrap`,
+  `.reorg-items-table-wrap`), filtered by a pill-tab row and a search box,
+  never a card per item.
 - A small red count bubble on a tab button (`.badge-count`, see
   `#notificationBadge` on the Notifications tab) is this app's pattern
   for "there's something here you haven't looked at yet" — paired with a

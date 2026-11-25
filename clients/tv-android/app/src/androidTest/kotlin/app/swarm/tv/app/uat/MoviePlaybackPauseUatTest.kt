@@ -73,11 +73,12 @@ class MoviePlaybackPauseUatTest : UatTestBase() {
 
         pressSelect()
         waitForTag(UatTestTags.PAUSE_LABEL)
-        // PAUSE_AUDIO_TRACK_PICKER tags the picker's own FlowRow container,
-        // which carries no focus semantics itself — only its individual
-        // chip children (PAUSE_AUDIO_OPTION_PREFIX + index) do. A movie
-        // with no reported audio tracks falls back to "None reported" text
-        // instead of any chip, so only interact with one if it exists.
+        // PAUSE_AUDIO_TRACK_PICKER tags the dropdown button (issue #497);
+        // its options (PAUSE_AUDIO_OPTION_PREFIX + index) only exist once it
+        // is opened. A movie with no reported audio tracks shows "None
+        // reported" text instead, so only interact with an option if one
+        // appears after opening.
+        selectTagWithDpad(UatTestTags.PAUSE_AUDIO_TRACK_PICKER)
         composeTestRule.firstTagStartingWith(UatTestTags.PAUSE_AUDIO_OPTION_PREFIX)?.let { optionTag ->
             selectTagWithDpad(optionTag)
         }

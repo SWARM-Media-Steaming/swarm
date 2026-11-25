@@ -2071,12 +2071,11 @@ private fun PauseOverlay(
 
 @Composable
 private fun AudioBoostPicker(level: Int, status: String, onSelect: (Int) -> Unit) {
-    val levels = AndroidAudioBoostStore.LEVELS
     PauseDropdown(
         heading = "Audio Boost",
-        options = levels.map { option -> (if (option == 0) "Off" else "+${option} dB") to (option == level) },
+        options = audioBoostDropdownOptions(AndroidAudioBoostStore.LEVELS, level),
         emptyLabel = "Off",
-        onSelect = { index -> onSelect(levels[index]) },
+        onSelect = onSelect,
         testTag = UatTestTags.PAUSE_AUDIO_BOOST_PICKER,
         optionTagPrefix = UatTestTags.PAUSE_AUDIO_BOOST_OPTION_PREFIX,
     )
@@ -2095,9 +2094,9 @@ private fun TrackPickerBlock(
 ) {
     PauseDropdown(
         heading = heading,
-        options = choices.map { it.label to it.isSelected },
+        options = choices.map { PauseDropdownOption(it.label, it, it.isSelected) },
         emptyLabel = emptyLabel,
-        onSelect = { index -> choices.getOrNull(index)?.let(onSelect) },
+        onSelect = onSelect,
         testTag = testTag,
         optionTagPrefix = optionTagPrefix,
     )
@@ -2110,13 +2109,19 @@ private fun TrackPickerBlock(
  * predictable). Choosing an option, or Back, collapses it and returns focus
  * to the button. [testTag] tags the button; options are tagged
  * `optionTagPrefix + index` and only exist while the list is open.
+ *
+ * Issue #505: a row hands back the option's own [PauseDropdownOption.value]
+ * rather than a list index, so a track list that changes while the list is
+ * open can never apply a different track than the one the viewer pressed;
+ * and every label goes through [pauseDropdownDisplayLabel] because track
+ * names are untrusted container metadata.
  */
 @Composable
-private fun PauseDropdown(
+private fun <T> PauseDropdown(
     heading: String,
-    options: List<Pair<String, Boolean>>,
+    options: List<PauseDropdownOption<T>>,
     emptyLabel: String,
-    onSelect: (Int) -> Unit,
+    onSelect: (T) -> Unit,
     testTag: String? = null,
     optionTagPrefix: String? = null,
 ) {
@@ -2129,7 +2134,7 @@ private fun PauseDropdown(
     var expanded by remember { mutableStateOf(false) }
     val buttonFocus = remember { FocusRequester() }
     val selectedFocus = remember { FocusRequester() }
-    val selectedIndex = options.indexOfFirst { it.second }.takeIf { it >= 0 } ?: 0
+    val selectedIndex = pauseDropdownSelectedIndex(options)
     BackHandler(enabled = expanded) {
         expanded = false
         runCatching { buttonFocus.requestFocus() }
@@ -2138,7 +2143,7 @@ private fun PauseDropdown(
         if (expanded) runCatching { selectedFocus.requestFocus() }
     }
     SelectableChip(
-        "${options.getOrNull(selectedIndex)?.first ?: emptyLabel}  ${if (expanded) "\u25B4" else "\u25BE"}",
+        pauseDropdownButtonLabel(options, expanded, emptyLabel),
         isSelected = false,
         onClick = { expanded = !expanded },
         focusRequester = buttonFocus,
@@ -2152,10 +2157,10 @@ private fun PauseDropdown(
         ) {
             for ((index, option) in options.withIndex()) {
                 SelectableChip(
-                    (if (option.second) "\u2713 " else "") + option.first,
-                    isSelected = option.second,
+                    pauseDropdownRowLabel(option, emptyLabel),
+                    isSelected = option.isSelected,
                     onClick = {
-                        onSelect(index)
+                        onSelect(option.value)
                         expanded = false
                         runCatching { buttonFocus.requestFocus() }
                     },

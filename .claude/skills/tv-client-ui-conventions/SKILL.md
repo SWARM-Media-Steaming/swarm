@@ -399,6 +399,15 @@ either existing function with a new meaning.
   returns focus to the button. Use the same dropdown for any new multi-value
   pause setting. Option test tags (`*_OPTION_PREFIX + index`) only exist
   while the dropdown is open — UAT tests must select the picker tag first.
+- Feed the dropdown `PauseDropdownOption(label, value, isSelected)` values
+  (`PauseDropdownOptions.kt`); a row hands back its own `value`, never an
+  index, so a track list that changes while open cannot apply the wrong
+  track (#505). Track names are untrusted container metadata: every label
+  is shown through `pauseDropdownDisplayLabel`, which strips control, bidi
+  override and zero-width characters plus the dropdown's own ✓/▴/▾ marker
+  glyphs, collapses whitespace, and caps length. Only the dropdown adds
+  the ✓, and only to the really selected row. Keep that rule for any new
+  picker that shows file-supplied text.
 - "More like this" posters must make focus unmistakable on the dark scrim:
   thick `SwarmAccent` focused border, accent glow, 1.12x lift, unfocused
   posters dimmed, and `LazyRow` content padding so the lift is not clipped.

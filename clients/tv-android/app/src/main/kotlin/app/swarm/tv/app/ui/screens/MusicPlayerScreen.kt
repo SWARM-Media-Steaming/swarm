@@ -83,7 +83,7 @@ import coil.compose.AsyncImage
 
 /** D-pad-free rewind/fast-forward step for the remote's dedicated
  * transport keys (#161). Songs are short, so this is far smaller than
- * [PLAYBACK_SEEK_STEP_MS]'s 60s video step. */
+ * [PLAYBACK_SEEK_STEP_MS]'s 15s video step. */
 internal const val MUSIC_SEEK_STEP_MS = 10_000L
 
 /** "Previous" restarts the current song once playback is more than this

@@ -93,6 +93,11 @@ object UatTestTags {
 
     // PlayerScreen / PauseOverlay.
     const val PLAYER_SURFACE = "uat_player_surface"
+    // Rewind/fast-forward scrub feedback (#498): timeline bar, time bubble,
+    // and the direct-play scene preview frame above the playhead.
+    const val PLAYER_SCRUB_OVERLAY = "uat_player_scrub_overlay"
+    const val PLAYER_SCRUB_TIME = "uat_player_scrub_time"
+    const val PLAYER_SCRUB_PREVIEW = "uat_player_scrub_preview"
     const val PAUSE_LABEL = "uat_pause_label"
     const val PAUSE_TITLE = "uat_pause_title"
     // NOTE: year/duration/content-rating/community-rating+votes/resolution

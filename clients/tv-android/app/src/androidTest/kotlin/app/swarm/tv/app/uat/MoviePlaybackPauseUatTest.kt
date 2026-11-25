@@ -1,9 +1,11 @@
 package app.swarm.tv.app.uat
 
 import android.view.KeyEvent
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.onNodeWithTag
 import app.swarm.tv.app.ui.UatTestTags
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -83,6 +85,31 @@ class MoviePlaybackPauseUatTest : UatTestBase() {
             selectTagWithDpad(optionTag)
         }
         waitForTag(UatTestTags.PAUSE_LABEL)
+
+        // Issue #505: the Audio Boost dropdown. Exactly one open row carries
+        // the dropdown's own check mark (labels can never fake one), and
+        // pressing a row applies that row's level and collapses the list.
+        // "Off" (row 0) is chosen so the persisted boost stays at its default.
+        selectTagWithDpad(UatTestTags.PAUSE_AUDIO_BOOST_PICKER)
+        waitForTag(UatTestTags.PAUSE_AUDIO_BOOST_OPTION_PREFIX + "0")
+        val boostRows = composeTestRule.allTagsStartingWith(UatTestTags.PAUSE_AUDIO_BOOST_OPTION_PREFIX)
+        assertEquals("every supported Audio Boost level should be offered", 4, boostRows.size)
+        val checkedRows = boostRows.count { tag ->
+            composeTestRule.onNodeWithTag(tag).fetchSemanticsNode().config
+                .getOrElse(SemanticsProperties.Text) { emptyList() }
+                .any { it.text.contains('\u2713') }
+        }
+        assertEquals("exactly one Audio Boost row should show the selected mark", 1, checkedRows)
+        selectTagWithDpad(UatTestTags.PAUSE_AUDIO_BOOST_OPTION_PREFIX + "0")
+        composeTestRule.waitUntil(timeoutMillis = 5_000) {
+            composeTestRule.allTagsStartingWith(UatTestTags.PAUSE_AUDIO_BOOST_OPTION_PREFIX).isEmpty()
+        }
+        assertTrue(
+            "the collapsed Audio Boost button should now read Off",
+            composeTestRule.onNodeWithTag(UatTestTags.PAUSE_AUDIO_BOOST_PICKER).fetchSemanticsNode().config
+                .getOrElse(SemanticsProperties.Text) { emptyList() }
+                .any { it.text.startsWith("Off") },
+        )
 
         pressBack() // pause overlay/player -> movie detail
         waitForTag(UatTestTags.MOVIE_DETAIL_ARTWORK)

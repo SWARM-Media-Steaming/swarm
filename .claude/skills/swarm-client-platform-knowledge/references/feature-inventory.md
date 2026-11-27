@@ -43,7 +43,7 @@ instructions and the same gap list in narrative form.
 | Merged multi-server catalog | Complete | Not implemented | Roku v1 talks to exactly one paired server (see "Disconnect/reconnect" above) |
 | Movies shelf | Complete (+ genre sub-shelves) | Partial | `CatalogScreen` shows a flat Movies shelf, first 10 entries, no genre sub-shelves/sort-by-rating |
 | Shows shelf (grouped) | Complete (+ genre sub-shelves) | Partial | Grouped by title (`Swarm.CatalogGrouping.Shows`), first 10 shows, no genre sub-shelves. Groups with no numbered season (`season > 0`) containing a numbered episode (`episode > 0`) are omitted — same `previewSeasons` rule as Fire TV (#351/#360), so extras-only / season-0-only shows never appear as a show row. Selecting a show **plays its first numbered episode** (`FirstEpisode`: lowest `season > 0`, then lowest `episode > 0`; season-0 specials and `extra_type` bonus files are skipped — #363) — no season/episode grid yet (real, documented simplification) |
-| Music/artist shelf (grouped) | Complete (+ genre sub-shelves) | Partial | Grouped by artist, first 10 artists, no genre sub-shelves. Selecting an artist **plays its first track directly** — no album/track grid yet |
+| Music/artist shelf (grouped) | Complete (+ genre sub-shelves) | Partial | Grouped by artist, first 10 artists, no genre sub-shelves. Selecting an artist **plays its first track directly** — no album/track browser yet |
 | Continue Watching row (cap 6) | Complete | Not implemented | |
 | Watchlist row | Complete | Not implemented | Watchlist *toggle* exists (`MovieDetailScreen`) and persists; there's no row surfacing it yet |
 | Netflix-style top bar (search icon, Movies default, Shows, Music) + category-tile first row (genres ranked by asset count, no artwork, no "liked", no "Categories" section label — #352); replaced the filter sidebar in #324 | Complete | Not implemented | |
@@ -54,8 +54,8 @@ instructions and the same gap list in narrative form.
 | Catalog cache (offline/warm-start paint) | Complete (files) | Not implemented | Every catalog visit is a fresh network fetch |
 | Hover/browse preview playback | Complete | Not implemented | |
 | Movie detail screen | Complete | Partial | `MovieDetailScreen`: poster, title, year, genres, Play/Like/Watchlist. No backdrop, cast, overview, or report-a-problem |
-| Show → season → episode navigation | Complete | Not implemented | Fire TV (#495): one two-pane screen — seasons then Specials listed on the left, the highlighted season's episodes (thumbnail, progress, title, overview, duration) on the right; focusing a season swaps the episode list. A future Roku screen must use the same two-pane layout. See "plays first episode directly" above |
-| Artist → album → track navigation | Complete | Not implemented | See "plays first track directly" above |
+| Show → season → episode navigation | Complete | Not implemented | Fire TV (#495): one two-pane screen — seasons then Specials listed on the left, one continuous episode list on the right with season headers. Focusing a season jumps to its section, and D-pad navigation across sections updates the highlighted season. A future Roku screen must use the same two-pane layout. See "plays first episode directly" above |
+| Artist → album → track navigation | Complete | Not implemented | Fire TV (#495) shows albums on the left and the highlighted album’s tracks on the right. Center or Right enters the track list, while Left or Back returns to the album. See "plays first track directly" above |
 
 ## Playback
 

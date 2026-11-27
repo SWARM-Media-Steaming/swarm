@@ -178,37 +178,35 @@ alpha stops to reuse.
 
 ## Show screen: two-pane season list + episode list (#495)
 
-`SeasonScreen` is one screen with two panes, not a season grid that
-drills into an episode grid. Left (~300dp): poster, show title
-(`SEASON_SCREEN_SHOW_TITLE`), year/season-count line, Resume/Watchlist
-buttons (Resume plays the unfinished episode immediately via `onPlay`, never
-`onPlayPaused` — one press, no second Resume cover, #496), then a `LazyColumn` of season rows (`SEASON_CARD_PREFIX`) in
-`seasonPaneOrder` — real seasons ascending, then Specials (season 0),
-then Unnumbered. Right: the highlighted season's episodes as rows of a
-16:9 thumbnail (with an accent watch-progress bar) beside label
-("Episode N · 37m"), title and a 3-line overview; extras follow under an
-"Extras" header (`EPISODE_ITEM_PREFIX` on every row).
+`SeasonScreen` keeps the show poster, title, Resume and Watchlist actions,
+and season rows on the left. Resume plays the unfinished episode immediately
+via `onPlay` (#496). The season rows follow `seasonPaneOrder`: numbered
+seasons ascending, then Specials (season 0), then Unnumbered.
 
-- Focusing a season row swaps the right pane immediately; Center or
-  Right moves into the episodes. Both lists use `focusRestorer(fallback)`
-  so Left/Right return to the row the user left from — and the fallback
-  matters: a bare `focusRestorer()` on a list with no saved child falls
-  back to 2D geometric search, which skips Episode 1 (the season rows sit
-  lower than it) and lands Left on Season 1 after returning from the
-  player. The episode list falls back to `firstEpisodeRequester` (list
-  only composed when the season is non-empty); the season list falls
-  back to `highlightedSeasonRequester`, and its `LazyListState` opens
-  scrolled to the active season so that row is composed even when the
-  screen mounts straight into the episode pane.
-- `UiState.ShowSeasons.selectedSeason` is non-null exactly while focus is
-  in the episode pane (the panes' `onFocusChanged` keep it in sync), so
-  Back from episodes returns focus to the season list, Back again leaves
-  the screen, and returning from the player re-focuses the episode pane.
-- The screen opens on `defaultSeason`: the season holding the in-progress
-  episode, else the first real season.
-- Focus placement never re-requests focus inside a pane that already
-  holds it — otherwise syncing `selectedSeason` would yank focus off the
-  episode the user just D-padded onto.
+- The right pane uses one `LazyColumn` with a header for each season.
+  Episode rows retain their thumbnail, watch progress, duration, title,
+  and synopsis. Extras follow their season's episodes under an Extras heading.
+- Up and Down move through episodes across season boundaries. The focused
+  episode updates the highlighted season and scrolls its row into view.
+  Syncing that highlight must leave episode focus and scroll position intact.
+- Focusing a season on the left previews its section. Center or Right
+  enters its episodes. Left or Back returns to the highlighted season.
+  A second Back leaves the show. Scroll a lazy list to the destination
+  before requesting focus on an off-screen row.
+- `UiState.ShowSeasons.selectedSeason` records the active season while the
+  episodes have focus, so playback returns to the correct season. A fresh
+  browse starts on `defaultSeason` (the season with unfinished playback,
+  otherwise the first regular season).
+
+## Music browser: albums and tracks (#495)
+
+`AlbumScreen` shares the show browser's left-pane row style. The artist
+and selected album cover sit above the album list. Focusing an album
+previews its tracks on the right. Center or Right enters the track list.
+Left or Back returns to the active album, and a second Back leaves the
+artist. Returning from the music player focuses the active track when it
+is available in the album. Keep `ALBUM_CARD_PREFIX` and `TRACK_ROW_PREFIX`
+on the actionable rows, and preserve playback and queue behavior.
 
 ## Catalog category tiles: no section label
 

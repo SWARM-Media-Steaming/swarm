@@ -42,7 +42,10 @@ import android.view.ViewGroup
 import android.widget.ImageButton
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
@@ -123,7 +126,6 @@ import androidx.tv.material3.CardDefaults
 import androidx.tv.material3.Glow
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.graphicsLayer
 import app.swarm.tv.app.PausePlayerWhenAppBackgrounded
 import app.swarm.tv.app.data.AndroidAudioLanguagePreferenceStore
@@ -1127,6 +1129,8 @@ fun PlayerScreen(
             applySwarmPlaybackControlColors(this)
         }
     }
+    val playerViewFocusable = remember(playerView) { playerView.isFocusable }
+    val playerViewDescendantFocusability = remember(playerView) { playerView.descendantFocusability }
     // Focus target for the bare, playing video surface. Requested through
     // Compose (not the native View) so the surface's onPreviewKeyEvent regains
     // ownership of Select after the native controller — whose buttons sit
@@ -1544,6 +1548,7 @@ fun PlayerScreen(
                 .fillMaxSize()
                 .testTag(UatTestTags.PLAYER_SURFACE)
                 .focusRequester(videoSurfaceFocusRequester)
+                .focusProperties { canFocus = !showPauseOverlay }
                 .focusable()
                 .onKeyEvent {
                     val event = it.nativeKeyEvent
@@ -1567,6 +1572,14 @@ fun PlayerScreen(
             update = { view ->
                 view.player = controllerPlayer
                 view.useController = !showPauseOverlay
+                // Native focus search can reach PlayerView and its children
+                // independently of the Compose focus target.
+                view.descendantFocusability = if (showPauseOverlay) {
+                    ViewGroup.FOCUS_BLOCK_DESCENDANTS
+                } else {
+                    playerViewDescendantFocusability
+                }
+                view.isFocusable = !showPauseOverlay && playerViewFocusable
                 if (showPauseOverlay) view.hideController()
             },
         )
@@ -2042,7 +2055,7 @@ private fun PauseOverlay(
                 Text("More like this", color = SwarmText, fontSize = 17.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(8.dp))
                 LazyRow(
-                    modifier = Modifier.fillMaxWidth().height(186.dp),
+                    modifier = Modifier.fillMaxWidth().height(186.dp).focusGroup(),
                     // Room for the focused card's lift and border so it isn't clipped.
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 12.dp),
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
@@ -2182,9 +2195,11 @@ private fun <T> PauseDropdown(
  * does everywhere else artwork is shown without a caption. */
 @Composable
 private fun PauseRecommendationCard(entry: MergedEntry, artworkUrl: String?, onClick: () -> Unit) {
-    var focused by remember { mutableStateOf(false) }
+    val interactionSource = remember { MutableInteractionSource() }
+    val focused by interactionSource.collectIsFocusedAsState()
     Card(
         onClick = onClick,
+        interactionSource = interactionSource,
         colors = CardDefaults.colors(containerColor = SwarmSurface),
         // Issue #497: a 1.06x scale alone was invisible on the dark pause
         // scrim, so the focused poster also gets a thick accent border, a
@@ -2197,13 +2212,17 @@ private fun PauseRecommendationCard(entry: MergedEntry, artworkUrl: String?, onC
         ),
         glow = CardDefaults.glow(focusedGlow = Glow(elevationColor = SwarmAccent, elevation = 12.dp)),
         shape = CardDefaults.shape(RoundedCornerShape(6.dp)),
-        modifier = Modifier.width(108.dp).onFocusChanged { focused = it.hasFocus }.graphicsLayer { alpha = if (focused) 1f else 0.72f },
+        modifier = Modifier.width(108.dp).focusProperties {
+            down = FocusRequester.Cancel
+        },
     ) {
         ArtworkImage(
             label = pauseRecommendationTitle(entry),
             placeholderType = if (entry.entry.kind == MediaKind.MOVIE) "Movie" else "Show",
             primaryUrl = artworkUrl,
-            modifier = Modifier.fillMaxWidth().aspectRatio(2f / 3f).clip(RoundedCornerShape(4.dp)),
+            modifier = Modifier.fillMaxWidth().aspectRatio(2f / 3f)
+                .graphicsLayer { alpha = if (focused) 1f else 0.72f }
+                .clip(RoundedCornerShape(4.dp)),
         )
     }
 }

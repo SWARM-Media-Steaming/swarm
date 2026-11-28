@@ -425,3 +425,9 @@ either existing function with a new meaning.
   thick `SwarmAccent` focused border, accent glow, 1.12x lift, unfocused
   posters dimmed, and `LazyRow` content padding so the lift is not clipped.
   A scale change alone is not visible enough.
+
+- While paused, block focus on both the Compose video surface and the
+  native Media3 view and its descendants. Group the recommendation cards
+  for horizontal navigation and keep Down on the bottom shelf. Drive poster
+  dimming from the TV card's interaction source and apply it to the artwork
+  so the card can draw its full focus border and glow.

@@ -42,7 +42,6 @@ import android.view.ViewGroup
 import android.widget.ImageButton
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
-import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -1933,8 +1932,12 @@ private fun PauseOverlay(
                 .fillMaxSize()
                 .padding(horizontal = 44.dp, vertical = 28.dp)
                 // The report picker is modal, so its dimmed pause controls must
-                // not be reachable after the last picker option.
-                .focusProperties { canFocus = !showProblemPicker },
+                // not be reachable after the last picker option. Only override
+                // canFocus while it is open: these properties cascade onto every
+                // focus target below, and forcing `true` made the "More like
+                // this" row's own container take focus instead of a card
+                // (issue #497).
+                .focusProperties { if (showProblemPicker) canFocus = false },
         ) {
             Row(modifier = Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(36.dp)) {
                 Column(modifier = Modifier.weight(1f)) {
@@ -2060,10 +2063,12 @@ private fun PauseOverlay(
                 Text("More like this", color = SwarmText, fontSize = 17.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(8.dp))
                 LazyRow(
-                    modifier = Modifier.fillMaxWidth().height(186.dp).focusGroup(),
+                    modifier = Modifier.fillMaxWidth().height(186.dp),
                     // Room for the focused card's lift and border so it isn't clipped.
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    // Wide enough that the lifted, bordered card never overlaps
+                    // its neighbour, so only one poster reads as selected.
+                    horizontalArrangement = Arrangement.spacedBy(32.dp),
                 ) {
                     items(recommendations, key = { it.fingerprint }) { recommendation ->
                         PauseRecommendationCard(
@@ -2097,8 +2102,12 @@ private fun AudioBoostPicker(level: Int, status: String, onSelect: (Int) -> Unit
         testTag = UatTestTags.PAUSE_AUDIO_BOOST_PICKER,
         optionTagPrefix = UatTestTags.PAUSE_AUDIO_BOOST_OPTION_PREFIX,
     )
-    Spacer(Modifier.height(4.dp))
-    Text(status, color = if (status.startsWith("Active")) SwarmAccent else SwarmMuted, fontSize = 11.sp, maxLines = 2)
+    // Issue #497: the dropdown already shows the chosen level, so text under
+    // it only appears when the boost cannot be applied on this output.
+    if (status.startsWith("Unavailable")) {
+        Spacer(Modifier.height(4.dp))
+        Text(status, color = SwarmMuted, fontSize = 11.sp, maxLines = 2)
+    }
 }
 
 @Composable

@@ -2428,6 +2428,41 @@
         "servers": []
       },
       "timeoutSeconds": 300
+    },
+    {
+      "command": [
+        "python3",
+        "-B",
+        "tests/adversarial/test_issue_497_pause_shelf_focus_highlight_device.py"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-497-pause-shelf-focus-highlight-device",
+      "name": "Adversarial: issue #497 'More like this' card in focus is visibly highlighted on a real Fire TV",
+      "origin": "adversarial",
+      "parallel": false,
+      "requirements": {
+        "credentials": [],
+        "devices": [
+          {
+            "input": "fireTvSerial",
+            "type": "fireTv"
+          }
+        ],
+        "executables": [
+          "python3",
+          "adb",
+          "java"
+        ],
+        "files": [
+          "tests/adversarial/test_issue_497_pause_shelf_focus_highlight_device.py",
+          "clients/tv-android/gradlew",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/PlayerScreen.kt"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 1500
     }
   ],
   "version": 1

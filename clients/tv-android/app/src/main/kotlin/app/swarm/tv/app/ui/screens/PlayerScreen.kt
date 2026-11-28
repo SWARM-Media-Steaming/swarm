@@ -44,6 +44,8 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -2027,7 +2029,10 @@ private fun PauseOverlay(
                         }
                     }
                 }
-                Column(modifier = Modifier.width(285.dp)) {
+                // Issue #497: the pickers share the 256dp top row with "More like
+                // this". When a dropdown expands, its option list must not be
+                // squeezed to zero-height rows, so this column scrolls instead.
+                Column(modifier = Modifier.width(285.dp).verticalScroll(rememberScrollState())) {
                     AudioBoostPicker(audioBoostLevel, audioBoostStatus, onAudioBoostLevel)
                     Spacer(Modifier.height(18.dp))
                     TrackPickerBlock(

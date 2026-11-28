@@ -407,11 +407,15 @@ either existing function with a new meaning.
 
 - Audio Boost, Audio language, and Subtitles on the pause overlay are
   `PauseDropdown`s, not rows of chips: one full-width button showing the
-  current value; OK expands the options inline beneath it with focus on the
-  current choice; choosing an option or pressing Back collapses it and
-  returns focus to the button. Use the same dropdown for any new multi-value
-  pause setting. Option test tags (`*_OPTION_PREFIX + index`) only exist
-  while the dropdown is open — UAT tests must select the picker tag first.
+  current value. OK opens a focusable, height-bounded scrolling popup with
+  focus on the current choice. The popup opens below the button when it
+  fits and can open above it near the bottom of the window. Choosing an
+  option or pressing Back closes it and returns focus to the button.
+  Audio Boost shows its selected level on the button and exposes output
+  unavailability through the button's accessibility state. Use the same
+  dropdown for any new multi-value pause setting. Option test tags
+  (`*_OPTION_PREFIX + index`) only exist while the dropdown is open, so UAT
+  tests must select the picker tag first.
 - Feed the dropdown `PauseDropdownOption(label, value, isSelected)` values
   (`PauseDropdownOptions.kt`); a row hands back its own `value`, never an
   index, so a track list that changes while open cannot apply the wrong

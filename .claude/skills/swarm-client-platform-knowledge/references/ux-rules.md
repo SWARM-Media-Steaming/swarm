@@ -65,9 +65,11 @@ text or font weight, not by breaking this three-color sequence with a fourth ad-
   everything; it was a deliberate, live-tuned decision (see `CatalogCard` vs.
   `MovieShelfScreen`'s grid cards in the Fire TV source for the concrete before/after).
 - **A show is browsed on one two-pane screen** (#495): seasons (then Specials/extras) listed
-  on the left, the highlighted season's episodes as thumbnail + title + synopsis rows on the
-  right. Moving focus over a season swaps the episode list without a click; Back from the
-  episodes returns to the season list, Back again leaves the show.
+  on the left and a continuous list of episodes on the right. Focusing a season jumps to
+  its section. D-pad Up and Down navigate across seasons and update the left highlight.
+  Music uses matching panes for albums and tracks, previewing the highlighted album.
+  Left or Back from the right pane returns to the highlighted row, and a second Back
+  leaves the show or artist.
   A Browse-All full grid also shows the originating shelf or genre name at the top of the
   page (same muted, black-weight heading as the Movies/Shows/Music catalog shelves) so the
   selected category remains visible after leaving the row that opened it (#353). The title

@@ -237,7 +237,7 @@ sealed class UiState {
     ) : UiState()
     /** Music: Music row or a genre sub-shelf -> here (grouped) -> [ArtistAlbums]. [title] is the originating shelf name shown at the top of the grid (#353). [scopedToGenre] keeps a live catalog delta on that genre even when the name collides with "Music". */
     data class ArtistShelf(val catalog: Catalog, val artists: List<ArtistGroup>, val title: String, val scopedToGenre: Boolean = false) : UiState()
-    /** One artist's albums; [AlbumScreen] handles the album-grid<->track-list sub-navigation locally.
+    /** One artist's albums; [AlbumScreen] handles focus between albums and tracks locally.
      * [genreScope] is inherited from a genre Browse All shelf so catalog
      * deltas do not introduce albums outside that genre. */
     data class ArtistAlbums(
@@ -247,7 +247,7 @@ sealed class UiState {
         val artist: ArtistGroup,
         /** Album to open straight to the track list of — set when Back from
          * the music player returns here while a track from [artist] is
-         * playing (#160). Null on a plain open, which shows the album grid. */
+         * playing (#160). A plain open focuses the album list. */
         val initialAlbum: String? = null,
         val genreScope: String? = null,
     ) : UiState()
@@ -2976,9 +2976,8 @@ class SwarmViewModel(
             // doesn't reappear on Back after a *successful* play; nothing
             // to clear on the other, richer previousScreen types.
             val cleanedPrevious = if (previousScreen is UiState.Catalog) previousScreen.copy(playbackError = null) else previousScreen
-            // Back from the music player should return to the track's own
-            // album, not the album grid (#160): remember which album this
-            // track came from on the ArtistAlbums screen underneath.
+            // Remember the track's album so Back from the music player
+            // returns focus to its track list (#160).
             val resolvedPrevious = if (entry.entry.kind == MediaKind.TRACK && cleanedPrevious is UiState.ArtistAlbums) {
                 cleanedPrevious.copy(initialAlbum = entry.entry.album ?: cleanedPrevious.initialAlbum)
             } else {

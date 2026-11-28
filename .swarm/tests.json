@@ -2337,6 +2337,68 @@
         "servers": []
       },
       "timeoutSeconds": 300
+    },
+    {
+      "command": [
+        "python3",
+        "-B",
+        "tests/adversarial/test_issue_495_music_two_pane_navigation.py"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-495-music-two-pane-navigation",
+      "name": "Adversarial: issue #495 music two-pane D-pad boundaries and track focus sync",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "python3",
+          "java"
+        ],
+        "files": [
+          "tests/adversarial/test_issue_495_music_two_pane_navigation.py",
+          "tests/adversarial/Issue495TwoPaneBoundariesDriver.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/AlbumScreen.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/BrowsePane.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/SeasonScreen.kt",
+          "clients/tv-android/core/src/main/kotlin/app/swarm/tv/core/catalog/CatalogGrouping.kt"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 300
+    },
+    {
+      "command": [
+        "python3",
+        "-B",
+        "tests/adversarial/test_issue_495_shows_continuous_scroll_and_pane_bounds.py"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-495-shows-continuous-scroll-and-pane-bounds",
+      "name": "Adversarial: issue #495 shows continuous cross-season scroll and SeasonPane D-pad bounds",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "python3",
+          "java"
+        ],
+        "files": [
+          "tests/adversarial/test_issue_495_shows_continuous_scroll_and_pane_bounds.py",
+          "tests/adversarial/Issue495TwoPaneBoundariesDriver.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/SeasonScreen.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/BrowsePane.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/AlbumScreen.kt",
+          "clients/tv-android/core/src/main/kotlin/app/swarm/tv/core/catalog/CatalogGrouping.kt"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 300
     }
   ],
   "version": 1

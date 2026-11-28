@@ -1,28 +1,9 @@
-/**
- * One show, laid out as a two-pane season/episode browser (#495): the show
- * header, its actions and a list of seasons (then Specials/extras) on the
- * left; the highlighted season's episodes as a vertical list of
- * thumbnail + title + synopsis rows on the right.
- *
- * Navigation is D-pad only and never leaves this screen:
- *  - Moving focus over a season row swaps the right pane to that season's
- *    episodes immediately — no click needed just to look.
- *  - Selecting a season (Center) or pressing Right moves focus into its
- *    episodes; Left returns to the season list on the season it came from.
- *  - Back from the episode pane returns focus to the season list; Back
- *    from the season list leaves the screen.
- *  - Selecting an episode calls [onPlayEpisode] directly — no detail screen
- *    in between.
- *
- * `selectedSeason` (persisted in `UiState.ShowSeasons`) is non-null exactly
- * while focus is in the episode pane, so Back and returning from the player
- * land the user where they were.
- */
 package app.swarm.tv.app.ui.screens
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -45,20 +26,19 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.focus.focusRestorer
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -83,8 +63,23 @@ import app.swarm.tv.core.catalog.displayTitle
 import app.swarm.tv.core.watch.WatchState
 import app.swarm.tv.core.watch.stateFor
 
-/** Frames to wait for a lazy row to compose before giving up on a focus request. */
-private const val SEASON_SCREEN_FOCUS_ATTEMPTS = 10
+private class EpisodeSection(val season: SeasonGroup, val headerIndex: Int) {
+    val episodes = CatalogGrouping.seasonEpisodes(season)
+    val extras = CatalogGrouping.seasonExtras(season)
+    val rowCount = 1 + episodes.size + if (extras.isEmpty()) 0 else (1 + extras.size)
+
+    fun focusIndex(fingerprint: String?): Int? {
+        val episodeIndex = episodes.indexOfFirst { it.fingerprint == fingerprint }
+        if (episodeIndex >= 0) return headerIndex + 1 + episodeIndex
+        val extraIndex = extras.indexOfFirst { it.fingerprint == fingerprint }
+        if (extraIndex >= 0) return headerIndex + 2 + episodes.size + extraIndex
+        return when {
+            episodes.isNotEmpty() -> headerIndex + 1
+            extras.isNotEmpty() -> headerIndex + 2
+            else -> null
+        }
+    }
+}
 
 @Composable
 fun SeasonScreen(
@@ -107,50 +102,53 @@ fun SeasonScreen(
     watchStates: Map<String, WatchState> = emptyMap(),
 ) {
     val seasons = remember(show) { seasonPaneOrder(show.seasons) }
-    // The season whose episodes the right pane shows. Follows season-list
-    // focus; seeded from the persisted selection, else the season holding
-    // the episode in progress, else the first real season.
+    val sections = remember(seasons) {
+        var headerIndex = 0
+        seasons.map { season ->
+            EpisodeSection(season, headerIndex).also { headerIndex += it.rowCount }
+        }
+    }
     var highlightedKey by remember(show.show) {
         mutableStateOf(
             selectedSeason?.let(::seasonKey)
                 ?: defaultSeason(show, watchStates)?.let(::seasonKey),
         )
     }
-    val displayed = seasons.firstOrNull { seasonKey(it) == highlightedKey } ?: seasons.firstOrNull()
-    val inEpisodes = selectedSeason != null && displayed != null
+    var lastFocusedEpisodeFingerprint by remember(show.show) { mutableStateOf<String?>(null) }
+    val displayedIndex = seasons.indexOfFirst { seasonKey(it) == highlightedKey }.coerceAtLeast(0)
+    val displayedSection = sections.getOrNull(displayedIndex)
+    val displayed = displayedSection?.season
+    val inEpisodes = selectedSeason != null
 
     var seasonPaneFocused by remember { mutableStateOf(false) }
-    var episodePaneFocused by remember { mutableStateOf(false) }
     val highlightedSeasonRequester = remember { FocusRequester() }
     val firstEpisodeRequester = remember { FocusRequester() }
-    // Open the season list already scrolled to the active season — also when
-    // returning from the player straight into the episode pane — so that row
-    // is composed and on screen for D-pad Left to land on.
-    val seasonListState = rememberLazyListState(
-        initialFirstVisibleItemIndex = displayed?.let { d -> seasons.indexOfFirst { seasonKey(it) == seasonKey(d) } }
-            ?.coerceAtLeast(0) ?: 0,
-    )
+    val seasonListState = rememberLazyListState(initialFirstVisibleItemIndex = displayedIndex)
+    val episodeListState = rememberLazyListState(initialFirstVisibleItemIndex = displayedSection?.headerIndex ?: 0)
+    val openSeason: (SeasonGroup) -> Unit = { season ->
+        val section = sections.firstOrNull { seasonKey(it.season) == seasonKey(season) }
+        highlightedKey = seasonKey(season)
+        if (section != null && section.rowCount > 1) onSelectSeason(season)
+    }
 
-    BackHandler { if (selectedSeason != null) onSelectSeason(null) else onBack() }
+    BackHandler { if (inEpisodes) onSelectSeason(null) else onBack() }
 
-    // Place focus whenever the pane that should own it changes — first
-    // entry, Back from the episode pane, or returning from the player. A
-    // pane that already holds focus (the user moved there with the D-pad)
-    // is left alone so the selection never yanks focus off a row.
-    LaunchedEffect(inEpisodes, show.show) {
-        if (seasons.isEmpty()) return@LaunchedEffect
-        // Keep the active season row visible in both panes' states so Left
-        // from the episodes (focusRestorer fallback) always has it to land on.
-        val index = seasons.indexOfFirst { seasonKey(it) == seasonKey(displayed ?: seasons.first()) }
-        val rowVisible = seasonListState.layoutInfo.visibleItemsInfo.any { it.index == index }
-        if (index >= 0 && !seasonPaneFocused && !rowVisible) seasonListState.scrollToItem(index)
-        repeat(SEASON_SCREEN_FOCUS_ATTEMPTS) {
-            withFrameNanos {}
-            if (inEpisodes && episodePaneFocused) return@LaunchedEffect
-            if (!inEpisodes && seasonPaneFocused) return@LaunchedEffect
-            val target = if (inEpisodes) firstEpisodeRequester else highlightedSeasonRequester
-            if (runCatching { target.requestFocus() }.isSuccess) return@LaunchedEffect
+    // Only transfer focus on pane changes. Focusing a row in the episode
+    // list updates the season selection without moving focus again.
+    LaunchedEffect(inEpisodes, show.show, seasons.isNotEmpty()) {
+        val section = displayedSection ?: return@LaunchedEffect
+        if (inEpisodes) {
+            val index = section.focusIndex(lastFocusedEpisodeFingerprint)
+            if (index != null) episodeListState.focusBrowseItem(index, firstEpisodeRequester)
+            else onSelectSeason(null)
+        } else if (!seasonPaneFocused) {
+            seasonListState.focusBrowseItem(displayedIndex, highlightedSeasonRequester)
         }
+    }
+    LaunchedEffect(displayedSection?.headerIndex, displayed?.let(::seasonKey), inEpisodes) {
+        val section = displayedSection ?: return@LaunchedEffect
+        if (inEpisodes) seasonListState.revealBrowseItem(displayedIndex)
+        else episodeListState.scrollToItem(section.headerIndex)
     }
 
     Row(
@@ -159,7 +157,7 @@ fun SeasonScreen(
     ) {
         SeasonPane(
             show = show,
-            seasons = seasons,
+            sections = sections,
             displayed = displayed,
             seasonArtworkUrl = seasonArtworkUrl,
             isWatchlisted = isWatchlisted,
@@ -167,39 +165,44 @@ fun SeasonScreen(
             onResume = onResume,
             listState = seasonListState,
             highlightedSeasonRequester = highlightedSeasonRequester,
-            onHighlightSeason = { highlightedKey = seasonKey(it) },
-            onOpenSeason = { season ->
-                highlightedKey = seasonKey(season)
-                onSelectSeason(season)
+            onHighlightSeason = { season ->
+                val key = seasonKey(season)
+                if (highlightedKey != key) lastFocusedEpisodeFingerprint = null
+                highlightedKey = key
             },
-            modifier = Modifier.width(300.dp).fillMaxHeight().onFocusChanged { state ->
-                seasonPaneFocused = state.hasFocus
-                if (state.hasFocus && selectedSeason != null) onSelectSeason(null)
-            },
+            onOpenSeason = openSeason,
+            modifier = Modifier.width(300.dp).fillMaxHeight()
+                .onFocusChanged { state ->
+                    seasonPaneFocused = state.hasFocus
+                    if (state.hasFocus && inEpisodes) onSelectSeason(null)
+                }
+                .focusGroup(),
         )
-        if (displayed != null) {
+        if (displayedSection != null) {
             EpisodePane(
-                season = displayed,
+                sections = sections,
+                listState = episodeListState,
+                focusIndex = displayedSection.focusIndex(lastFocusedEpisodeFingerprint),
                 watchStates = watchStates,
                 episodeArtworkUrl = episodeArtworkUrl,
                 onPlayEpisode = onPlayEpisode,
                 firstEpisodeRequester = firstEpisodeRequester,
-                modifier = Modifier.weight(1f).fillMaxHeight().onFocusChanged { state ->
-                    episodePaneFocused = state.hasFocus
-                    if (state.hasFocus && selectedSeason?.let(::seasonKey) != seasonKey(displayed)) {
-                        onSelectSeason(displayed)
-                    }
+                onFocusEpisode = { season, episode ->
+                    highlightedKey = seasonKey(season)
+                    lastFocusedEpisodeFingerprint = episode.fingerprint
+                    onSelectSeason(season)
                 },
+                modifier = Modifier.weight(1f).fillMaxHeight()
+                    .onPaneDirection(Key.DirectionLeft) { onSelectSeason(null) },
             )
         }
     }
 }
 
-@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 private fun SeasonPane(
     show: ShowGroup,
-    seasons: List<SeasonGroup>,
+    sections: List<EpisodeSection>,
     displayed: SeasonGroup?,
     seasonArtworkUrl: (MergedEntry) -> String?,
     isWatchlisted: Boolean,
@@ -251,7 +254,8 @@ private fun SeasonPane(
             Button(
                 onClick = onToggleWatchlist,
                 colors = swarmActionButtonColors(),
-                modifier = Modifier.testTag(UatTestTags.SEASON_SCREEN_WATCHLIST_BUTTON),
+                modifier = Modifier.onPaneDirection(Key.DirectionRight) { displayed?.let(onOpenSeason) }
+                    .testTag(UatTestTags.SEASON_SCREEN_WATCHLIST_BUTTON),
             ) {
                 Text(if (isWatchlisted) "✓ Watchlisted" else "+ Watchlist", fontSize = 13.sp)
             }
@@ -260,26 +264,27 @@ private fun SeasonPane(
         LazyColumn(
             state = listState,
             verticalArrangement = Arrangement.spacedBy(6.dp),
-            // Left back into the list lands on the season it was left from —
-            // or, on a fresh mount (e.g. back from the player), the season
-            // whose episodes are showing — never whichever row happens to sit
-            // level with the episode.
-            modifier = Modifier.fillMaxWidth().weight(1f)
-                .focusRestorer(if (displayed != null) highlightedSeasonRequester else FocusRequester.Default),
+            modifier = Modifier.fillMaxWidth().weight(1f),
             contentPadding = PaddingValues(vertical = 4.dp),
         ) {
             itemsIndexed(
-                items = seasons,
-                key = { _, season -> season.season ?: -1 },
+                items = sections,
+                key = { _, section -> seasonKey(section.season) },
                 contentType = { _, _ -> "season" },
-            ) { _, season ->
+            ) { _, section ->
+                val season = section.season
                 val isDisplayed = displayed != null && seasonKey(season) == seasonKey(displayed)
-                SeasonRow(
-                    season = season,
+                val onOpen = { onOpenSeason(season) }
+                val focusModifier = if (isDisplayed) Modifier.focusRequester(highlightedSeasonRequester) else Modifier
+                BrowseGroupRow(
+                    title = seasonLabel(season.season),
+                    count = seasonCountLabel(section.episodes.size, section.extras.size),
                     isDisplayed = isDisplayed,
                     onFocused = { onHighlightSeason(season) },
-                    onClick = { onOpenSeason(season) },
-                    modifier = if (isDisplayed) Modifier.focusRequester(highlightedSeasonRequester) else Modifier,
+                    onClick = onOpen,
+                    modifier = focusModifier
+                        .onPaneDirection(Key.DirectionRight, onOpen)
+                        .testTag(UatTestTags.SEASON_CARD_PREFIX + (season.season ?: -1)),
                 )
             }
         }
@@ -287,134 +292,83 @@ private fun SeasonPane(
 }
 
 @Composable
-private fun SeasonRow(
-    season: SeasonGroup,
-    isDisplayed: Boolean,
-    onFocused: () -> Unit,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val realEpisodes = CatalogGrouping.seasonEpisodes(season)
-    val extras = CatalogGrouping.seasonExtras(season)
-    Card(
-        onClick = onClick,
-        colors = CardDefaults.colors(
-            containerColor = if (isDisplayed) SwarmSurfaceMuted else Color.Transparent,
-            contentColor = SwarmText,
-            focusedContainerColor = SwarmSurfaceMuted,
-            focusedContentColor = SwarmText,
-            pressedContainerColor = SwarmSurfaceMuted,
-            pressedContentColor = SwarmText,
-        ),
-        border = CardDefaults.border(
-            border = if (isDisplayed) Border(BorderStroke(1.dp, SwarmMuted)) else Border.None,
-            focusedBorder = Border(BorderStroke(2.dp, SwarmAccent)),
-            pressedBorder = Border(BorderStroke(2.dp, SwarmAccent)),
-        ),
-        scale = CardDefaults.scale(scale = 1f, focusedScale = 1f, pressedScale = 0.99f),
-        modifier = modifier.fillMaxWidth()
-            .onFocusChanged { if (it.isFocused) onFocused() }
-            .testTag(UatTestTags.SEASON_CARD_PREFIX + (season.season ?: -1)),
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                seasonLabel(season.season),
-                color = SwarmText,
-                fontSize = 16.sp,
-                fontWeight = if (isDisplayed) FontWeight.Bold else FontWeight.Medium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
-            Text(seasonCountLabel(realEpisodes.size, extras.size), color = SwarmMuted, fontSize = 12.sp, maxLines = 1)
-        }
-    }
-}
-
-@OptIn(ExperimentalComposeUiApi::class)
-@Composable
 private fun EpisodePane(
-    season: SeasonGroup,
+    sections: List<EpisodeSection>,
+    listState: LazyListState,
+    focusIndex: Int?,
     watchStates: Map<String, WatchState>,
     episodeArtworkUrl: (MergedEntry) -> String?,
     onPlayEpisode: (MergedEntry) -> Unit,
     firstEpisodeRequester: FocusRequester,
+    onFocusEpisode: (SeasonGroup, MergedEntry) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val episodes = CatalogGrouping.seasonEpisodes(season)
-    val extras = CatalogGrouping.seasonExtras(season)
-    Column(modifier = modifier) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(seasonLabel(season.season), color = SwarmText, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.width(10.dp))
-            Text(seasonCountLabel(episodes.size, extras.size), color = SwarmMuted, fontSize = 13.sp)
-        }
-        Spacer(Modifier.height(12.dp))
-        // A fresh list per season: switching seasons always starts at the
-        // top instead of inheriting the previous season's scroll offset.
-        // An empty season has nothing to focus, so no list (and no fallback
-        // requester left unattached) is composed for it.
-        if (episodes.isNotEmpty() || extras.isNotEmpty()) key(seasonKey(season)) {
-            LazyColumn(
-                state = rememberLazyListState(),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-                // Re-entering from the season list returns to the episode
-                // the user left from; first entry into a season always lands
-                // on its first episode, not whichever row sits level with the
-                // highlighted season.
-                modifier = Modifier.fillMaxWidth().weight(1f).focusRestorer(firstEpisodeRequester),
-                contentPadding = PaddingValues(vertical = 4.dp),
-            ) {
-                itemsIndexed(
-                    items = episodes,
-                    key = { _, episode -> episode.entry.entryKey },
-                    contentType = { _, _ -> "episode" },
-                ) { index, episode ->
-                    EpisodeRow(
-                        entry = episode,
-                        label = episodeLabel(episode),
-                        title = episode.entry.displayTitle(),
-                        progress = watchStates.stateFor(episode.entry)?.progressFraction(),
-                        episodeArtworkUrl = episodeArtworkUrl,
-                        onPlayEpisode = onPlayEpisode,
-                        modifier = if (index == 0) Modifier.focusRequester(firstEpisodeRequester) else Modifier,
+    LazyColumn(
+        state = listState,
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+        modifier = modifier.focusProperties {
+            onExit = {
+                if (requestedFocusDirection == FocusDirection.Up || requestedFocusDirection == FocusDirection.Down) {
+                    cancelFocusChange()
+                }
+            }
+        }.focusGroup(),
+        contentPadding = PaddingValues(vertical = 4.dp),
+    ) {
+        for (section in sections) {
+            val seasonNumber = section.season.season
+            item(key = "season-header:$seasonNumber", contentType = "header") {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(seasonLabel(seasonNumber), color = SwarmText, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.width(10.dp))
+                    Text(seasonCountLabel(section.episodes.size, section.extras.size), color = SwarmMuted, fontSize = 13.sp)
+                }
+            }
+            itemsIndexed(
+                items = section.episodes,
+                key = { _, episode -> "episode:${episode.fingerprint}" },
+                contentType = { _, _ -> "episode" },
+            ) { index, episode ->
+                val focusModifier = if (section.headerIndex + 1 + index == focusIndex) {
+                    Modifier.focusRequester(firstEpisodeRequester)
+                } else Modifier
+                EpisodeRow(
+                    entry = episode,
+                    label = episodeLabel(episode),
+                    title = episode.entry.displayTitle(),
+                    progress = watchStates.stateFor(episode.entry)?.progressFraction(),
+                    episodeArtworkUrl = episodeArtworkUrl,
+                    onPlayEpisode = onPlayEpisode,
+                    modifier = focusModifier.onFocusChanged { if (it.isFocused) onFocusEpisode(section.season, episode) },
+                )
+            }
+            if (section.extras.isNotEmpty()) {
+                item(key = "extras-header:$seasonNumber", contentType = "header") {
+                    Text(
+                        "Extras",
+                        color = SwarmText,
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(top = 8.dp),
                     )
                 }
-                // Bonus content (featurettes/deleted scenes/etc.) stays
-                // labeled and grouped exactly like a movie's extras row on
-                // MovieDetailScreen — never a plain, undifferentiated episode.
-                if (extras.isNotEmpty()) {
-                    item(key = "extras-header", contentType = "header") {
-                        Text(
-                            "Extras",
-                            color = SwarmText,
-                            fontSize = 17.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(top = 8.dp),
-                        )
-                    }
-                    itemsIndexed(
-                        items = extras,
-                        key = { _, extra -> extra.entry.entryKey },
-                        contentType = { _, _ -> "extra" },
-                    ) { index, extra ->
-                        EpisodeRow(
-                            entry = extra,
-                            label = CatalogGrouping.extraTypeLabel(extra.entry.extraType),
-                            title = extra.entry.extraTitle ?: extra.entry.title,
-                            progress = watchStates.stateFor(extra.entry)?.progressFraction(),
-                            episodeArtworkUrl = episodeArtworkUrl,
-                            onPlayEpisode = onPlayEpisode,
-                            modifier = if (index == 0 && episodes.isEmpty()) {
-                                Modifier.focusRequester(firstEpisodeRequester)
-                            } else {
-                                Modifier
-                            },
-                        )
-                    }
+                itemsIndexed(
+                    items = section.extras,
+                    key = { _, extra -> "extra:${extra.fingerprint}" },
+                    contentType = { _, _ -> "extra" },
+                ) { index, extra ->
+                    val focusModifier = if (section.headerIndex + 2 + section.episodes.size + index == focusIndex) {
+                        Modifier.focusRequester(firstEpisodeRequester)
+                    } else Modifier
+                    EpisodeRow(
+                        entry = extra,
+                        label = CatalogGrouping.extraTypeLabel(extra.entry.extraType),
+                        title = extra.entry.extraTitle ?: extra.entry.title,
+                        progress = watchStates.stateFor(extra.entry)?.progressFraction(),
+                        episodeArtworkUrl = episodeArtworkUrl,
+                        onPlayEpisode = onPlayEpisode,
+                        modifier = focusModifier.onFocusChanged { if (it.isFocused) onFocusEpisode(section.season, extra) },
+                    )
                 }
             }
         }
@@ -552,7 +506,7 @@ internal fun episodeDurationLabel(durationSecs: Double?): String? {
     return if (hours > 0) "${hours}h ${minutes.toString().padStart(2, '0')}m" else "${minutes}m"
 }
 
-private fun seasonKey(season: SeasonGroup): Int = season.season ?: -1
+private fun seasonKey(season: SeasonGroup): String = season.season.toString()
 
 private fun episodeLabel(episode: MergedEntry): String {
     val number = episode.entry.episode?.let { "Episode $it" } ?: "Episode"

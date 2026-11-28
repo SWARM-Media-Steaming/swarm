@@ -22,6 +22,13 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 
 pub const SERVICE_TYPE: &str = "_swarm-peer._udp.local.";
+/// Display name advertised over mDNS and reported by the `info` pairing-port
+/// action (the unicast fallback for manual entry when mDNS can't be seen).
+pub const LAN_SERVER_DISPLAY_NAME: &str = "SWARM Media Server";
+/// mDNS uses port 5353 for both multicast announcements and queries.
+const MDNS_PORT: u16 = 5353;
+/// Group all LAN advertisements and queries go to.
+const MDNS_GROUP_V4: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
 /// How often the advertisement is announced again on an unchanged network.
 /// Cheap (two small multicast packets), and it means a TV that dropped the
 /// record while this server was idle gets a fresh announcement instead of
@@ -224,6 +231,22 @@ struct AdvertiseParams {
     http_media_tls_port: Option<u16>,
 }
 
+/// Identity a TV needs to pair without mDNS: the same fields the TXT record
+/// carries, served unicast over the pairing TCP port by the `info` action.
+/// This is the manual-entry fallback for when multicast discovery can't be
+/// seen on the LAN (a full-tunnel VPN swallowing 224.0.0.251 silenced the
+/// real mDNS responder with no error anywhere). Same trust level as the TXT
+/// record itself — public on the LAN, not authorization.
+#[derive(Clone)]
+struct ServerIdentity {
+    name: &'static str,
+    fingerprint: String,
+    peer_port: u16,
+    pairing_port: u16,
+    http_media_port: u16,
+    http_media_tls_port: Option<u16>,
+}
+
 struct Advertisement {
     daemon: ServiceDaemon,
     fullname: String,
@@ -258,9 +281,18 @@ impl LanService {
             Err(error) => return Err(error),
         };
         let pairing_port = listener.local_addr()?.port();
+        let identity = ServerIdentity {
+            name: LAN_SERVER_DISPLAY_NAME,
+            fingerprint: server_fingerprint,
+            peer_port: peer_addr.port(),
+            pairing_port,
+            http_media_port,
+            http_media_tls_port,
+        };
         let pairing = Arc::new(Mutex::new(PairingState::default()));
         let listener_pairing = Arc::clone(&pairing);
         let listener_allowed = allowed.clone();
+        let listener_identity = identity.clone();
         tokio::spawn(async move {
             loop {
                 let (socket, remote) = match listener.accept().await {
@@ -272,10 +304,17 @@ impl LanService {
                 };
                 let state = Arc::clone(&listener_pairing);
                 let request_allowed = listener_allowed.clone();
+                let request_identity = listener_identity.clone();
                 tokio::spawn(async move {
                     match tokio::time::timeout(
                         Duration::from_secs(10),
-                        handle_pair_request(socket, remote, state, request_allowed),
+                        handle_pair_request(
+                            socket,
+                            remote,
+                            state,
+                            request_allowed,
+                            request_identity,
+                        ),
                     )
                     .await
                     {
@@ -291,16 +330,24 @@ impl LanService {
 
         let advertisement = if should_advertise(peer_addr) {
             advertise(AdvertiseParams {
-                server_fingerprint,
-                peer_port: peer_addr.port(),
-                pairing_port,
-                http_media_port,
-                http_media_tls_port,
+                server_fingerprint: identity.fingerprint.clone(),
+                peer_port: identity.peer_port,
+                pairing_port: identity.pairing_port,
+                http_media_port: identity.http_media_port,
+                http_media_tls_port: identity.http_media_tls_port,
             })
         } else {
             tracing::debug!(%peer_addr, "peer listener is loopback-only; not advertising on the LAN");
             None
         };
+        if advertisement.is_some() {
+            // The advertisement registering successfully says nothing about
+            // whether it can actually be seen: a full-tunnel VPN swallows the
+            // multicast it is sent on while every call here still succeeds.
+            // Probe the real path once so a deaf responder warns loudly
+            // instead of leaving TVs showing an empty server list.
+            tokio::task::spawn_blocking(multicast_loopback_check);
+        }
         Ok(Self {
             pairing,
             state_db,
@@ -381,7 +428,7 @@ fn should_advertise(peer_addr: SocketAddr) -> bool {
 /// Builds the mDNS record advertising this server at `address`.
 fn build_service_info(params: &AdvertiseParams, address: IpAddr) -> Result<ServiceInfo, String> {
     let short = &params.server_fingerprint[..params.server_fingerprint.len().min(12)];
-    let instance = format!("SWARM Media Server {short}");
+    let instance = format!("{LAN_SERVER_DISPLAY_NAME} {short}");
     let hostname = format!("swarm-{short}.local.");
     let peer_port = params.peer_port.to_string();
     let pair_port = params.pairing_port.to_string();
@@ -395,7 +442,7 @@ fn build_service_info(params: &AdvertiseParams, address: IpAddr) -> Result<Servi
     let http_media_tls_port_str = params.http_media_tls_port.map(|port| port.to_string());
     let mut properties = vec![
         ("protocol", "2"),
-        ("name", "SWARM Media Server"),
+        ("name", LAN_SERVER_DISPLAY_NAME),
         ("fingerprint", params.server_fingerprint.as_str()),
         ("peer_port", peer_port.as_str()),
         ("pair_port", pair_port.as_str()),
@@ -480,6 +527,84 @@ struct PairResponse {
     expires_in_seconds: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     status: Option<&'static str>,
+    // Present only on the `info` action: the same fields the mDNS TXT record
+    // carries, so a manual-IP client can build the identical LanServer.
+    // `ignoreUnknownKeys` on the Kotlin side keeps old TVs decoding new
+    // responses, and new TVs treat every one as optional for old servers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    server_name: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    server_fingerprint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    peer_port: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pair_port: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    http_media_port: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    http_media_tls_port: Option<u16>,
+}
+
+/// Sends one multicast probe to the mDNS group and requires our own
+/// looped-back copy to arrive on the LAN interface, through the same route
+/// table the real advertisement follows. A full-tunnel VPN captures
+/// 224.0.0.251, so the probe (and the advertisement) vanish into the tunnel
+/// while every mDNS API call still succeeds — this turns that silent failure
+/// into a loud warning. Best-effort only: never fails startup.
+fn multicast_loopback_check() {
+    let lan_addr = swarm_p2p::local_addr::detect_local_ipv4();
+    let lan_v4 = match lan_addr {
+        IpAddr::V4(v4) => v4,
+        _ => {
+            tracing::debug!(%lan_addr, "skipping mDNS multicast probe on a non-IPv4 LAN address");
+            return;
+        }
+    };
+    if let Err(error) = multicast_loopback_probe(lan_v4) {
+        tracing::warn!(
+            %error,
+            lan = %lan_v4,
+            "mDNS multicast probe did not loop back: TVs on this network likely cannot see this \
+             server's announcements. A full-tunnel VPN capturing multicast (224.0.0.251) is the \
+             usual cause — entering the server's IP on the TV still works."
+        );
+    }
+}
+
+fn multicast_loopback_probe(lan_v4: Ipv4Addr) -> std::io::Result<()> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+    socket.set_reuse_address(true)?;
+    #[cfg(unix)]
+    let _ = socket.set_reuse_port(true);
+    socket.bind(&SocketAddr::from((Ipv4Addr::UNSPECIFIED, MDNS_PORT)).into())?;
+    socket.join_multicast_v4(&MDNS_GROUP_V4, &lan_v4)?;
+    socket.set_read_timeout(Some(Duration::from_millis(500)))?;
+    let udp: std::net::UdpSocket = socket.into();
+    // Deliberately not pinning the egress interface: the real advertisement
+    // follows the route table, and that is exactly the path under test.
+    let destination = SocketAddr::from((MDNS_GROUP_V4, MDNS_PORT));
+    let probe = b"swarm-mdns-probe";
+    udp.send_to(probe, destination)?;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut buf = [0u8; 64];
+    while Instant::now() < deadline {
+        match udp.recv_from(&mut buf) {
+            Ok((len, _)) if &buf[..len] == probe => return Ok(()),
+            Ok(_) => continue,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock
+                    || error.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                continue
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        "no looped-back multicast probe received",
+    ))
 }
 
 async fn handle_pair_request(
@@ -487,6 +612,7 @@ async fn handle_pair_request(
     remote: SocketAddr,
     pairing: Arc<Mutex<PairingState>>,
     allowed: AllowedPeers,
+    identity: ServerIdentity,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if !is_lan_address(remote.ip()) {
         write_response(
@@ -516,6 +642,26 @@ async fn handle_pair_request(
     };
 
     match request.action.as_str() {
+        // Unicast equivalent of the mDNS TXT record: lets a TV that cannot
+        // see multicast (VPN swallowing 224.0.0.251, filtered Wi-Fi) still
+        // find this server from a manually entered IP. LAN-gated above like
+        // every other action; same trust level as the broadcast TXT.
+        "info" => {
+            write_response(
+                &mut socket,
+                PairResponse {
+                    ok: true,
+                    server_name: Some(identity.name),
+                    server_fingerprint: Some(identity.fingerprint.clone()),
+                    peer_port: Some(identity.peer_port),
+                    pair_port: Some(identity.pairing_port),
+                    http_media_port: Some(identity.http_media_port),
+                    http_media_tls_port: identity.http_media_tls_port,
+                    ..PairResponse::default()
+                },
+            )
+            .await?;
+        }
         "begin" | "begin_testing" => {
             let testing = request.action == "begin_testing";
             if testing && !cfg!(debug_assertions) {
@@ -849,16 +995,28 @@ mod tests {
         assert!(!is_lan_address("8.8.8.8".parse().unwrap()));
     }
 
+    fn test_identity() -> ServerIdentity {
+        ServerIdentity {
+            name: LAN_SERVER_DISPLAY_NAME,
+            fingerprint: "cd".repeat(32),
+            peer_port: 8543,
+            pairing_port: 8543,
+            http_media_port: 8546,
+            http_media_tls_port: None,
+        }
+    }
+
     async fn exchange(
         pairing: Arc<Mutex<PairingState>>,
         allowed: AllowedPeers,
+        identity: ServerIdentity,
         request: serde_json::Value,
     ) -> serde_json::Value {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (socket, remote) = listener.accept().await.unwrap();
-            handle_pair_request(socket, remote, pairing, allowed)
+            handle_pair_request(socket, remote, pairing, allowed, identity)
                 .await
                 .unwrap();
         });
@@ -889,6 +1047,7 @@ mod tests {
         let started = exchange(
             Arc::clone(&pairing),
             allowed.clone(),
+            test_identity(),
             serde_json::json!({
                 "action": "begin",
                 "name": "Living Room TV",
@@ -911,6 +1070,7 @@ mod tests {
         let polled = exchange(
             Arc::clone(&pairing),
             allowed.clone(),
+            test_identity(),
             serde_json::json!({
                 "action": "poll",
                 "activation_id": started["activation_id"],
@@ -923,6 +1083,29 @@ mod tests {
 
         drop(db);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn info_returns_identity_for_manual_entry() {
+        let pairing = Arc::new(Mutex::new(PairingState::default()));
+        let allowed = AllowedPeers::new();
+        let info = exchange(
+            Arc::clone(&pairing),
+            allowed,
+            test_identity(),
+            serde_json::json!({ "action": "info" }),
+        )
+        .await;
+        assert_eq!(info["ok"], true);
+        assert_eq!(info["server_name"].as_str().unwrap(), "SWARM Media Server");
+        assert_eq!(
+            info["server_fingerprint"].as_str().unwrap(),
+            "cd".repeat(32)
+        );
+        assert_eq!(info["peer_port"].as_u64().unwrap(), 8543);
+        assert_eq!(info["pair_port"].as_u64().unwrap(), 8543);
+        assert_eq!(info["http_media_port"].as_u64().unwrap(), 8546);
+        assert!(info.get("http_media_tls_port").is_none());
     }
 
     #[test]

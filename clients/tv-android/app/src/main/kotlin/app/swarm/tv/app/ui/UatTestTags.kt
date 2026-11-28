@@ -58,6 +58,11 @@ object UatTestTags {
     const val LAN_SERVER_DISCONNECT_BUTTON = "uat_lan_server_disconnect_button"
     const val LAN_SERVER_FORGET_BUTTON = "uat_lan_server_forget_button"
 
+    // Manual IP entry fallback (no mDNS needed; launched from SwarmDashboardScreen).
+    const val MANUAL_ENTRY_BUTTON = "uat_manual_entry_button"
+    const val MANUAL_ENTRY_FIELD = "uat_manual_entry_field"
+    const val MANUAL_ENTRY_SUBMIT_BUTTON = "uat_manual_entry_submit_button"
+
     // STUN "Add Server" activation flow (launched from SwarmDashboardScreen).
     const val ADD_SERVER_START_BUTTON = "uat_add_server_start_button"
     const val ACTIVATION_CODE = "uat_activation_code"

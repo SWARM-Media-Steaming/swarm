@@ -163,6 +163,54 @@ class LanDiscoveryManager(context: Context) : Closeable {
         _servers.value = resolved.values.sortedBy { it.name.lowercase() }
     }
 
+    /**
+     * Unicast equivalent of resolving an mDNS record: asks the pairing port
+     * at [host]:[port] for the `info` action and builds the same [LanServer]
+     * discovery would have produced. Used by manual IP entry when multicast
+     * announcements can't be seen on the LAN.
+     */
+    suspend fun fetchServerInfo(host: String, port: Int): Result<LanServer> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val response = exchangeInfo(host, port)
+                if (!response.ok) {
+                    error(response.error ?: "The media server refused the request.")
+                }
+                val fingerprint = response.serverFingerprint?.lowercase()
+                if (fingerprint == null || fingerprint.length != 64 ||
+                    fingerprint.any { !it.isDigit() && it !in 'a'..'f' }
+                ) {
+                    error("That address did not answer like a SWARM media server.")
+                }
+                val peerPort = response.peerPort ?: port
+                val pairingPort = response.pairingPort ?: port
+                if (peerPort !in 1..65535 || pairingPort !in 1..65535) {
+                    error("That address did not answer like a SWARM media server.")
+                }
+                LanServer(
+                    serviceName = "manual:$host:$port",
+                    name = response.serverName?.takeIf { it.isNotBlank() } ?: host,
+                    host = host,
+                    peerPort = peerPort,
+                    pairingPort = pairingPort,
+                    certFingerprint = fingerprint,
+                )
+            }
+        }
+
+    private fun exchangeInfo(host: String, port: Int): LanPairResponse =
+        Socket().use { socket ->
+            socket.connect(InetSocketAddress(host, port), 5_000)
+            socket.soTimeout = 5_000
+            val writer = socket.getOutputStream().bufferedWriter()
+            writer.write(SwarmJson.encodeToString(LanPairRequest(action = "info")))
+            writer.newLine()
+            writer.flush()
+            val line = socket.getInputStream().bufferedReader().readLine()
+                ?: error("The media server closed the connection.")
+            SwarmJson.decodeFromString(line)
+        }
+
     private fun stopAfterFailure() {
         started = false
         resolving = false
@@ -312,4 +360,56 @@ private data class LanPairResponse(
     @SerialName("poll_token") val pollToken: String? = null,
     @SerialName("expires_in_seconds") val expiresInSeconds: Long? = null,
     val status: String? = null,
+    // Present only on the `info` action: the same fields the mDNS TXT record
+    // carries. All optional so old servers (which lack the action) still
+    // decode; `ignoreUnknownKeys` covers the reverse direction.
+    @SerialName("server_name") val serverName: String? = null,
+    @SerialName("server_fingerprint") val serverFingerprint: String? = null,
+    @SerialName("peer_port") val peerPort: Int? = null,
+    @SerialName("pair_port") val pairingPort: Int? = null,
+    @SerialName("http_media_port") val httpMediaPort: Int? = null,
 )
+
+/**
+ * Parses manual server entry: "192.168.0.126" or "192.168.0.126:8543" (a
+ * scheme prefix or trailing path is tolerated and stripped). Returns null
+ * when no usable host remains. The port defaults to the server's default
+ * peer/pairing port (gui.rs binds 0.0.0.0:8543 unless SWARM_PEER_BIND says
+ * otherwise); the `info` reply then reports the authoritative ports, so this
+ * default is only the first knock.
+ */
+internal fun parseManualServerInput(input: String): Pair<String, Int>? {
+    val defaultPort = 8543
+    var text = input.trim()
+    if (text.isEmpty()) return null
+    text = text.substringAfter("://", text).substringBefore("/").trim()
+    if (text.isEmpty()) return null
+    // "[v6]" or "[v6]:port".
+    if (text.startsWith("[")) {
+        val close = text.indexOf(']')
+        if (close < 0) return null
+        val host = text.substring(1, close).trim()
+        val rest = text.substring(close + 1).trim()
+        val port = if (rest.startsWith(":")) {
+            rest.drop(1).toIntOrNull() ?: return null
+        } else if (rest.isEmpty()) {
+            defaultPort
+        } else {
+            return null
+        }
+        if (host.isEmpty() || port !in 1..65535) return null
+        return host to port
+    }
+    // "host", "host:port", or a bare IPv6 literal (no port).
+    val firstColon = text.indexOf(':')
+    val lastColon = text.lastIndexOf(':')
+    if (firstColon >= 0 && firstColon != lastColon) {
+        // More than one colon: a bare IPv6 literal, port stays default.
+        return text to defaultPort
+    }
+    if (lastColon < 0) return text to defaultPort
+    val host = text.substring(0, lastColon).trim()
+    val port = text.substring(lastColon + 1).trim().toIntOrNull() ?: return null
+    if (host.isEmpty() || port !in 1..65535) return null
+    return host to port
+}

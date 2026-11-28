@@ -466,6 +466,9 @@ class SwarmViewModel(
     val lanPairingBusy: StateFlow<Boolean> = _lanPairingBusy.asStateFlow()
     private val _lanPairingActivation = MutableStateFlow<LanPairingActivation?>(null)
     val lanPairingActivation: StateFlow<LanPairingActivation?> = _lanPairingActivation.asStateFlow()
+    /** Server resolved through manual IP entry, awaiting the user's tap to pair. */
+    private val _manualLanServer = MutableStateFlow<LanServer?>(null)
+    val manualLanServer: StateFlow<LanServer?> = _manualLanServer.asStateFlow()
     private val _lanError = MutableStateFlow<String?>(null)
     val lanError: StateFlow<String?> = _lanError.asStateFlow()
     private val _pairedLanFingerprints = MutableStateFlow<Set<String>>(emptySet())
@@ -850,7 +853,13 @@ class SwarmViewModel(
                     }
                 }
             } catch (e: StunClientError) {
-                val message = e.message ?: "Could not start TV activation."
+                // Name the unreachable address and point at the LAN paths:
+                // "failed to connect" alone sent users down the SWARM-only
+                // hole when their server was sitting on the same network.
+                val detail = e.message ?: "Could not start TV activation."
+                val message = "$detail (SWARM service $url unreachable. " +
+                    "If the media server is on this network, pick it under " +
+                    "Servers on LAN or enter its IP address instead.)"
                 _state.value = activationReturnState
                     ?.withActivationError(message)
                     ?: connectionSetupDashboard(message)
@@ -1044,6 +1053,45 @@ class SwarmViewModel(
         viewModelScope.launch { connectLanServerNow(server, deviceName, knownPaired, userInitiated = true) }
     }
 
+    /**
+     * Manual-entry fallback for when mDNS announcements can't be seen on the
+     * LAN (proven real: a full-tunnel VPN swallowing 224.0.0.251 left the
+     * server list empty with no error anywhere). Asks the pairing port at
+     * the typed address for the same identity discovery would have carried,
+     * then hands the result to the normal pairing overlay via
+     * [manualLanServer]. The port defaults to the server's default; the
+     * `info` reply reports the authoritative ports.
+     */
+    fun fetchManualLanServer(hostInput: String) {
+        val parsed = parseManualServerInput(hostInput)
+        if (parsed == null) {
+            val message = "Enter the server's IP address, optionally with :port (for example 192.168.0.126)."
+            _lanError.value = message
+            notify(message, ClientNotificationKind.ERROR)
+            return
+        }
+        val (host, port) = parsed
+        lanPairingJob?.cancel()
+        lanPairingJob = viewModelScope.launch {
+            _lanPairingBusy.value = true
+            _lanError.value = null
+            _manualLanServer.value = null
+            val server = lanDiscovery.fetchServerInfo(host, port)
+            _lanPairingBusy.value = false
+            if (server.isFailure) {
+                val message = server.exceptionOrNull()?.message ?: "Could not reach that address."
+                _lanError.value = message
+                notify(message, ClientNotificationKind.ERROR)
+                return@launch
+            }
+            _manualLanServer.value = server.getOrThrow()
+        }
+    }
+
+    fun clearManualLanServer() {
+        _manualLanServer.value = null
+    }
+
     fun startLanPairing(server: LanServer, deviceName: String) {
         if (_testingMode.value != null) {
             maybeStartTestingPairing()
@@ -1115,6 +1163,7 @@ class SwarmViewModel(
         _lanPairingBusy.value = false
         _lanPairingActivation.value = null
         _lanError.value = null
+        _manualLanServer.value = null
     }
 
     private suspend fun connectLanServerNow(

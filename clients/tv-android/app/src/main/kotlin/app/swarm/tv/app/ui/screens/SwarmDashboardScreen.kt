@@ -48,6 +48,7 @@ import app.swarm.tv.app.data.CONNECTION_SETUP_SWARM_ID
 import app.swarm.tv.app.data.LanPairingActivation
 import app.swarm.tv.app.data.LanServer
 import app.swarm.tv.app.ui.UatTestTags
+import app.swarm.tv.app.ui.components.TvOutlinedTextField
 import app.swarm.tv.app.ui.components.swarmActionButtonColors
 import app.swarm.tv.app.ui.theme.SwarmAccent
 import app.swarm.tv.app.ui.theme.SwarmAccentHot
@@ -73,6 +74,7 @@ fun SwarmDashboardScreen(
     lanPairingBusy: Boolean,
     lanPairingActivation: LanPairingActivation?,
     lanError: String?,
+    manualLanServer: LanServer?,
     deviceName: String,
     joiningServer: Boolean,
     joinServerError: String?,
@@ -83,6 +85,8 @@ fun SwarmDashboardScreen(
     onConnectLan: (LanServer, String) -> Unit,
     onStartLanPairing: (LanServer, String) -> Unit,
     onCancelLanPairing: () -> Unit,
+    onFetchManualServer: (String) -> Unit,
+    onClearManualServer: () -> Unit,
     onDisconnectServer: (SwarmDevice) -> Unit,
     onReconnectServer: (SwarmDevice) -> Unit,
     onDisconnectLanServer: (LanServer) -> Unit,
@@ -99,9 +103,10 @@ fun SwarmDashboardScreen(
     var selectedLanServer by remember { mutableStateOf<LanServer?>(null) }
     var selectedKnownLanServer by remember { mutableStateOf<LanServer?>(null) }
     var showAddServer by remember { mutableStateOf(false) }
+    var showManualEntry by remember { mutableStateOf(false) }
     val activity = LocalContext.current as? Activity
     val modalOpen = showExitConfirm || selectedSwarmServer != null || selectedLanServer != null ||
-        selectedKnownLanServer != null || showAddServer
+        selectedKnownLanServer != null || showAddServer || showManualEntry
     val isConnectionSetup = swarm.id == CONNECTION_SETUP_SWARM_ID
 
     val serversInSwarm = if (swarm.id == "lan") emptyList() else visibleSwarmServers(devices)
@@ -137,6 +142,17 @@ fun SwarmDashboardScreen(
         val selected = selectedLanServer ?: return@LaunchedEffect
         if (normalized(selected.certFingerprint) in paired) {
             selectedLanServer = null
+        }
+    }
+    // A manually entered server drops straight into the normal pairing
+    // overlay: selecting it and starting pairing, same as tapping a
+    // discovered row.
+    LaunchedEffect(manualLanServer) {
+        manualLanServer?.let {
+            selectedLanServer = it
+            showManualEntry = false
+            onClearManualServer()
+            onStartLanPairing(it, deviceName)
         }
     }
     LaunchedEffect(lanServerRows, pairedLanFingerprints, selectedKnownLanServer?.certFingerprint) {
@@ -258,6 +274,16 @@ fun SwarmDashboardScreen(
                 if (lanPairingBusy && selectedLanServer == null && lanError == null) {
                     item { Text("Connecting…", color = SwarmMuted, fontSize = 12.sp) }
                 }
+                item {
+                    // Unicast fallback for when multicast announcements can't
+                    // be seen (VPN, filtered Wi-Fi): same pairing flow, the
+                    // server is just named by address instead of discovered.
+                    Button(
+                        onClick = { showManualEntry = true },
+                        modifier = Modifier.testTag(UatTestTags.MANUAL_ENTRY_BUTTON),
+                        colors = swarmActionButtonColors(),
+                    ) { Text("Enter IP address") }
+                }
                 if (lanServerRows.isEmpty()) {
                     item {
                         Text(
@@ -375,6 +401,15 @@ fun SwarmDashboardScreen(
                 onDismiss = {
                     showAddServer = false
                 },
+            )
+        }
+
+        if (showManualEntry) {
+            ManualServerEntryOverlay(
+                busy = lanPairingBusy,
+                error = lanError?.takeIf { selectedLanServer == null },
+                onSubmit = { onFetchManualServer(it) },
+                onDismiss = { showManualEntry = false },
             )
         }
 
@@ -619,6 +654,51 @@ private fun AddServerOverlay(
             colors = swarmActionButtonColors(),
         ) {
             Text(if (busy) "Requesting…" else "Show activation code", fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+@Composable
+private fun ManualServerEntryOverlay(
+    busy: Boolean,
+    error: String?,
+    onSubmit: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var address by remember { mutableStateOf("") }
+    BackHandler(onBack = onDismiss)
+    val actionFocusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) { actionFocusRequester.requestFocus() }
+
+    ModalSurface {
+        Text("Enter server IP address", color = SwarmText, fontSize = 20.sp, fontWeight = FontWeight.Black)
+        Spacer(Modifier.height(6.dp))
+        Text("When this TV can't discover the server on its own, type its address directly (for example 192.168.0.126).", color = SwarmMuted, fontSize = 13.sp)
+        Spacer(Modifier.height(14.dp))
+        TvOutlinedTextField(
+            value = address,
+            onValueChange = { address = it },
+            placeholder = { Text("192.168.0.126") },
+            onSubmit = { if (address.isNotBlank() && !busy) onSubmit(address) },
+            modifier = Modifier.testTag(UatTestTags.MANUAL_ENTRY_FIELD),
+        )
+        error?.let {
+            Spacer(Modifier.height(8.dp))
+            Text(it, color = SwarmError, fontSize = 12.sp)
+        }
+        Spacer(Modifier.height(14.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Button(
+                onClick = { if (address.isNotBlank()) onSubmit(address) },
+                enabled = !busy,
+                modifier = Modifier
+                    .focusRequester(actionFocusRequester)
+                    .testTag(UatTestTags.MANUAL_ENTRY_SUBMIT_BUTTON),
+                colors = swarmActionButtonColors(),
+            ) {
+                Text(if (busy) "Looking…" else "Connect", fontWeight = FontWeight.Bold)
+            }
+            Button(onClick = onDismiss, colors = swarmActionButtonColors()) { Text("Cancel") }
         }
     }
 }

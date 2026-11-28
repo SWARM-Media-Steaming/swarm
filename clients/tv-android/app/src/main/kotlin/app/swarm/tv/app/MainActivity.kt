@@ -284,6 +284,7 @@ class MainActivity : ComponentActivity() {
                     val lanPairingBusy by viewModel.lanPairingBusy.collectAsState()
                     val lanPairingActivation by viewModel.lanPairingActivation.collectAsState()
                     val lanError by viewModel.lanError.collectAsState()
+                    val manualLanServer by viewModel.manualLanServer.collectAsState()
                     val pairedLanFingerprints by viewModel.pairedLanFingerprints.collectAsState()
                     val pairedLanServers by viewModel.pairedLanServers.collectAsState()
                     val disconnectedServerFingerprints by viewModel.disconnectedServerFingerprints.collectAsState()
@@ -306,6 +307,9 @@ class MainActivity : ComponentActivity() {
                         onConnectLan = viewModel::connectLanServer,
                         onStartLanPairing = viewModel::startLanPairing,
                         onCancelLanPairing = viewModel::cancelLanPairing,
+                        manualLanServer = manualLanServer,
+                        onFetchManualServer = viewModel::fetchManualLanServer,
+                        onClearManualServer = viewModel::clearManualLanServer,
                         onDisconnectServer = viewModel::disconnectSwarmServer,
                         onReconnectServer = viewModel::reconnectSwarmServer,
                         onDisconnectLanServer = viewModel::disconnectLanServer,
@@ -457,6 +461,7 @@ private fun SwarmApp(
     lanPairingBusy: Boolean,
     lanPairingActivation: LanPairingActivation?,
     lanError: String?,
+    manualLanServer: LanServer?,
     pairedLanFingerprints: Set<String>,
     pairedLanServers: List<LanServer>,
     disconnectedServerFingerprints: Set<String>,
@@ -465,6 +470,8 @@ private fun SwarmApp(
     onConnectLan: (server: LanServer, deviceName: String) -> Unit,
     onStartLanPairing: (server: LanServer, deviceName: String) -> Unit,
     onCancelLanPairing: () -> Unit,
+    onFetchManualServer: (String) -> Unit,
+    onClearManualServer: () -> Unit,
     onDisconnectServer: (SwarmDevice) -> Unit,
     onReconnectServer: (SwarmDevice) -> Unit,
     onDisconnectLanServer: (LanServer) -> Unit,
@@ -916,7 +923,10 @@ private fun SwarmApp(
                     lanPairingBusy = lanPairingBusy,
                     lanPairingActivation = lanPairingActivation,
                     lanError = lanError,
+                    manualLanServer = manualLanServer,
                     deviceName = defaultDeviceName,
+                    onFetchManualServer = onFetchManualServer,
+                    onClearManualServer = onClearManualServer,
                     joiningServer = state.joiningServer,
                     joinServerError = state.joinServerError,
                     serviceUnreachable = state.serviceUnreachable,

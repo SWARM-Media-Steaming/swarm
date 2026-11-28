@@ -47,6 +47,7 @@ sha1 = "0.10"
 sha2 = { workspace = true }
 whisper-rs = { version = "0.16", features = ["tracing_backend"] }
 mdns-sd = "0.21"
+socket2 = "0.6"
 # Not gui-gated (unlike mcp.rs's use of it): the new HTTP media/pairing
 # surface it backs runs unconditionally from ServerCore::start, the same as
 # the QUIC listener and LAN pairing, not just from the Tauri GUI's opt-in

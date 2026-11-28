@@ -43,6 +43,10 @@ import android.widget.ImageButton
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
@@ -123,7 +127,6 @@ import androidx.tv.material3.CardDefaults
 import androidx.tv.material3.Glow
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.graphicsLayer
 import app.swarm.tv.app.PausePlayerWhenAppBackgrounded
 import app.swarm.tv.app.data.AndroidAudioLanguagePreferenceStore
@@ -1127,6 +1130,8 @@ fun PlayerScreen(
             applySwarmPlaybackControlColors(this)
         }
     }
+    val playerViewFocusable = remember(playerView) { playerView.isFocusable }
+    val playerViewDescendantFocusability = remember(playerView) { playerView.descendantFocusability }
     // Focus target for the bare, playing video surface. Requested through
     // Compose (not the native View) so the surface's onPreviewKeyEvent regains
     // ownership of Select after the native controller — whose buttons sit
@@ -1544,6 +1549,7 @@ fun PlayerScreen(
                 .fillMaxSize()
                 .testTag(UatTestTags.PLAYER_SURFACE)
                 .focusRequester(videoSurfaceFocusRequester)
+                .focusProperties { canFocus = !showPauseOverlay }
                 .focusable()
                 .onKeyEvent {
                     val event = it.nativeKeyEvent
@@ -1567,6 +1573,14 @@ fun PlayerScreen(
             update = { view ->
                 view.player = controllerPlayer
                 view.useController = !showPauseOverlay
+                // Native focus search can reach PlayerView and its children
+                // independently of the Compose focus target.
+                view.descendantFocusability = if (showPauseOverlay) {
+                    ViewGroup.FOCUS_BLOCK_DESCENDANTS
+                } else {
+                    playerViewDescendantFocusability
+                }
+                view.isFocusable = !showPauseOverlay && playerViewFocusable
                 if (showPauseOverlay) view.hideController()
             },
         )
@@ -1918,8 +1932,12 @@ private fun PauseOverlay(
                 .fillMaxSize()
                 .padding(horizontal = 44.dp, vertical = 28.dp)
                 // The report picker is modal, so its dimmed pause controls must
-                // not be reachable after the last picker option.
-                .focusProperties { canFocus = !showProblemPicker },
+                // not be reachable after the last picker option. Only override
+                // canFocus while it is open: these properties cascade onto every
+                // focus target below, and forcing `true` made the "More like
+                // this" row's own container take focus instead of a card
+                // (issue #497).
+                .focusProperties { if (showProblemPicker) canFocus = false },
         ) {
             Row(modifier = Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(36.dp)) {
                 Column(modifier = Modifier.weight(1f)) {
@@ -2014,7 +2032,10 @@ private fun PauseOverlay(
                         }
                     }
                 }
-                Column(modifier = Modifier.width(285.dp)) {
+                // Issue #497: the pickers share the 256dp top row with "More like
+                // this". When a dropdown expands, its option list must not be
+                // squeezed to zero-height rows, so this column scrolls instead.
+                Column(modifier = Modifier.width(285.dp).verticalScroll(rememberScrollState())) {
                     AudioBoostPicker(audioBoostLevel, audioBoostStatus, onAudioBoostLevel)
                     Spacer(Modifier.height(18.dp))
                     TrackPickerBlock(
@@ -2045,7 +2066,9 @@ private fun PauseOverlay(
                     modifier = Modifier.fillMaxWidth().height(186.dp),
                     // Room for the focused card's lift and border so it isn't clipped.
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    // Wide enough that the lifted, bordered card never overlaps
+                    // its neighbour, so only one poster reads as selected.
+                    horizontalArrangement = Arrangement.spacedBy(32.dp),
                 ) {
                     items(recommendations, key = { it.fingerprint }) { recommendation ->
                         PauseRecommendationCard(
@@ -2079,8 +2102,12 @@ private fun AudioBoostPicker(level: Int, status: String, onSelect: (Int) -> Unit
         testTag = UatTestTags.PAUSE_AUDIO_BOOST_PICKER,
         optionTagPrefix = UatTestTags.PAUSE_AUDIO_BOOST_OPTION_PREFIX,
     )
-    Spacer(Modifier.height(4.dp))
-    Text(status, color = if (status.startsWith("Active")) SwarmAccent else SwarmMuted, fontSize = 11.sp, maxLines = 2)
+    // Issue #497: the dropdown already shows the chosen level, so text under
+    // it only appears when the boost cannot be applied on this output.
+    if (status.startsWith("Unavailable")) {
+        Spacer(Modifier.height(4.dp))
+        Text(status, color = SwarmMuted, fontSize = 11.sp, maxLines = 2)
+    }
 }
 
 @Composable
@@ -2182,9 +2209,11 @@ private fun <T> PauseDropdown(
  * does everywhere else artwork is shown without a caption. */
 @Composable
 private fun PauseRecommendationCard(entry: MergedEntry, artworkUrl: String?, onClick: () -> Unit) {
-    var focused by remember { mutableStateOf(false) }
+    val interactionSource = remember { MutableInteractionSource() }
+    val focused by interactionSource.collectIsFocusedAsState()
     Card(
         onClick = onClick,
+        interactionSource = interactionSource,
         colors = CardDefaults.colors(containerColor = SwarmSurface),
         // Issue #497: a 1.06x scale alone was invisible on the dark pause
         // scrim, so the focused poster also gets a thick accent border, a
@@ -2197,13 +2226,17 @@ private fun PauseRecommendationCard(entry: MergedEntry, artworkUrl: String?, onC
         ),
         glow = CardDefaults.glow(focusedGlow = Glow(elevationColor = SwarmAccent, elevation = 12.dp)),
         shape = CardDefaults.shape(RoundedCornerShape(6.dp)),
-        modifier = Modifier.width(108.dp).onFocusChanged { focused = it.hasFocus }.graphicsLayer { alpha = if (focused) 1f else 0.72f },
+        modifier = Modifier.width(108.dp).focusProperties {
+            down = FocusRequester.Cancel
+        },
     ) {
         ArtworkImage(
             label = pauseRecommendationTitle(entry),
             placeholderType = if (entry.entry.kind == MediaKind.MOVIE) "Movie" else "Show",
             primaryUrl = artworkUrl,
-            modifier = Modifier.fillMaxWidth().aspectRatio(2f / 3f).clip(RoundedCornerShape(4.dp)),
+            modifier = Modifier.fillMaxWidth().aspectRatio(2f / 3f)
+                .graphicsLayer { alpha = if (focused) 1f else 0.72f }
+                .clip(RoundedCornerShape(4.dp)),
         )
     }
 }

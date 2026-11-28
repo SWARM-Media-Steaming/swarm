@@ -156,8 +156,13 @@ def test_ui_reachable_by_remote() -> None:
     check(m is not None, "AudioBoostPicker missing")
     if m:
         body = m.group(0)
-        check("SelectableChip" in body and "onClick" in body,
-              "levels must be D-pad selectable chips")
+        # Issue #497 replaces the individual boost buttons with a dropdown;
+        # preserve the remote-selection regression check through that control.
+        dropdown = re.search(r"private fun <T> PauseDropdown\(.*?\n}\n", PLAYER, re.S)
+        check("PauseDropdown(" in body and "onSelect = onSelect" in body and
+              dropdown is not None and "SelectableChip(" in dropdown.group(0) and
+              "onSelect(option.value)" in dropdown.group(0),
+              "levels must be selectable by D-pad through the dropdown")
         check("AndroidAudioBoostStore.LEVELS" in body, "picker must offer every supported level")
         check('"Off"' in body, "an explicit Off option is required")
     check("AudioBoostPicker(audioBoostLevel, audioBoostStatus" in PLAYER,

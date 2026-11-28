@@ -58,6 +58,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
@@ -88,10 +89,19 @@ import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.window.PopupProperties
 import androidx.media3.common.C
 import androidx.media3.common.Format
 import androidx.media3.common.ForwardingPlayer
@@ -1211,7 +1221,7 @@ fun PlayerScreen(
     }
     // Audio effect attachment is session-scoped. Rebuild it whenever the
     // selected level or ExoPlayer audio session changes (including track/sink
-    // recreation); failures are reflected on screen and logged without secrets.
+    // recreation); failures are exposed to accessibility and logged without secrets.
     // Keep the last observed output encoding with the player so changing only
     // the boost level does not forget the still-active AudioTrack configuration.
     var sinkEncoding by remember(player) { mutableStateOf(playerPool.audioSinkEncoding(player)) }
@@ -1884,6 +1894,8 @@ private fun selectSubtitleTrack(player: Player, choice: TrackChoice) {
     player.trackSelectionParameters = builder.build()
 }
 
+private val PausePickerWidth = 285.dp
+
 @Composable
 private fun PauseOverlay(
     entry: MergedEntry,
@@ -2032,10 +2044,9 @@ private fun PauseOverlay(
                         }
                     }
                 }
-                // Issue #497: the pickers share the 256dp top row with "More like
-                // this". When a dropdown expands, its option list must not be
-                // squeezed to zero-height rows, so this column scrolls instead.
-                Column(modifier = Modifier.width(285.dp).verticalScroll(rememberScrollState())) {
+                // Keep the closed controls reachable on shorter viewports.
+                // Expanded menus have their own window and scroll independently.
+                Column(modifier = Modifier.width(PausePickerWidth).verticalScroll(rememberScrollState())) {
                     AudioBoostPicker(audioBoostLevel, audioBoostStatus, onAudioBoostLevel)
                     Spacer(Modifier.height(18.dp))
                     TrackPickerBlock(
@@ -2101,13 +2112,10 @@ private fun AudioBoostPicker(level: Int, status: String, onSelect: (Int) -> Unit
         onSelect = onSelect,
         testTag = UatTestTags.PAUSE_AUDIO_BOOST_PICKER,
         optionTagPrefix = UatTestTags.PAUSE_AUDIO_BOOST_OPTION_PREFIX,
+        modifier = Modifier.semantics {
+            if (status.startsWith("Unavailable")) stateDescription = status
+        },
     )
-    // Issue #497: the dropdown already shows the chosen level, so text under
-    // it only appears when the boost cannot be applied on this output.
-    if (status.startsWith("Unavailable")) {
-        Spacer(Modifier.height(4.dp))
-        Text(status, color = SwarmMuted, fontSize = 11.sp, maxLines = 2)
-    }
 }
 
 @Composable
@@ -2131,9 +2139,8 @@ private fun TrackPickerBlock(
 
 /**
  * A D-pad dropdown for the pause overlay (issue #497): one button showing the
- * current value; pressing it expands the full option list inline beneath it
- * (tv-material3 has no popup menu, and an inline list keeps focus traversal
- * predictable). Choosing an option, or Back, collapses it and returns focus
+ * current value; pressing it opens a focusable popup above the pause
+ * content. Choosing an option, or Back, collapses it and returns focus
  * to the button. [testTag] tags the button; options are tagged
  * `optionTagPrefix + index` and only exist while the list is open.
  *
@@ -2151,6 +2158,7 @@ private fun <T> PauseDropdown(
     onSelect: (T) -> Unit,
     testTag: String? = null,
     optionTagPrefix: String? = null,
+    modifier: Modifier = Modifier,
 ) {
     Text(heading, color = SwarmMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
     Spacer(Modifier.height(5.dp))
@@ -2162,41 +2170,68 @@ private fun <T> PauseDropdown(
     val buttonFocus = remember { FocusRequester() }
     val selectedFocus = remember { FocusRequester() }
     val selectedIndex = pauseDropdownSelectedIndex(options)
-    BackHandler(enabled = expanded) {
+    fun dismiss() {
         expanded = false
-        runCatching { buttonFocus.requestFocus() }
+        buttonFocus.requestFocus()
     }
-    LaunchedEffect(expanded) {
-        if (expanded) runCatching { selectedFocus.requestFocus() }
-    }
-    SelectableChip(
-        pauseDropdownButtonLabel(options, expanded, emptyLabel),
-        isSelected = false,
-        onClick = { expanded = !expanded },
-        focusRequester = buttonFocus,
-        modifier = Modifier.fillMaxWidth().then(if (testTag != null) Modifier.testTag(testTag) else Modifier),
-    )
-    if (expanded) {
-        Spacer(Modifier.height(4.dp))
-        Column(
-            modifier = Modifier.fillMaxWidth().padding(start = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            for ((index, option) in options.withIndex()) {
-                SelectableChip(
-                    pauseDropdownRowLabel(option, emptyLabel),
-                    isSelected = option.isSelected,
-                    onClick = {
-                        onSelect(option.value)
-                        expanded = false
-                        runCatching { buttonFocus.requestFocus() }
-                    },
-                    focusRequester = if (index == selectedIndex) selectedFocus else null,
-                    modifier = Modifier.fillMaxWidth()
-                        .then(if (optionTagPrefix != null) Modifier.testTag(optionTagPrefix + index) else Modifier),
-                )
+
+    Box(Modifier.fillMaxWidth()) {
+        SelectableChip(
+            pauseDropdownButtonLabel(options, expanded, emptyLabel),
+            isSelected = false,
+            onClick = { expanded = true },
+            focusRequester = buttonFocus,
+            modifier = modifier.fillMaxWidth().then(if (testTag != null) Modifier.testTag(testTag) else Modifier),
+        )
+        if (expanded) {
+            Popup(
+                popupPositionProvider = PauseDropdownPosition,
+                onDismissRequest = ::dismiss,
+                properties = PopupProperties(focusable = true),
+            ) {
+                Column(
+                    modifier = Modifier.width(PausePickerWidth).heightIn(max = 192.dp)
+                        .background(SwarmSurface, RoundedCornerShape(8.dp))
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    for ((index, option) in options.withIndex()) {
+                        SelectableChip(
+                            pauseDropdownRowLabel(option, emptyLabel),
+                            isSelected = option.isSelected,
+                            onClick = {
+                                onSelect(option.value)
+                                dismiss()
+                            },
+                            focusRequester = if (index == selectedIndex) selectedFocus else null,
+                            modifier = Modifier.fillMaxWidth()
+                                .then(if (optionTagPrefix != null) Modifier.testTag(optionTagPrefix + index) else Modifier),
+                        )
+                    }
+                }
+                LaunchedEffect(Unit) { selectedFocus.requestFocus() }
             }
         }
+    }
+}
+
+private object PauseDropdownPosition : PopupPositionProvider {
+    override fun calculatePosition(
+        anchorBounds: IntRect,
+        windowSize: IntSize,
+        layoutDirection: LayoutDirection,
+        popupContentSize: IntSize,
+    ): IntOffset {
+        val maxX = (windowSize.width - popupContentSize.width).coerceAtLeast(0)
+        val maxY = (windowSize.height - popupContentSize.height).coerceAtLeast(0)
+        val above = anchorBounds.top - popupContentSize.height
+        val top = when {
+            anchorBounds.bottom <= maxY -> anchorBounds.bottom
+            above >= 0 -> above
+            else -> maxY
+        }
+        return IntOffset(anchorBounds.left.coerceIn(0, maxX), top.coerceIn(0, maxY))
     }
 }
 

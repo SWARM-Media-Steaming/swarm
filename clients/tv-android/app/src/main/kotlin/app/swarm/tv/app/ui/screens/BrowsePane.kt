@@ -1,6 +1,7 @@
 package app.swarm.tv.app.ui.screens
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -12,6 +13,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
@@ -32,6 +34,16 @@ import app.swarm.tv.app.ui.theme.SwarmAccent
 import app.swarm.tv.app.ui.theme.SwarmMuted
 import app.swarm.tv.app.ui.theme.SwarmSurfaceMuted
 import app.swarm.tv.app.ui.theme.SwarmText
+
+/** Let Up and Down traverse all children, including off-screen rows, within the pane. */
+internal fun Modifier.browsePaneFocusGroup(): Modifier =
+    focusProperties {
+        onExit = {
+            if (requestedFocusDirection == FocusDirection.Up || requestedFocusDirection == FocusDirection.Down) {
+                cancelFocusChange()
+            }
+        }
+    }.focusGroup()
 
 internal fun Modifier.onPaneDirection(direction: Key, action: () -> Unit): Modifier =
     onPreviewKeyEvent { event ->

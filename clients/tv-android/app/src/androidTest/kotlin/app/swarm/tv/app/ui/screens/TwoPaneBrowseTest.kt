@@ -5,11 +5,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.UiDevice
 import app.swarm.tv.app.ui.UatTestTags
@@ -58,6 +60,13 @@ class TwoPaneBrowseTest {
         }
 
         season(1).assertIsFocused()
+        press(KeyEvent.KEYCODE_DPAD_UP)
+        val watchlist = compose.onNodeWithTag(UatTestTags.SEASON_SCREEN_WATCHLIST_BUTTON)
+        watchlist.assertIsFocused()
+        press(KeyEvent.KEYCODE_DPAD_UP)
+        watchlist.assertIsFocused()
+        press(KeyEvent.KEYCODE_DPAD_DOWN)
+        season(1).assertIsFocused()
         press(KeyEvent.KEYCODE_DPAD_RIGHT)
         episodeRow(first).assertIsFocused()
         press(KeyEvent.KEYCODE_DPAD_DOWN)
@@ -68,6 +77,12 @@ class TwoPaneBrowseTest {
         press(KeyEvent.KEYCODE_DPAD_DOWN)
         episodeRow(special).assertIsFocused()
         season(0).assertIsSelected()
+        press(KeyEvent.KEYCODE_DPAD_LEFT)
+        season(0).assertIsFocused()
+        press(KeyEvent.KEYCODE_DPAD_DOWN)
+        season(0).assertIsFocused()
+        press(KeyEvent.KEYCODE_DPAD_RIGHT)
+        episodeRow(special).assertIsFocused()
         press(KeyEvent.KEYCODE_DPAD_UP)
         episodeRow(second).assertIsFocused()
 
@@ -102,11 +117,20 @@ class TwoPaneBrowseTest {
         }
 
         album(a).assertIsFocused()
-        trackRow(a.tracks.first()).assertIsDisplayed()
+        press(KeyEvent.KEYCODE_DPAD_UP)
+        album(a).assertIsFocused()
+        val onlyTrack = trackRow(a.tracks.single())
+        onlyTrack.performSemanticsAction(SemanticsActions.RequestFocus)
+        press(KeyEvent.KEYCODE_DPAD_DOWN)
+        onlyTrack.assertIsFocused()
+        press(KeyEvent.KEYCODE_BACK)
+        album(a).assertIsFocused()
         press(KeyEvent.KEYCODE_DPAD_DOWN)
         album(b).assertIsFocused()
         trackRow(a.tracks.first()).assertDoesNotExist()
         trackRow(b.tracks.first()).assertIsDisplayed()
+        press(KeyEvent.KEYCODE_DPAD_DOWN)
+        album(b).assertIsFocused()
         press(KeyEvent.KEYCODE_DPAD_RIGHT)
         trackRow(b.tracks.first()).assertIsFocused()
         press(KeyEvent.KEYCODE_DPAD_LEFT)

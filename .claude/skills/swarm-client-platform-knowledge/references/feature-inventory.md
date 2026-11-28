@@ -54,8 +54,8 @@ instructions and the same gap list in narrative form.
 | Catalog cache (offline/warm-start paint) | Complete (files) | Not implemented | Every catalog visit is a fresh network fetch |
 | Hover/browse preview playback | Complete | Not implemented | |
 | Movie detail screen | Complete | Partial | `MovieDetailScreen`: poster, title, year, genres, Play/Like/Watchlist. No backdrop, cast, overview, or report-a-problem |
-| Show → season → episode navigation | Complete | Not implemented | Fire TV (#495): one two-pane screen — seasons then Specials listed on the left, one continuous episode list on the right with season headers. Focusing a season jumps to its section, and D-pad navigation across sections updates the highlighted season. A future Roku screen must use the same two-pane layout. See "plays first episode directly" above |
-| Artist → album → track navigation | Complete | Not implemented | Fire TV (#495) shows albums on the left and the highlighted album’s tracks on the right. Center or Right enters the track list, while Left or Back returns to the album. See "plays first track directly" above |
+| Show → season → episode navigation | Complete | Not implemented | Fire TV (#495): one two-pane screen — seasons then Specials listed on the left, one continuous episode list on the right with season headers. Up and Down stay in the current pane. Focusing a season jumps to its section, and D-pad navigation across sections updates the highlighted season. A future Roku screen must use the same two-pane layout. See "plays first episode directly" above |
+| Artist → album → track navigation | Complete | Not implemented | Fire TV (#495) shows albums on the left and the highlighted album’s tracks on the right. Up and Down stay in the current pane. Center or Right enters the track list, and Left or Back from any focused track returns to the album. See "plays first track directly" above |
 
 ## Playback
 

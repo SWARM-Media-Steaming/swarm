@@ -32,10 +32,14 @@ class MusicPlaybackUatTest : UatTestBase() {
         composeTestRule.waitForTagPrefix(UatTestTags.ALBUM_CARD_PREFIX)
         val albumTag = requireNotNull(composeTestRule.firstTagStartingWith(UatTestTags.ALBUM_CARD_PREFIX))
         composeTestRule.onNodeWithTag(albumTag).assertIsDisplayed()
-        selectTagWithDpad(albumTag)
-
+        focusTag(albumTag)
         composeTestRule.waitForTagPrefix(UatTestTags.TRACK_ROW_PREFIX)
         val trackTag = requireNotNull(composeTestRule.firstTagStartingWith(UatTestTags.TRACK_ROW_PREFIX))
+        focusTag(trackTag)
+        pressDpadLeft()
+        composeTestRule.waitUntil(timeoutMillis = 5_000) { composeTestRule.focusedTag() == albumTag }
+        pressDpadRight()
+        composeTestRule.waitUntil(timeoutMillis = 5_000) { composeTestRule.focusedTag() == trackTag }
         assertFalse("track row should show number/name/duration", composeTestRule.textUnderTag(trackTag).isBlank())
         selectTagWithDpad(trackTag)
 

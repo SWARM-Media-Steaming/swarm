@@ -42,7 +42,12 @@ class ShowSeasonsEpisodesWatchlistUatTest : UatTestBase() {
             composeTestRule.textUnderTag(seasonTags.first()).isBlank(),
         )
 
-        selectTagWithDpad(UatTestTags.SEASON_SCREEN_WATCHLIST_BUTTON)
+        val watchlistButton = UatTestTags.SEASON_SCREEN_WATCHLIST_BUTTON
+        focusTag(watchlistButton)
+        pressDpadUp()
+        composeTestRule.waitForIdle()
+        assertEquals(watchlistButton, composeTestRule.focusedTag())
+        selectTagWithDpad(watchlistButton)
         composeTestRule.waitUntil(timeoutMillis = 5_000) {
             runBlocking { watchlistStore.loadAll() }.size == before.size + 1
         }
@@ -61,7 +66,7 @@ class ShowSeasonsEpisodesWatchlistUatTest : UatTestBase() {
         navigateDownUntilTag(showTag)
         selectTagWithDpad(showTag)
         waitForTag(UatTestTags.SEASON_SCREEN_SHOW_TITLE)
-        selectTagWithDpad(UatTestTags.SEASON_SCREEN_WATCHLIST_BUTTON)
+        selectTagWithDpad(watchlistButton)
         composeTestRule.waitUntil(timeoutMillis = 5_000) {
             runBlocking { watchlistStore.loadAll() }.size == before.size
         }

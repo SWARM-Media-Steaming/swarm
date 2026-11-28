@@ -425,3 +425,12 @@ either existing function with a new meaning.
   thick `SwarmAccent` focused border, accent glow, 1.12x lift, unfocused
   posters dimmed, and `LazyRow` content padding so the lift is not clipped.
   A scale change alone is not visible enough.
+
+- While paused, block focus on both the Compose video surface and the
+  native Media3 view and its descendants. Keep Down on the bottom shelf.
+  Never set `focusProperties { canFocus = true }` on a container: it cascades
+  onto every focus target below it and makes `focusGroup`/lazy-row containers
+  focusable themselves, so focus lands on an invisible container instead of a
+  card. Override `canFocus` only to block (e.g. while a modal is open). Drive poster
+  dimming from the TV card's interaction source and apply it to the artwork
+  so the card can draw its full focus border and glow.

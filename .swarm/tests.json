@@ -2399,6 +2399,35 @@
         "servers": []
       },
       "timeoutSeconds": 300
+    },
+    {
+      "command": [
+        "python3",
+        "-B",
+        "tests/adversarial/test_issue_497_pause_dropdown_multi_value_visibility.py"
+      ],
+      "disruptive": false,
+      "enabled": true,
+      "id": "adversarial-issue-497-pause-dropdown-multi-value-visibility",
+      "name": "Adversarial: issue #497 pause-screen dropdowns display and traverse multiple values on 1080p TV",
+      "origin": "adversarial",
+      "requirements": {
+        "credentials": [],
+        "devices": [],
+        "executables": [
+          "python3",
+          "java"
+        ],
+        "files": [
+          "tests/adversarial/test_issue_497_pause_dropdown_multi_value_visibility.py",
+          "tests/adversarial/Issue497PauseDropdownLayoutDriver.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/PlayerScreen.kt",
+          "clients/tv-android/app/src/main/kotlin/app/swarm/tv/app/ui/screens/PauseDropdownOptions.kt"
+        ],
+        "mounts": [],
+        "servers": []
+      },
+      "timeoutSeconds": 300
     }
   ],
   "version": 1

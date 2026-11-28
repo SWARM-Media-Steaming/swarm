@@ -2,7 +2,6 @@ package app.swarm.tv.app.ui.screens
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -109,7 +108,7 @@ fun AlbumScreen(
                     albumPaneFocused = state.hasFocus
                     if (state.hasFocus) inTracks = false
                 }
-                .focusGroup(),
+                .browsePaneFocusGroup(),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 ArtworkImage(
@@ -173,7 +172,10 @@ fun AlbumScreen(
                 onPlay = onPlay,
                 inTracks = inTracks,
                 focusTrackKey = lastFocusedTrackKey,
-                onFocusTrack = { lastFocusedTrackKey = it.entry.entryKey },
+                onFocusTrack = { track ->
+                    lastFocusedTrackKey = track.entry.entryKey
+                    inTracks = true
+                },
                 modifier = Modifier.weight(1f).fillMaxHeight()
                     .onPaneDirection(Key.DirectionLeft) { inTracks = false },
             )
@@ -197,7 +199,7 @@ private fun TrackList(
         if (inTracks && album.tracks.isNotEmpty()) listState.focusBrowseItem(focusIndex, rowFocusRequester)
     }
 
-    Column(modifier = modifier) {
+    Column(modifier = modifier.browsePaneFocusGroup()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 album.album,

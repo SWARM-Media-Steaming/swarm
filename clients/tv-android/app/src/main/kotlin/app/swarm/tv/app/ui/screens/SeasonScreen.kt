@@ -3,7 +3,6 @@ package app.swarm.tv.app.ui.screens
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,9 +31,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
@@ -176,7 +173,7 @@ fun SeasonScreen(
                     seasonPaneFocused = state.hasFocus
                     if (state.hasFocus && inEpisodes) onSelectSeason(null)
                 }
-                .focusGroup(),
+                .browsePaneFocusGroup(),
         )
         if (displayedSection != null) {
             EpisodePane(
@@ -306,13 +303,7 @@ private fun EpisodePane(
     LazyColumn(
         state = listState,
         verticalArrangement = Arrangement.spacedBy(10.dp),
-        modifier = modifier.focusProperties {
-            onExit = {
-                if (requestedFocusDirection == FocusDirection.Up || requestedFocusDirection == FocusDirection.Down) {
-                    cancelFocusChange()
-                }
-            }
-        }.focusGroup(),
+        modifier = modifier.browsePaneFocusGroup(),
         contentPadding = PaddingValues(vertical = 4.dp),
     ) {
         for (section in sections) {

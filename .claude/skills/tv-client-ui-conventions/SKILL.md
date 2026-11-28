@@ -189,6 +189,8 @@ seasons ascending, then Specials (season 0), then Unnumbered.
 - Up and Down move through episodes across season boundaries. The focused
   episode updates the highlighted season and scrolls its row into view.
   Syncing that highlight must leave episode focus and scroll position intact.
+- Keep vertical focus inside each pane with `browsePaneFocusGroup()`. Group the
+  whole season pane so Up from the first season can still reach the action buttons.
 - Focusing a season on the left previews its section. Center or Right
   enters its episodes. Left or Back returns to the highlighted season.
   A second Back leaves the show. Scroll a lazy list to the destination
@@ -204,7 +206,9 @@ seasons ascending, then Specials (season 0), then Unnumbered.
 and selected album cover sit above the album list. Focusing an album
 previews its tracks on the right. Center or Right enters the track list.
 Left or Back returns to the active album, and a second Back leaves the
-artist. Returning from the music player focuses the active track when it
+artist. Apply the same vertical focus boundary to both music panes. When any
+track gains focus, record the active pane and track so Left and Back also work
+after direct focus entry. Returning from the music player focuses the active track when it
 is available in the album. Keep `ALBUM_CARD_PREFIX` and `TRACK_ROW_PREFIX`
 on the actionable rows, and preserve playback and queue behavior.
 

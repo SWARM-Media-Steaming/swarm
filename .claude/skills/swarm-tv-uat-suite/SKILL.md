@@ -48,8 +48,8 @@ that specified it.
 | `MovieProblemReportUatTest` | 10, 11 | Report-a-problem → toast → notification inbox → dismiss; and the server-resolve round-trip (see below) |
 | `MoviePlaybackPauseUatTest` | 12 | Movie playback: play, fast-forward, rewind, pause overlay fields (asserts the aggregate rating shown, not free-text "reviews" — see Known deviations below), resume, settings, back-navigation stack |
 | `ShowPlaybackPauseUatTest` | 13 | Same pause-overlay checks for an episode, plus the Next Episode button (present and functional — unlike the movie case) |
-| `ShowSeasonsEpisodesWatchlistUatTest` | 14 | Season list with box art/episode counts, watchlist round-trip on a show, episode grid sequencing and non-duplication |
-| `MusicPlaybackUatTest` | 15 | Artist → album → track browsing, per-track like round-trip through the filter, shuffle/skip/pause/resume, mini-player reopen/close |
+| `ShowSeasonsEpisodesWatchlistUatTest` | 14 | Season list and episode counts, Up at Watchlist stays in the season pane, watchlist round-trip, episode rows with distinct keys |
+| `MusicPlaybackUatTest` | 15 | Artist → album → track browsing, Left from a directly focused track returns to its album and Right restores the track, per-track like round-trip through the filter, shuffle/skip/pause/resume, mini-player reopen/close |
 | `NavigationSearchPersistenceUatTest` | Navigation/search/persistence | Pure remote navigation and focus restoration; search, empty results, clear, combined filters, Browse All ordering; likes/watchlist surviving a fresh Activity and ViewModel |
 | `ContinuePlaybackLifecycleUatTest` | Playback lifecycle | Continue Watching save/resume/completion removal, persisted restoration, server release acknowledgement, audio/subtitle choice, browse-preview movement and preview-to-play |
 | `KidModeUatTest` | Kid Mode | PIN setup, content-kind gating, wrong/correct PIN behavior, disabling Kid Mode, and persistence across a fresh Activity and ViewModel |

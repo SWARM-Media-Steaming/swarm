@@ -68,6 +68,7 @@ text or font weight, not by breaking this three-color sequence with a fourth ad-
   on the left and a continuous list of episodes on the right. Focusing a season jumps to
   its section. D-pad Up and Down navigate across seasons and update the left highlight.
   Music uses matching panes for albums and tracks, previewing the highlighted album.
+  Up and Down stay in the current pane at either end of its list or actions.
   Left or Back from the right pane returns to the highlighted row, and a second Back
   leaves the show or artist.
   A Browse-All full grid also shows the originating shelf or genre name at the top of the
